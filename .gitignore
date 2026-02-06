@@ -1,0 +1,12 @@
+# Ignore build artifacts
+obj/
+crescendo_engine
+*.o
+
+# Ignore compiled shaders (since make builds them)
+assets/shaders/*.spv
+
+# Ignore system/editor files
+.vscode/
+.DS_Store
+imgui.ini
