@@ -29,9 +29,13 @@ namespace Crescendo {
         EditorUI();
         ~EditorUI();
 
-        void Initialize(RenderingServer* renderer, SDL_Window* window, VkInstance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue graphicsQueue, VkRenderPass, uint32_t imageCount);
+        void Initialize(RenderingServer* renderer, SDL_Window* window, VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue graphicsQueue, VkRenderPass renderPass, uint32_t imageCount);
         void Shutdown(VkDevice device);
-        void Draw(VkCommandBuffer cmd, Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor);
+
+        // [CHANGE] Split Draw into Prepare and Render
+        void Prepare(Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor);
+        void Render(VkCommandBuffer cmd);
+        
         void HandleInput(SDL_Event& event);
 
         // Accessors
@@ -40,7 +44,6 @@ namespace Crescendo {
 
     private:
         RenderingServer* rendererRef = nullptr;
-
         VkDescriptorPool imguiPool = VK_NULL_HANDLE;
 
         // Editor State
@@ -60,7 +63,6 @@ namespace Crescendo {
 
         // Internal Helpers
         void SetupStyle();
-        void CreateLogo(VkDevice device, VkPhysicalDevice, VkCommandPool, VkQueue graphicsQueue);
-        void DrawNodeEditor(Scene* scene);
+        // Removed CreateLogo() declaration
     };
 }

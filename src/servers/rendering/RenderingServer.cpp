@@ -91,7 +91,24 @@ namespace Crescendo {
         return buffer;
     }
 
-    RenderingServer::RenderingServer() : display_ref(nullptr) {}
+    RenderingServer::RenderingServer()
+        : display_ref(nullptr),
+        currentFrame(0),
+        viewportDescriptorSet(VK_NULL_HANDLE),
+        instance(VK_NULL_HANDLE),
+        physicalDevice(VK_NULL_HANDLE),
+        device(VK_NULL_HANDLE),
+        surface(VK_NULL_HANDLE),
+        viewportImage(VK_NULL_HANDLE),
+        viewportImageView(VK_NULL_HANDLE),
+        viewportSampler(VK_NULL_HANDLE),
+        textureImage(VK_NULL_HANDLE),
+        textureImageView(VK_NULL_HANDLE),
+        textureSampler(VK_NULL_HANDLE)
+    {
+        // ensure the vector has size before trying to use it
+        // though resize() in initiialize() usually handles this
+    }
 
     bool RenderingServer::initialize(DisplayServer* display) {
         display_ref = display;
@@ -111,17 +128,16 @@ namespace Crescendo {
         if (!createSwapChain()) return false;
         if (!createImageViews()) return false;
         if (!createDepthResources()) return false;
-        if (!createRenderPass()) return false; // MAIN render pass (for screen)
+        if (!createRenderPass()) return false; 
 
-        // =========================================================
-        // CRITICAL SECTION: Viewport Refactor 
-        // =========================================================
-        
-        // Interface first
+        // 1. Initialize Interface FIRST (Sets up ImGui Context)
         editorUI.Initialize(this, display->get_window(), instance, physicalDevice, device, graphicsQueue, renderPass, static_cast<uint32_t>(swapChainImages.size()));
 
-        // Viewport second
+        // 2. Create Viewport Resources SECOND
+        // This function now handles creating the Image, transitioning it, AND registering it with ImGui.
         if (!createViewportResources()) return false;
+
+        // --- PIPELINES ---
         if (!createGraphicsPipeline()) return false;
         if (!createGridPipeline()) return false;
         if (!createWaterPipeline()) return false;        
@@ -146,11 +162,10 @@ namespace Crescendo {
         if (!createDescriptorPool()) return false;
         if (!createDescriptorSets()) { std::cout << "!! Failed at DescriptorSets" << std::endl; return false; }
         
-        createProceduralGrid(); // Mesh Index 0
+        createProceduralGrid(); 
         createWaterMesh();
 
         this->waterTextureID = acquireTexture("assets/textures/water.png");
-
         if (this->waterTextureID == -1) {
             std::cout << "Warning: Water texture not found, using default." << std::endl;
             this->waterTextureID = 0;
@@ -369,8 +384,8 @@ namespace Crescendo {
 
         // 2. Create GPU Image
         createImage(width, height, format, VK_IMAGE_TILING_OPTIMAL, 
-                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
-                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
 
         // 3. Copy Command
         transitionImageLayout(image, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -1714,25 +1729,46 @@ namespace Crescendo {
         // We handle aspect ratio in render() now, so this can be empty for now
     }
 
+    // --------------------------------------------------------------------
+    // Render() / Draw Logic -- needs heavy refactoring
+    // --------------------------------------------------------------------
+    
     void RenderingServer::render(Scene* scene) {
-        // [1. Synchronization & Acquire Image]
+        // [Debug] Check critical pointers
+        if (!scene) {
+            std::cerr << "[CRITICAL FAILURE] Scene pointer is NULL in render()!" << std::endl;
+            return;
+        }
+
+        // [Debug] Step 1: Wait for Fences
+        // std::cout << "[Step 1] Waiting for Fence " << currentFrame << "..." << std::endl;
+        if (inFlightFences.size() <= currentFrame || inFlightFences[currentFrame] == VK_NULL_HANDLE) {
+             std::cerr << "[CRITICAL FAILURE] Invalid Fence at index " << currentFrame << std::endl;
+             return;
+        }
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-        
+
+        // [Debug] Step 2: Prepare UI
+        // std::cout << "[Step 2] Preparing UI..." << std::endl;
+        editorUI.Prepare(scene, mainCamera, viewportDescriptorSet);
+
+        // [Debug] Step 3: Acquire Image
         uint32_t imageIndex;
+        // std::cout << "[Step 3] Acquiring Image..." << std::endl;
         VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
         
         if (result == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapChain(display_ref->get_window()); return; }
-        
+        if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) throw std::runtime_error("failed to acquire swap chain image!");
+
+        // [Debug] Step 4: Reset Fences
         vkResetFences(device, 1, &inFlightFences[currentFrame]);
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);
 
-        // 1. Calculate Matrices
-        float aspectRatio = 1920.0f / 1080.0f; // Viewport/Window Aspect Ratio
+        // [Debug] Step 5: Update Uniforms
+        float aspectRatio = 1920.0f / 1080.0f; 
         glm::mat4 view = mainCamera.GetViewMatrix();
         glm::mat4 proj = mainCamera.GetProjectionMatrix(aspectRatio); 
-        proj[1][1] *= -1; // Y- Vulkan Flip
-
-        // [Update Uniforms]
+        proj[1][1] *= -1;
         updateUniformBuffer(currentFrame, scene);
 
         VkCommandBufferBeginInfo beginInfo{};
@@ -1740,7 +1776,7 @@ namespace Crescendo {
         vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo);
 
         // =========================================================
-        // PASS 1: OFFSCREEN (Render The 3D World)
+        // PASS 1: OFFSCREEN (3D World)
         // =========================================================
         VkRenderPassBeginInfo viewportPassInfo{};
         viewportPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1748,86 +1784,53 @@ namespace Crescendo {
         viewportPassInfo.framebuffer = viewportFramebuffer;
         viewportPassInfo.renderArea.extent = {1920, 1080};
         
-        // --- FIX: ARRAY SIZE 1, ONLY ACCESS [0] ---
         std::array<VkClearValue, 2> viewportClearValues{}; 
         viewportClearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};
-        viewportClearValues[1].depthStencil = {1.0f, 0}; // If this exists, array MUST be 2.
+        viewportClearValues[1].depthStencil = {1.0f, 0}; 
 
-        viewportPassInfo.clearValueCount = 1; // Only clear the first one (Color)
+        viewportPassInfo.clearValueCount = 1; 
         viewportPassInfo.pClearValues = viewportClearValues.data();
 
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &viewportPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-            // --- 1A. OPAQUE OBJECTS (The Logic from the missing 'drawFrame') ---
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
-            for (auto* ent : scene->entities) {
-                // Skip transparent objects (Water) for now
-                if (!ent || ent->targetName.find("water") != std::string::npos) continue; 
-                if (ent->modelIndex < 0 || ent->modelIndex >= meshes.size()) continue;
+            // [Debug] Loop Safety Check
+            if (scene->entities.empty()) {
+                // std::cout << "[Info] No entities to render." << std::endl;
+            } else {
+                for (size_t i = 0; i < scene->entities.size(); i++) {
+                    auto* ent = scene->entities[i];
+                    if (!ent) continue;
+                    if (ent->modelIndex < 0 || ent->modelIndex >= meshes.size()) continue;
 
-                MeshResource& mesh = meshes[ent->modelIndex];
-                VkBuffer vBuffers[] = { mesh.vertexBuffer };
-                VkDeviceSize offsets[] = { 0 };
-                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                    MeshResource& mesh = meshes[ent->modelIndex];
+                    VkBuffer vBuffers[] = { mesh.vertexBuffer };
+                    VkDeviceSize offsets[] = { 0 };
+                    vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
+                    vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-                // Calc Matrices
-                glm::mat4 model = glm::mat4(1.0f);
-                model = glm::translate(model, ent->origin);
-                model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1));
-                model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0,1,0));
-                model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
-                model = glm::scale(model, ent->scale);
+                    glm::mat4 model = glm::mat4(1.0f);
+                    model = glm::translate(model, ent->origin);
+                    model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1));
+                    model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0,1,0));
+                    model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
+                    model = glm::scale(model, ent->scale);
 
-                MeshPushConstants pushConst{};
-                pushConst.renderMatrix = proj * view * model;
-                pushConst.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
-                // Default PBR params (TextureID, Roughness, Metallic, Time)
-                pushConst.pbrParams = glm::vec4((float)ent->textureID, ent->roughness, ent->metallic, 0.0f);
-                pushConst.sunDir = glm::vec4(sunDirection, sunIntensity);
-                pushConst.sunColor = glm::vec4(sunColor, 1.0f);
+                    MeshPushConstants pushConst{};
+                    pushConst.renderMatrix = proj * view * model;
+                    pushConst.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
+                    pushConst.pbrParams = glm::vec4((float)ent->textureID, ent->roughness, ent->metallic, 0.0f);
+                    pushConst.sunDir = glm::vec4(sunDirection, sunIntensity);
+                    pushConst.sunColor = glm::vec4(sunColor, 1.0f);
 
-                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &pushConst);
-                vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
+                    vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &pushConst);
+                    vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
+                }
             }
-
-            // --- 1B. TRANSPARENT OBJECTS (Water/Glass) ---
-            // Crucial: This must be INSIDE Pass 1 to appear in the texture!
-            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipeline);
-
-            for (auto* ent : scene->entities) {
-                // Only draw Water
-                if (!ent || ent->targetName.find("water") == std::string::npos) continue;
-
-                MeshResource& mesh = meshes[ent->modelIndex];
-                VkBuffer vBuffers[] = { mesh.vertexBuffer };
-                VkDeviceSize offsets[] = { 0 };
-                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-
-                glm::mat4 model = glm::mat4(1.0f);
-                model = glm::translate(model, ent->origin);
-                model = glm::scale(model, ent->scale); // Water usually doesn't rotate, but you can add it if needed
-
-                MeshPushConstants pushConst{};
-                pushConst.renderMatrix = proj * view * model;
-                pushConst.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
-
-                float time = SDL_GetTicks() / 1000.0f;
-                pushConst.pbrParams = glm::vec4((float)this->waterTextureID, 0.1f, 0.8f, time); 
-                pushConst.sunDir = glm::vec4(sunDirection, sunIntensity);
-                pushConst.sunColor = glm::vec4(sunColor, 1.0f);
-
-                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &pushConst);
-                vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
-            }
-
-        vkCmdEndRenderPass(commandBuffers[currentFrame]); // End Pass 1 (Texture is now painted)
-
+        vkCmdEndRenderPass(commandBuffers[currentFrame]); 
 
         // =========================================================
-        // PASS 2: ONSCREEN (Render The UI)
+        // PASS 2: ONSCREEN (UI)
         // =========================================================
         VkRenderPassBeginInfo screenPassInfo{};
         screenPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1842,16 +1845,11 @@ namespace Crescendo {
         screenPassInfo.pClearValues = screenClearValues.data();
 
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &screenPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-            // Draw the Editor (which displays the Pass 1 texture)
-            editorUI.Draw(commandBuffers[currentFrame], scene, mainCamera, viewportDescriptorSet);
-
+            // [Debug] Step 6: Render UI
+            // std::cout << "[Step 6] Rendering UI..." << std::endl;
+            editorUI.Render(commandBuffers[currentFrame]);
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
 
-
-        // =========================================================
-        // [3. End & Submit]
-        // =========================================================
         vkEndCommandBuffer(commandBuffers[currentFrame]);
 
         VkSubmitInfo submitInfo{};
@@ -1881,7 +1879,7 @@ namespace Crescendo {
 
         vkQueuePresentKHR(presentQueue, &presentInfo);
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-        }
+    }
 
     void RenderingServer::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory) {
         VkImageCreateInfo imageInfo{};
@@ -1995,17 +1993,28 @@ namespace Crescendo {
         VkPipelineStageFlags sourceStage;
         VkPipelineStageFlags destinationStage;
 
+        // CASE 1: Uploading texture data (Undefined -> Transfer Dest)
         if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
             barrier.srcAccessMask = 0;
             barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
             destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        } 
+        // CASE 2: Texture finished uploading (Transfer Dest -> Shader Read)
+        else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        } else {
+        } 
+        // CASE 3: [FIX] Initializing Viewport directly (Undefined -> Shader Read)
+        else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        }
+        else {
             throw std::invalid_argument("unsupported layout transition!");
         }
 
@@ -2204,15 +2213,18 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createViewportResources() {
-        // --- 1. Create Image (The Texture) ---
+        // --- 1. Create Image ---
         createImage(1920, 1080, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, 
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, viewportImage, viewportImageMemory);
 
-        // --- 2. Create ImageView ---
+        // --- 2. [CRITICAL] Transition to Shader Read ---
+        // This makes the image "valid" for ImGui to see immediately.
+        transitionImageLayout(viewportImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        // --- 3. Create Views & Sampler ---
         viewportImageView = createImageView(viewportImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
 
-        // --- 3. Create Sampler ---
         VkSamplerCreateInfo samplerInfo{};
         samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
         samplerInfo.magFilter = VK_FILTER_LINEAR;
@@ -2227,7 +2239,7 @@ namespace Crescendo {
         // --- 4. Register with ImGui ---
         viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(viewportSampler, viewportImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        // --- 5. Create Render Pass (Offscreen) ---
+        // --- 5. Create Render Pass ---
         VkAttachmentDescription colorAttachment{};
         colorAttachment.format = VK_FORMAT_R8G8B8A8_SRGB;
         colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -2235,8 +2247,11 @@ namespace Crescendo {
         colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // Ready for ImGui
+        
+        // IMPORTANT: We just transitioned it to SHADER_READ_ONLY_OPTIMAL above.
+        // So we tell the Render Pass: "It starts as SHADER_READ_ONLY... please turn it into COLOR_ATTACHMENT for drawing."
+        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; 
+        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; 
 
         VkAttachmentReference colorAttachmentRef{};
         colorAttachmentRef.attachment = 0;
@@ -2247,7 +2262,10 @@ namespace Crescendo {
         subpass.colorAttachmentCount = 1;
         subpass.pColorAttachments = &colorAttachmentRef;
 
+        // Dependencies need to account for the implicit transition
         std::array<VkSubpassDependency, 2> dependencies;
+        
+        // Entrance: Wait for Fragment Shader (ImGui reading) to finish -> Transition to Color Attachment
         dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
         dependencies[0].dstSubpass = 0;
         dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
@@ -2256,6 +2274,7 @@ namespace Crescendo {
         dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
+        // Exit: Wait for Color Attachment to finish -> Transition back to Fragment Shader (for ImGui to read next frame)
         dependencies[1].srcSubpass = 0;
         dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
         dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -2275,7 +2294,7 @@ namespace Crescendo {
 
         if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &viewportRenderPass) != VK_SUCCESS) return false;
 
-        // --- 6. Create Framebuffer ---
+        // --- 6. Framebuffer (Unchanged) ---
         VkImageView attachments[] = { viewportImageView };
         VkFramebufferCreateInfo framebufferInfo{};
         framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -2289,9 +2308,7 @@ namespace Crescendo {
         if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &viewportFramebuffer) != VK_SUCCESS) return false;
 
         return true;
-    }
-
-    
+    }  
 
     void SetCrescendoEditorStyle() {
         ImGuiStyle& style = ImGui::GetStyle();

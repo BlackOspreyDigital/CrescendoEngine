@@ -70,22 +70,25 @@ namespace Crescendo {
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
-        SetupStyle();
+        // Style
+        ImGui::StyleColorsDark();
 
         // 3. Init ImGui for Vulkan
         ImGui_ImplSDL2_InitForVulkan(window);
+        
         ImGui_ImplVulkan_InitInfo init_info = {};
         init_info.Instance = instance;
         init_info.PhysicalDevice = physicalDevice;
         init_info.Device = device;
+        init_info.QueueFamily = 0;
         init_info.Queue = graphicsQueue;
+        init_info.PipelineCache = VK_NULL_HANDLE;
         init_info.DescriptorPool = imguiPool;
         init_info.MinImageCount = 2;
         init_info.ImageCount = imageCount;
-        init_info.PipelineInfoMain.RenderPass = renderPass; 
-        init_info.PipelineInfoMain.Subpass = 0;
-        init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-        
+        init_info.Allocator = nullptr;
+        init_info.CheckVkResultFn = nullptr;
+
         ImGui_ImplVulkan_Init(&init_info);
 
         // --- MANUAL FONT UPLOAD ---
@@ -96,149 +99,144 @@ namespace Crescendo {
         io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
 
         // 2. Upload using our helper
-        renderer->UploadTexture(pixels, width, height, VK_FORMAT_R8G8B8A8_UNORM);
+        VkImage fontImage;
+        VkDeviceMemory fontMemory;
         
-        // Create a local sampler for the font
+        renderer->UploadTexture(pixels, width, height, VK_FORMAT_R8G8B8A8_UNORM, fontImage, fontMemory);
+        
+        // 3. Create ImageView for the font
+        VkImageView fontView = renderer->createImageView(fontImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
+
+        // 4. Create Sampler
         VkSampler fontSampler;
         VkSamplerCreateInfo samplerInfo{};
         samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
         samplerInfo.magFilter = VK_FILTER_LINEAR;
         samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
         samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        vkCreateSampler(device, &samplerInfo, nullptr, &fontSampler);
-        
-        // Removed LogoImageView as its being purged from entire system. legacy feat
-        ImGui::GetIO().Fonts->TexID = (ImTextureID)ImGui_ImplVulkan_AddTexture(fontSampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        samplerInfo.minLod = -1000;
+        samplerInfo.maxLod = 1000;
+        samplerInfo.maxAnisotropy = 1.0f;
         
         if (vkCreateSampler(device, &samplerInfo, nullptr, &fontSampler) != VK_SUCCESS) {
             throw std::runtime_error("failed to create font sampler!");
         }
-
-        // 5. Register with ImGui (This makes the text visible)
-        io.Fonts->TexID = (ImTextureID)ImGui_ImplVulkan_AddTexture(fontSampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    }
-
-    void EditorUI::SetupStyle() {
-        ImGui::StyleColorsDark();
-        ImGuiStyle& style = ImGui::GetStyle();
-        style.Colors[ImGuiCol_WindowBg] = ImVec4(0.1f, 0.1f, 0.1f, 1.0f);
-        style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.2f, 0.2f, 0.2f, 1.0f);
+        
+        // 5. Register with ImGui
+        io.Fonts->TexID = (ImTextureID)ImGui_ImplVulkan_AddTexture(fontSampler, fontView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
 
     void EditorUI::Shutdown(VkDevice device) {
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplSDL2_Shutdown();
         ImGui::DestroyContext();
-
-        if (imguiPool != VK_NULL_HANDLE) {
-            vkDestroyDescriptorPool(device, imguiPool, nullptr);
-        }
-        
+        vkDestroyDescriptorPool(device, imguiPool, nullptr);
     }
 
-    void EditorUI::HandleInput(SDL_Event& event) {
-        ImGui_ImplSDL2_ProcessEvent(&event);
-    }
-
-    void EditorUI::Draw(VkCommandBuffer cmd, Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor) {
+    // ADD Prepare: Handles Logic & State Update (Call BEFORE RenderPass)
+    void EditorUI::Prepare(Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor) {
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
         ImGuizmo::BeginFrame();
 
+        // --- UI DEFINITION LOGIC ---
+        
+        // 1. Dockspace
         ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
 
-        if (ImGui::BeginMainMenuBar()) {
-            if (ImGui::BeginMenu("File")) {
-                if (ImGui::MenuItem("Exit")) { /* Handle Exit */ }
-                ImGui::EndMenu();
-            }
-            ImGui::EndMainMenuBar();
+        // 2. Viewport Window
+        ImGui::Begin("Viewport");
+        ImVec2 viewportPanelSize = ImGui::GetContentRegionAvail();
+        if (lastViewportSize.x != viewportPanelSize.x || lastViewportSize.y != viewportPanelSize.y) {
+            lastViewportSize = { viewportPanelSize.x, viewportPanelSize.y };
+        }
+        
+        // Safety Check: Only draw image if descriptor is valid
+        if (viewportDescriptor != VK_NULL_HANDLE) {
+            ImGui::Image((ImTextureID)viewportDescriptor, viewportPanelSize);
+        } else {
+            ImGui::Text("Viewport Texture Not Ready");
         }
 
-        // Viewport Window
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-        ImGui::Begin("Viewport");
-            
-            ImVec2 viewportSize = ImGui::GetContentRegionAvail();
-            if (viewportSize.x != lastViewportSize.x || viewportSize.y != lastViewportSize.y) {
-                lastViewportSize = { viewportSize.x, viewportSize.y };
-                // Here you could trigger a resize event for the Renderer if needed
-            }
+        // 3. Guizmos
+        if (selectedObjectIndex >= 0 && selectedObjectIndex < scene->entities.size()) {
+            ImGuizmo::SetOrthographic(false);
+            ImGuizmo::SetDrawlist();
+            ImGuizmo::SetRect(ImGui::GetWindowPos().x, ImGui::GetWindowPos().y, ImGui::GetWindowWidth(), ImGui::GetWindowHeight());
 
-            // Draw the texture we rendered in Pass 1
-            if (viewportDescriptor) {
-                ImGui::Image((ImTextureID)viewportDescriptor, viewportSize);
-            }
+            glm::mat4 view = camera.GetViewMatrix();
+            glm::mat4 proj = camera.GetProjectionMatrix(viewportPanelSize.x / viewportPanelSize.y);
+            proj[1][1] *= -1;
 
-            // Gizmos
-            if (selectedObjectIndex >= 0 && selectedObjectIndex < scene->entities.size()) {
-                ImGuizmo::SetOrthographic(false);
-                ImGuizmo::SetDrawlist();
-                ImGuizmo::SetRect(ImGui::GetWindowPos().x, ImGui::GetWindowPos().y, viewportSize.x, viewportSize.y);
-
-                glm::mat4 view = camera.GetViewMatrix();
-                glm::mat4 proj = camera.GetProjectionMatrix(viewportSize.x / viewportSize.y);
-                proj[1][1] *= -1;
-
-                CBaseEntity* ent = scene->entities[selectedObjectIndex];
+            CBaseEntity* ent = scene->entities[selectedObjectIndex];
+            if (ent) {
                 glm::mat4 model = glm::mat4(1.0f);
                 model = glm::translate(model, ent->origin);
-                model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1));
-                model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0,1,0));
-                model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
+                model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0, 0, 1));
+                model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0, 1, 0));
+                model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1, 0, 0));
                 model = glm::scale(model, ent->scale);
 
-                ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), 
-                    mCurrentGizmoOperation, mCurrentGizmoMode, glm::value_ptr(model));
-
-                if (ImGuizmo::IsUsing()) {
-                    float matrixTranslation[3], matrixRotation[3], matrixScale[3];
-                    ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(model), matrixTranslation, matrixRotation, matrixScale);
-                    ent->origin = glm::make_vec3(matrixTranslation);
-                    ent->angles = glm::make_vec3(matrixRotation);
-                    ent->scale = glm::make_vec3(matrixScale);
+                if (ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), mCurrentGizmoOperation, mCurrentGizmoMode, glm::value_ptr(model))) {
+                    glm::vec3 skew;
+                    glm::vec4 perspective;
+                    glm::quat rotation;
+                    glm::decompose(model, ent->scale, rotation, ent->origin, skew, perspective);
+                    ent->angles = glm::degrees(glm::eulerAngles(rotation));
                 }
             }
+        }
         ImGui::End();
-        ImGui::PopStyleVar();
 
-        // Hierarchy Window
-        ImGui::Begin("Hierarchy");
-        for (int i = 0; i < scene->entities.size(); i++) {
-            std::string label = scene->entities[i]->targetName;
-            if (label.empty()) label = "Entity " + std::to_string(i);
-            
-            if (ImGui::Selectable(label.c_str(), selectedObjectIndex == i)) {
+        // 4. Scene Outliner
+        ImGui::Begin("Scene Outliner");
+        for (size_t i = 0; i < scene->entities.size(); i++) {
+            CBaseEntity* ent = scene->entities[i];
+            if(!ent) continue;
+            std::string label = ent->targetName.empty() ? "Entity " + std::to_string(i) : ent->targetName;
+            if (ImGui::Selectable(label.c_str(), selectedObjectIndex == (int)i)) {
                 selectedObjectIndex = i;
             }
         }
         ImGui::End();
 
-        // Inspector Window
+        // 5. Inspector
         ImGui::Begin("Inspector");
-        if (selectedObjectIndex >= 0 && selectedObjectIndex < scene->entities.size()) {
+        if (selectedObjectIndex >= 0 && selectedObjectIndex < (int)scene->entities.size()) {
             CBaseEntity* ent = scene->entities[selectedObjectIndex];
-            ImGui::Text("Name: %s", ent->targetName.c_str());
-            ImGui::DragFloat3("Position", &ent->origin.x, 0.1f);
-            ImGui::DragFloat3("Rotation", &ent->angles.x, 0.5f);
-            ImGui::DragFloat3("Scale", &ent->scale.x, 0.1f);
-            
-            // Gizmo Controls
-            if (ImGui::RadioButton("Translate", mCurrentGizmoOperation == ImGuizmo::TRANSLATE)) mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
-            ImGui::SameLine();
-            if (ImGui::RadioButton("Rotate", mCurrentGizmoOperation == ImGuizmo::ROTATE)) mCurrentGizmoOperation = ImGuizmo::ROTATE;
-            ImGui::SameLine();
-            if (ImGui::RadioButton("Scale", mCurrentGizmoOperation == ImGuizmo::SCALE)) mCurrentGizmoOperation = ImGuizmo::SCALE;
+            if(ent) {
+                char buffer[256];
+                strncpy(buffer, ent->targetName.c_str(), sizeof(buffer));
+                if(ImGui::InputText("Name", buffer, sizeof(buffer))) ent->targetName = std::string(buffer);
+                ImGui::DragFloat3("Position", &ent->origin.x, 0.1f);
+                ImGui::DragFloat3("Rotation", &ent->angles.x, 0.5f);
+                ImGui::DragFloat3("Scale", &ent->scale.x, 0.1f);
+                if (ImGui::RadioButton("Translate", mCurrentGizmoOperation == ImGuizmo::TRANSLATE)) mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Rotate", mCurrentGizmoOperation == ImGuizmo::ROTATE)) mCurrentGizmoOperation = ImGuizmo::ROTATE;
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Scale", mCurrentGizmoOperation == ImGuizmo::SCALE)) mCurrentGizmoOperation = ImGuizmo::SCALE;
+            }
         }
         ImGui::End();
 
-        // Console Window
+        // 6. Console
         gameConsole.Draw("Console");
 
+        // End Frame Calculation
         ImGui::Render();
+    }
+
+    // ADD Render: Only Issues Draw Commands (Call INSIDE RenderPass)
+    void EditorUI::Render(VkCommandBuffer cmd) {
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), cmd);
+    }
+
+    void EditorUI::HandleInput(SDL_Event& event) {
+        ImGui_ImplSDL2_ProcessEvent(&event);
     }
 }

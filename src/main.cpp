@@ -10,16 +10,17 @@ int main(int argc, char* argv[]) {
 
     // Access the camera through the rendering server
     auto& camera = engine.renderingServer.mainCamera;
-    camera.SetPosition(glm::vec3(3.0f, 3.0f, 3.0f)); // Move back and up
-    camera.SetRotation(glm::vec3(-35.0f, 135.0f, 0.0f)); // Look down at the center
+    camera.SetPosition(glm::vec3(3.0f, 3.0f, 3.0f)); 
+    camera.SetRotation(glm::vec3(-35.0f, 135.0f, 0.0f)); 
 
-    // 1. Get the World (Scene) from the Renderer
-    // We use GetWorld() because Engine doesn't expose GetScene() directly
-    Crescendo::Scene* scene = (Crescendo::Scene*)engine.renderingServer.GetWorld();
+    // --- FIX START ---
+    // 1. Get the Scene directly from the Engine (It is a public member)
+    // Don't use renderingServer.GetWorld() as it likely points to garbage.
+    Crescendo::Scene* scene = &engine.scene;
 
-    // 2. Load the Duck
-    // FIX: Use the 'scene' pointer we just retrieved
+    // 2. Load the Duck into the Engine's scene
     engine.renderingServer.loadGLTF("assets/models/Crescenduck/CRESCENDUCK.gltf", scene);
+    // --- FIX END ---
     
     // 3. Find the Duck Entity
     CBaseEntity* duckEntity = nullptr;
@@ -39,13 +40,16 @@ int main(int argc, char* argv[]) {
                     std::cout << "[GAME] CRESCENDUCK FOUND! Preparing for launch." << std::endl;
                     break;
             }
-        }    
+        }
+    }
+
+    if (!duckEntity) {
+        std::cout << "[GAME] Warning: Crescenduck entity not found in GLTF." << std::endl;
     }
 
     std::cout << "Starting Simulation..." << std::endl;
-    
     engine.Run();
-    
+
     engine.Shutdown();
     return 0;
 }
