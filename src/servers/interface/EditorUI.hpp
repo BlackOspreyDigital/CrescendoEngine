@@ -29,10 +29,10 @@ namespace Crescendo {
         EditorUI();
         ~EditorUI();
 
-        void Initialize(RenderingServer* renderer, SDL_Window* window, VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue graphicsQueue, VkRenderPass renderPass, uint32_t imageCount);
+        // [FIX] Added queueFamilyIndex to arguments
+        void Initialize(RenderingServer* renderer, SDL_Window* window, VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue graphicsQueue, uint32_t queueFamilyIndex, VkRenderPass renderPass, uint32_t imageCount);
         void Shutdown(VkDevice device);
 
-        // [CHANGE] Split Draw into Prepare and Render
         void Prepare(Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor);
         void Render(VkCommandBuffer cmd);
         
@@ -55,14 +55,5 @@ namespace Crescendo {
         ImGuizmo::MODE mCurrentGizmoMode = ImGuizmo::WORLD;
         int selectedObjectIndex = -1;
         glm::vec3 cursor3DPosition = glm::vec3(0.0f);
-
-        // Node Editor State
-        bool showNodeEditor = false;
-        ImVec2 nodeGridOffset = {0.0f, 0.0f};
-        float nodeZoom = 1.0f;
-
-        // Internal Helpers
-        void SetupStyle();
-        // Removed CreateLogo() declaration
     };
 }

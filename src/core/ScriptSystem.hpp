@@ -94,6 +94,7 @@ namespace Crescendo {
         }
 
         // Keep the Car Updater for your main vehicle
+        // might consider dropping physics controllers and car logics till we fix the rendering pipeline and imgui refactor
         void UpdateCar(CarController& car, float dt, bool w, bool s, bool a, bool d) {
             sol::function updateFunc = lua["Update"];
             if (updateFunc.valid()) {

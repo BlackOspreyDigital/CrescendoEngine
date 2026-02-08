@@ -91,27 +91,30 @@ namespace Crescendo {
         return buffer;
     }
 
-    RenderingServer::RenderingServer()
-        : display_ref(nullptr),
+    RenderingServer::RenderingServer() : 
+        display_ref(nullptr),
+        window(nullptr),             // Initialize the new member
         currentFrame(0),
-        viewportDescriptorSet(VK_NULL_HANDLE),
         instance(VK_NULL_HANDLE),
-        physicalDevice(VK_NULL_HANDLE),
-        device(VK_NULL_HANDLE),
-        surface(VK_NULL_HANDLE),
+        // ... [Keep all your other initializers here] ...
+        commandPool(VK_NULL_HANDLE),
+
+        // MOVE THESE TO THE BOTTOM (matching the header file order)
         viewportImage(VK_NULL_HANDLE),
+        viewportImageMemory(VK_NULL_HANDLE),
         viewportImageView(VK_NULL_HANDLE),
         viewportSampler(VK_NULL_HANDLE),
-        textureImage(VK_NULL_HANDLE),
-        textureImageView(VK_NULL_HANDLE),
-        textureSampler(VK_NULL_HANDLE)
+        viewportFramebuffer(VK_NULL_HANDLE),
+        viewportRenderPass(VK_NULL_HANDLE),
+        viewportDescriptorSet(VK_NULL_HANDLE) // This must be last!
     {
-        // ensure the vector has size before trying to use it
-        // though resize() in initiialize() usually handles this
     }
 
+    // src/servers/rendering/RenderingServer.cpp
+
     bool RenderingServer::initialize(DisplayServer* display) {
-        display_ref = display;
+        this->display_ref = display;
+        this->window = display->get_window(); 
 
         std::cout << "[1/5] Initializing Core Vulkan..." << std::endl;
         if (!createInstance()) return false;
@@ -121,30 +124,93 @@ namespace Crescendo {
         if (!createLogicalDevice()) return false;
 
         std::cout << "[2/5] Setting up Command Infrastructure..." << std::endl;
-        if (!createCommandPool()) return false;
-        if (!createDescriptorSetLayout()) return false;
-        
-        std::cout << "[3/5] Creating SwapChain and Pipelines..." << std::endl;
         if (!createSwapChain()) return false;
         if (!createImageViews()) return false;
+        if (!createRenderPass()) return false;
+        if (!createCommandPool()) return false;
         if (!createDepthResources()) return false;
-        if (!createRenderPass()) return false; 
+        if (!createDescriptorSetLayout()) return false;
 
-        // 1. Initialize Interface FIRST (Sets up ImGui Context)
-        editorUI.Initialize(this, display->get_window(), instance, physicalDevice, device, graphicsQueue, renderPass, static_cast<uint32_t>(swapChainImages.size()));
+        // ---------------------------------------------------------
+        // STEP 3: UI, Fonts & Viewport
+        // ---------------------------------------------------------
+        QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
 
-        // 2. Create Viewport Resources SECOND
-        // This function now handles creating the Image, transitioning it, AND registering it with ImGui.
+        editorUI.Initialize(
+            this, 
+            this->window, 
+            instance, 
+            physicalDevice, 
+            device, 
+            graphicsQueue,
+            indices.graphicsFamily.value(),
+            renderPass, 
+            static_cast<uint32_t>(swapChainImages.size())
+        );
+
+        // [CRITICAL FIX] Manually Upload ImGui Fonts
+        // We allocate a temporary command buffer because modern ImGui doesn't do it internally.
+        {
+            VkCommandBufferAllocateInfo allocInfo{};
+            allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            allocInfo.commandPool = commandPool; // Uses your class member 'commandPool'
+            allocInfo.commandBufferCount = 1;
+        
+            VkCommandBuffer commandBuffer;
+            vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+        
+            VkCommandBufferBeginInfo beginInfo{};
+            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        
+            vkBeginCommandBuffer(commandBuffer, &beginInfo);
+        
+            // [FIX] Pass the command buffer here!
+            ImGui_ImplVulkan_CreateFontsTexture(commandBuffer);
+        
+            vkEndCommandBuffer(commandBuffer);
+        
+            VkSubmitInfo submitInfo{};
+            submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submitInfo.commandBufferCount = 1;
+            submitInfo.pCommandBuffers = &commandBuffer;
+        
+            vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
+            vkQueueWaitIdle(graphicsQueue);
+        
+            vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+            
+            // Tell ImGui the texture is on the GPU now
+            ImGui_ImplVulkan_DestroyFontUploadObjects(); 
+        }
+    
+        // 2. Create Viewport Resources...
         if (!createViewportResources()) return false;
 
-        // --- PIPELINES ---
+        // [FIX] REGISTER THE VIEWPORT TEXTURE WITH IMGUI HERE
+        // This creates the descriptor set that EditorUI::Prepare needs to draw the scene.
+        viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(
+            viewportSampler, 
+            viewportImageView, 
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        );
+
+        // ---------------------------------------------------------
+        // STEP 4: Pipelines
+        // ---------------------------------------------------------
         if (!createGraphicsPipeline()) return false;
         if (!createGridPipeline()) return false;
         if (!createWaterPipeline()) return false;        
         if (!createTransparentPipeline()) return false;
+
         if (!createFramebuffers()) return false;
-    
-        std::cout << "[4/5] Loading Assets (The Texture Stage)..." << std::endl;
+
+        // ---------------------------------------------------------
+        // STEP 5: Assets & Descriptors
+        // ---------------------------------------------------------
+        std::cout << "[4/5] Loading Assets..." << std::endl;
+
         if (!createTextureImage()) { std::cout << "!! Failed at TextureImage" << std::endl; return false; }
         if (!createTextureImageView()) { std::cout << "!! Failed at TextureImageView" << std::endl; return false; }
         if (!createTextureSampler()) { std::cout << "!! Failed at TextureSampler" << std::endl; return false; }
@@ -159,9 +225,9 @@ namespace Crescendo {
             textureBank[i] = defaultTex;
         }
 
-        if (!createDescriptorPool()) return false;
+        if (!createDescriptorPool()) return false; 
         if (!createDescriptorSets()) { std::cout << "!! Failed at DescriptorSets" << std::endl; return false; }
-        
+
         createProceduralGrid(); 
         createWaterMesh();
 
@@ -171,13 +237,19 @@ namespace Crescendo {
             this->waterTextureID = 0;
         }
 
+        // ---------------------------------------------------------
+        // STEP 7: Final Sync & Command Buffers
+        // ---------------------------------------------------------
+        // [FIX] REMOVED duplicate 'QueueFamilyIndices indices' definition here!
+        
         std::cout << "[5/5] Finalizing Synchronization & ImGui..." << std::endl;
-        if (!createCommandBuffers()) return false;
+
         if (!createSyncObjects()) return false;
-        
+        if (!createCommandBuffers()) return false;
+
         std::cout << ">>> ENGINE READY! <<<" << std::endl;
-        
         gameConsole.AddLog("[Render] Viewport resolution: %dx%d\n", swapChainExtent.width, swapChainExtent.height);
+
         return true;
     }
 
@@ -1751,6 +1823,7 @@ namespace Crescendo {
         // [Debug] Step 2: Prepare UI
         // std::cout << "[Step 2] Preparing UI..." << std::endl;
         editorUI.Prepare(scene, mainCamera, viewportDescriptorSet);
+        editorUI.Render(commandBuffers[currentFrame]);
 
         // [Debug] Step 3: Acquire Image
         uint32_t imageIndex;
@@ -1845,7 +1918,23 @@ namespace Crescendo {
         screenPassInfo.pClearValues = screenClearValues.data();
 
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &screenPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-            // [Debug] Step 6: Render UI
+            // DEBUG PRINT 1
+            std::cout << "[DEBUG] Pre-UI: Scene Ptr: " << scene << std::endl;
+            if (scene) std::cout << "[DEBUG] Entity Count: " << scene->entities.size() << std::endl;
+                
+            // DEBUG PRINT 2
+            std::cout << "[DEBUG] Viewport Descriptor: " << viewportDescriptorSet << std::endl;
+                
+            // Call Prepare
+            editorUI.Prepare(scene, mainCamera, viewportDescriptorSet);
+                
+            // DEBUG PRINT 3
+            std::cout << "[DEBUG] EditorUI Prepared. Calling Render..." << std::endl;
+                
+            editorUI.Render(commandBuffers[currentFrame]);
+                
+            // DEBUG PRINT 4
+            std::cout << "[DEBUG] EditorUI Rendered." << std::endl;
             // std::cout << "[Step 6] Rendering UI..." << std::endl;
             editorUI.Render(commandBuffers[currentFrame]);
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
@@ -2410,8 +2499,6 @@ namespace Crescendo {
        if (device != VK_NULL_HANDLE) {
            vkDeviceWaitIdle(device);
            
-           // --- 1. NEW: Editor Cleanup ---
-           // This handles ImGui, Fonts, and internal UI textures automatically.
            editorUI.Shutdown(device);
 
            // --- 2. RenderPass & Pipelines ---

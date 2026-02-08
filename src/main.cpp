@@ -16,6 +16,7 @@ int main(int argc, char* argv[]) {
     // --- FIX START ---
     // 1. Get the Scene directly from the Engine (It is a public member)
     // Don't use renderingServer.GetWorld() as it likely points to garbage.
+    // Delete the duck hardcode after testing the sdl imgui refactor 2-7-26
     Crescendo::Scene* scene = &engine.scene;
 
     // 2. Load the Duck into the Engine's scene

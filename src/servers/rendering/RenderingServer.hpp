@@ -56,9 +56,7 @@ namespace Crescendo {
 
     class RenderingServer {
     public:
-        void render(Scene* scene); // Make sure this takes Scene*
-        
-        
+        void render(Scene* scene); // ever since adding Scene* scene in the parenthesis its breaking the imgui logic and im not sure why.
         RenderingServer();
         bool initialize(DisplayServer* display);
         void shutdown();
@@ -91,9 +89,11 @@ namespace Crescendo {
         // changed 'std::string path' to 'std::string baseDir'
         void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene);
 
-        EditorUI editorUI;
-         
+        EditorUI editorUI;         
         DisplayServer* display_ref;
+
+        SDL_Window* window = nullptr;
+
         void setupUIDescriptors();
         
         static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
@@ -155,14 +155,11 @@ namespace Crescendo {
         VkSampler viewportSampler = VK_NULL_HANDLE;
         VkFramebuffer viewportFramebuffer = VK_NULL_HANDLE;
         VkRenderPass viewportRenderPass = VK_NULL_HANDLE;
-        VkDescriptorSet viewportDescriptorSet = VK_NULL_HANDLE; // Passed to EditorUI
-        
-
+        VkDescriptorSet viewportDescriptorSet = VK_NULL_HANDLE;
+    
         glm::vec3 modelPos = glm::vec3(0.0f);
         glm::vec3 modelRot = glm::vec3(90.0f, 0.0f, 0.0f);
         glm::vec3 modelScale = glm::vec3(1.0f);
-
-        
 
         VkPipeline gridPipeline = VK_NULL_HANDLE;
         bool createGridPipeline();
@@ -177,6 +174,8 @@ namespace Crescendo {
         float nodeZoom = 1.0f;                
         
         glm::vec2 lastViewportSize = {1280.0f, 720.0f}; 
+
+        // vulkan core
         bool createInstance();
         bool setupDebugMessenger();
         bool createSurface();
@@ -205,21 +204,21 @@ namespace Crescendo {
         bool createImGuiDescriptorPool();
         bool initImGui(SDL_Window* window);
         bool createViewportResources();
-        
         void updateUniformBuffer(uint32_t currentImage, Scene* scene);
+        void recreateSwapChain(SDL_Window* window);
+        void cleanupSwapChain();
+        // end of vulkan core
+
+        // loaders
+        void loadModel(const std::string& path);
+        void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir);
+        void createProceduralGrid();
 
         glm::vec3 sunDirection = glm::normalize(glm::vec3(1.0f, -3.0, -1.0));
         glm::vec3 sunColor = glm::vec3(1.0f, 0.95f, 0.8f);
         float sunIntensity = 1.2f;
 
-        void recreateSwapChain(SDL_Window* window);
-        void cleanupSwapChain();
-        void loadModel(const std::string& path);
-        void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir);
-        void createProceduralGrid();
-
-        
-        // ... (Console struct and other helpers remain same) ...
+        // Dev console logic
         struct Console{
             ImGuiTextBuffer     Buf;
             ImVector<int>       LineOffsets;

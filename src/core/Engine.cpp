@@ -5,14 +5,10 @@
 #include <SDL2/SDL.h>
 #include "core/ScriptSystem.hpp"
 
-// 1. Define the callback function (The logic that runs when Jolt crashes)
+// Jolt Callback
 static bool CustomAssertFailed(const char* inExpression, const char* inMessage, const char* inFile, unsigned int inLine) {
-    std::cerr << "\n!!! JOLT ASSERTION FAILED !!!\n";
-    std::cerr << "File: " << inFile << ":" << inLine << "\n";
-    std::cerr << "Expr: " << inExpression << "\n";
-    std::cerr << "Msg:  " << (inMessage ? inMessage : "N/A") << "\n";
-    std::cerr << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n" << std::endl;
-    return true; // Return true to trigger a breakpoint
+    std::cerr << "\n!!! JOLT ASSERTION FAILED !!!\n" << inFile << ":" << inLine << "\nExpr: " << inExpression << "\nMsg:  " << (inMessage ? inMessage : "N/A") << "\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n" << std::endl;
+    return true; 
 }
 
 namespace JPH {
@@ -28,25 +24,31 @@ namespace Crescendo {
         if (!displayServer.initialize(title, width, height)) return false;
         if (!renderingServer.initialize(&displayServer)) return false;
 
-        // 1. Initialize Scripting
         scriptSystem.Initialize();
         scriptSystem.LoadScript("assets/scripts/car_physics.lua");
 
-        // 2. Initialize Physics
         physicsServer.Initialize();
 
         isRunning = true;
         return true;
-
-        
     }
 
     void Engine::Run() {
+        std::cout << "[Engine] Entering Main Loop..." << std::endl;
         while (isRunning) {
+            // Checkpoint 1
+            // std::cout << "(1) Polling..." << std::endl;
             ProcessEvents();
+
+            // Checkpoint 2
+            // std::cout << "(2) Updating..." << std::endl;
             Update();
+
+            // Checkpoint 3
+            // std::cout << "(3) Rendering..." << std::endl;
             Render();
         }
+        Shutdown();
     }
 
     void Engine::ProcessEvents() {
@@ -65,16 +67,15 @@ namespace Crescendo {
         scriptSystem.UpdateCar(carController, dt, w, s, a, d);
         carController.SyncVisuals();
 
-        // --- UPDATED LOOP: Use 'this->scene' instead of renderingServer.gameWorld ---
-        for (auto* entity : scene.entities) {
-            if (entity && entity->hasScript) {
-                scriptSystem.RunEntityScript(entity, dt);
+        if (scene.entities.size() > 0) {
+            for (auto* entity : scene.entities) {
+                if (entity && entity->hasScript) {
+                    scriptSystem.RunEntityScript(entity, dt);
+                }
             }
+            // Physics Update
+            physicsServer.Update(dt, scene.entities); 
         }
-
-        // Update Physics using the new scene list
-        physicsServer.Update(dt, scene.entities); 
-        // -----------------------------------------------------------------------------
     }
 
     void Engine::Render() {
