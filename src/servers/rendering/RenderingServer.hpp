@@ -15,6 +15,7 @@
 #include "servers/camera/Camera.hpp"
 #include "scene/GameWorld.hpp"
 #include "scene/CarController.hpp"
+#include "servers/interface/EditorUI.hpp"
 
 
 namespace tinygltf {
@@ -24,6 +25,7 @@ namespace tinygltf {
 
 namespace Crescendo {
     class DisplayServer;
+    class Scene;
     
     struct TextureResource {
         VkImage image;
@@ -54,28 +56,43 @@ namespace Crescendo {
 
     class RenderingServer {
     public:
+        void render(Scene* scene); // Make sure this takes Scene*
+        
+        
         RenderingServer();
         bool initialize(DisplayServer* display);
-        void render();
         void shutdown();
 
         int acquireTexture(const std::string& path);
-
+        void UploadTexture(void* pixels, int width, int height, VkFormat format, VkImage& image, VkDeviceMemory& memory);
         GameWorld* GetWorld() { return &gameWorld; }
+
+        VkCommandBuffer beginSingleTimeCommands();
+        void endSingleTimeCommands(VkCommandBuffer commandBuffer);
+
         void loadMaterialsFromOBJ(const std::string& baseDir, const std::vector<tinyobj::material_t>& materials);
         const Material& getMaterial(uint32_t id) const { return materialBank[id]; }
+
+        VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
 
         // EDITOR AND GAME LOGIC
         bool isPlayMode = false;
         CarController* activeCar = nullptr;
 
-        // --- FIX 2: Declare the Load Function ---
-        void loadGLTF(const std::string& filepath);        
-
+        void loadGLTF(const std::string& filePath, Scene* scene);  
+        Camera mainCamera;
         GameWorld gameWorld;
         std::vector<MeshResource> meshes;
 
     private:
+        
+        // FIX: Update this signature to match your new logic
+        // changed 'int parentIndex' to 'CBaseEntity* parent'
+        // changed 'std::string path' to 'std::string baseDir'
+        void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene);
+
+        EditorUI editorUI;
+         
         DisplayServer* display_ref;
         void setupUIDescriptors();
         
@@ -132,25 +149,20 @@ namespace Crescendo {
         std::vector<VkSemaphore> renderFinishedSemaphores;
         std::vector<VkFence> inFlightFences;
 
-        VkDescriptorPool imguiPool = VK_NULL_HANDLE;
         VkImage viewportImage = VK_NULL_HANDLE;
         VkDeviceMemory viewportImageMemory = VK_NULL_HANDLE;
         VkImageView viewportImageView = VK_NULL_HANDLE;
         VkSampler viewportSampler = VK_NULL_HANDLE;
         VkFramebuffer viewportFramebuffer = VK_NULL_HANDLE;
-        VkDescriptorSet viewportDescriptorSet = VK_NULL_HANDLE;
         VkRenderPass viewportRenderPass = VK_NULL_HANDLE;
-
-        VkImage logoImage = VK_NULL_HANDLE;
-        VkDeviceMemory logoImageMemory = VK_NULL_HANDLE;
-        VkImageView logoImageView = VK_NULL_HANDLE;
-        VkDescriptorSet logoDescriptorSet = VK_NULL_HANDLE;
+        VkDescriptorSet viewportDescriptorSet = VK_NULL_HANDLE; // Passed to EditorUI
+        
 
         glm::vec3 modelPos = glm::vec3(0.0f);
         glm::vec3 modelRot = glm::vec3(90.0f, 0.0f, 0.0f);
         glm::vec3 modelScale = glm::vec3(1.0f);
 
-        Camera mainCamera;
+        
 
         VkPipeline gridPipeline = VK_NULL_HANDLE;
         bool createGridPipeline();
@@ -176,8 +188,7 @@ namespace Crescendo {
         bool createRenderPass();
         bool createDescriptorSetLayout();
         bool createGraphicsPipeline();
-        bool createFramebuffers();       
-        
+        bool createFramebuffers();
         bool createTextureImage();
         bool createTextureImageView();
         bool createTextureImage(const std::string& path, VkImage& image, VkDeviceMemory& memory);
@@ -185,31 +196,28 @@ namespace Crescendo {
         bool createTextureSampler();
         bool createDescriptorPool();
         bool createDescriptorSets();
-    
         bool createVertexBuffer(const std::vector<Vertex>& vertices, VkBuffer& buffer, VkDeviceMemory& memory);
         bool createIndexBuffer(const std::vector<uint32_t>& indices, VkBuffer& buffer, VkDeviceMemory& memory);
-        
         bool createCommandPool();
         bool createCommandBuffers();
         bool createSyncObjects();
         void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
-        
         bool createImGuiDescriptorPool();
         bool initImGui(SDL_Window* window);
         bool createViewportResources();
-        bool createViewportFramebuffer();
+        
+        void updateUniformBuffer(uint32_t currentImage, Scene* scene);
 
-        ImGuizmo::OPERATION mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
-        ImGuizmo::MODE mCurrentGizmoMode = ImGuizmo::WORLD;
-        glm::vec3 cursor3DPosition = glm::vec3(0.0f, 0.0f, 0.0f);
+        glm::vec3 sunDirection = glm::normalize(glm::vec3(1.0f, -3.0, -1.0));
+        glm::vec3 sunColor = glm::vec3(1.0f, 0.95f, 0.8f);
+        float sunIntensity = 1.2f;
 
         void recreateSwapChain(SDL_Window* window);
         void cleanupSwapChain();
-        
         void loadModel(const std::string& path);
-
         void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir);
         void createProceduralGrid();
+
         
         // ... (Console struct and other helpers remain same) ...
         struct Console{
@@ -324,10 +332,7 @@ namespace Crescendo {
         VkShaderModule createShaderModule(const std::vector<char>& code);
         void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory);
         void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory);
-        VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
         
-        VkCommandBuffer beginSingleTimeCommands();
-        void endSingleTimeCommands(VkCommandBuffer commandBuffer);
         void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
         void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
         

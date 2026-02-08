@@ -18,6 +18,17 @@ namespace Crescendo {
         float nearClip = 0.1f;
         float farClip = 2000.0f;
 
+        // Setters
+        void SetPosition(const glm::vec3& pos) {
+            // temp camera oribt system
+            target = pos;
+        }
+
+        void SetRotation(const glm::vec3& rot) {
+            pitch = rot.x;
+            yaw = rot.y;
+        }
+
         // Getters
         glm::vec3 GetPosition() {
             glm::vec3 pos;

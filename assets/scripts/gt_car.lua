@@ -1,5 +1,8 @@
--- Gran Turismo Style Car Controller
--- This runs every frame for the car entity
+-- gt_car.lua
+if not self.physicsCreated then
+    Physics.CreateCar(self, 1500.0, 600.0) -- Mass, Torque
+    self.physicsCreated = true 
+end
 
 -- Tuning Variables (You can change these while the game runs!)
 local gear_ratios = { 3.5, 2.6, 1.9, 1.4, 1.0 }

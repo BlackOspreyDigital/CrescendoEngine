@@ -4,6 +4,7 @@
 #include "servers/physics/PhysicsServer.hpp" 
 #include "core/ScriptSystem.hpp"
 #include "scene/CarController.hpp"
+#include "scene/Scene.hpp"
 
 namespace Crescendo {
     class Engine {
@@ -16,9 +17,12 @@ namespace Crescendo {
         void Shutdown();
 
         // PUBLIC MEMBERS so main.cpp can access them
+        Scene scene; // world manager 
+        
         DisplayServer displayServer;
         RenderingServer renderingServer;
         PhysicsServer physicsServer;
+
 
         // SYSTEMS
         ScriptSystem scriptSystem;

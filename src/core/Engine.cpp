@@ -37,6 +37,8 @@ namespace Crescendo {
 
         isRunning = true;
         return true;
+
+        
     }
 
     void Engine::Run() {
@@ -54,32 +56,29 @@ namespace Crescendo {
     void Engine::Update() {
         float dt = 1.0f / 60.0f; 
 
-        // --- 1. Player Car Logic (Global Script) ---
         const Uint8* state = SDL_GetKeyboardState(NULL);
         bool w = state[SDL_SCANCODE_W];
         bool s = state[SDL_SCANCODE_S];
         bool a = state[SDL_SCANCODE_A];
         bool d = state[SDL_SCANCODE_D];
 
-        // Note: We assume you still have 'car_physics.lua' defining a global Update()
         scriptSystem.UpdateCar(carController, dt, w, s, a, d);
         carController.SyncVisuals();
 
-        // --- 2. Generic Entity Logic (Per-Entity Scripts) ---
-        // Iterate over all entities in the game world
-        for (auto* entity : renderingServer.gameWorld.entityList) {
+        // --- UPDATED LOOP: Use 'this->scene' instead of renderingServer.gameWorld ---
+        for (auto* entity : scene.entities) {
             if (entity && entity->hasScript) {
-                // This runs the script attached to THIS specific entity
                 scriptSystem.RunEntityScript(entity, dt);
             }
         }
 
-        // --- 3. Physics Simulation ---
-        physicsServer.Update(dt, renderingServer.gameWorld.entityList); 
+        // Update Physics using the new scene list
+        physicsServer.Update(dt, scene.entities); 
+        // -----------------------------------------------------------------------------
     }
 
     void Engine::Render() {
-        renderingServer.render();
+        renderingServer.render(&this->scene);
     }
 
     void Engine::Shutdown() {

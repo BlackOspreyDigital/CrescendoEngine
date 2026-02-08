@@ -41,8 +41,8 @@ WATER_FRAG_SPV = assets/shaders/water_frag.spv
 
 # Source Files
 SOURCES = $(shell find src -name '*.cpp')
-SOURCES += $(shell find servers -name '*.cpp')
 
+# Dependencies
 SOURCES += deps/imgui/imgui.cpp \
            deps/imgui/imgui_draw.cpp \
            deps/imgui/imgui_widgets.cpp \
@@ -52,7 +52,7 @@ SOURCES += deps/imgui/imgui.cpp \
            deps/imgui/backends/imgui_impl_vulkan.cpp \
            deps/imgui/ImGuizmo.cpp
 
-# JOLT PHYSICS SOURCES (Compile directly)
+# Jolt Physics
 JOLT_SOURCES = $(shell find JoltPhysics/Jolt -name '*.cpp')
 SOURCES += $(JOLT_SOURCES)
 

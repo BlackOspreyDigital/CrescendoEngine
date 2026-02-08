@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include "servers/rendering/RenderingServer.hpp"
 #include "servers/display/DisplayServer.hpp"
+#include "scene/Scene.hpp"
 #include "Vertex.hpp"
 #include <algorithm>
 #include <SDL2/SDL_vulkan.h>
@@ -16,6 +17,8 @@
 #include <cstring> 
 #include <array>
 #include <chrono>
+#include "src/IO/Serializer.hpp"
+#include <glm/gtx/matrix_decompose.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/intersect.hpp>
@@ -108,16 +111,21 @@ namespace Crescendo {
         if (!createSwapChain()) return false;
         if (!createImageViews()) return false;
         if (!createDepthResources()) return false;
-        if (!createRenderPass()) return false;
+        if (!createRenderPass()) return false; // MAIN render pass (for screen)
+
+        // =========================================================
+        // CRITICAL SECTION: Viewport Refactor 
+        // =========================================================
+        
+        // Interface first
+        editorUI.Initialize(this, display->get_window(), instance, physicalDevice, device, graphicsQueue, renderPass, static_cast<uint32_t>(swapChainImages.size()));
+
+        // Viewport second
         if (!createViewportResources()) return false;
-        if (!createViewportFramebuffer()) return false;
         if (!createGraphicsPipeline()) return false;
         if (!createGridPipeline()) return false;
-        if (!createWaterPipeline()) return false;
-
-        
+        if (!createWaterPipeline()) return false;        
         if (!createTransparentPipeline()) return false;
-
         if (!createFramebuffers()) return false;
     
         std::cout << "[4/5] Loading Assets (The Texture Stage)..." << std::endl;
@@ -138,9 +146,7 @@ namespace Crescendo {
         if (!createDescriptorPool()) return false;
         if (!createDescriptorSets()) { std::cout << "!! Failed at DescriptorSets" << std::endl; return false; }
         
-        // --- CREATE INTERNAL ASSETS (MESHES ONLY) ---
         createProceduralGrid(); // Mesh Index 0
-
         createWaterMesh();
 
         this->waterTextureID = acquireTexture("assets/textures/water.png");
@@ -150,17 +156,10 @@ namespace Crescendo {
             this->waterTextureID = 0;
         }
 
-        loadGLTF("assets/models/car/cartest.gltf");
-        
-
         std::cout << "[5/5] Finalizing Synchronization & ImGui..." << std::endl;
         if (!createCommandBuffers()) return false;
         if (!createSyncObjects()) return false;
-        if (!createImGuiDescriptorPool()) return false;
-        if (!initImGui(display->get_window())) return false;
         
-        setupUIDescriptors();
-
         std::cout << ">>> ENGINE READY! <<<" << std::endl;
         
         gameConsole.AddLog("[Render] Viewport resolution: %dx%d\n", swapChainExtent.width, swapChainExtent.height);
@@ -352,17 +351,39 @@ namespace Crescendo {
         return true;
     }
 
-    void RenderingServer::setupUIDescriptors() {
-        // perma logo
-        createTextureImage("assets/textures/crescendologo.png", logoImage, logoImageMemory);
-        logoImageView = createTextureImageView(logoImage);
+    void RenderingServer::UploadTexture(void* pixels, int width, int height, VkFormat format, VkImage& image, VkDeviceMemory& memory) {
+        VkDeviceSize imageSize = width * height * 4;
+
+        VkBuffer stagingBuffer;
+        VkDeviceMemory stagingBufferMemory;
         
-        logoDescriptorSet = ImGui_ImplVulkan_AddTexture(
-            textureSampler,
-            logoImageView,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-        );
-    }
+        // 1. Create and Fill Staging Buffer
+        createBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 
+                    stagingBuffer, stagingBufferMemory);
+
+        void* data;
+        vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
+        memcpy(data, pixels, static_cast<size_t>(imageSize));
+        vkUnmapMemory(device, stagingBufferMemory);
+
+        // 2. Create GPU Image
+        createImage(width, height, format, VK_IMAGE_TILING_OPTIMAL, 
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
+
+        // 3. Copy Command
+        transitionImageLayout(image, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        copyBufferToImage(stagingBuffer, image, width, height);
+        transitionImageLayout(image, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        // --- THE FIX: WAIT FOR GPU TO FINISH ---
+        // If we don't wait, the next line frees memory the GPU is still reading!
+        vkQueueWaitIdle(graphicsQueue); 
+
+        vkDestroyBuffer(device, stagingBuffer, nullptr);
+        vkFreeMemory(device, stagingBufferMemory, nullptr); // This is where the crash was happening
+    }   
 
     bool RenderingServer::createTextureImage() {
         SDL_Surface* surface = IMG_Load("assets/textures/default.png");
@@ -1434,6 +1455,10 @@ namespace Crescendo {
         std::cout << ">>> Imported & Spawned: " << newMesh.name << std::endl;
     } 
 
+    // --------------------------------------------------------------------
+    // GLTF Loading & Handling 
+    // --------------------------------------------------------------------
+
     // --- 1. URI HELPER (Handles spaces in filenames) ---
     std::string decodeUri(const std::string& uri) {
         std::string result;
@@ -1450,9 +1475,11 @@ namespace Crescendo {
         return result;
     }
 
-    void RenderingServer::processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir) {
+    // --- REVERTED TO YOUR ORIGINAL LOGIC (With Scene* fix) ---
+    void RenderingServer::processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene) {
         
-        CBaseEntity* newEnt = GetWorld()->CreateEntity("prop_dynamic");
+        // ADAPTATION: Used 'scene' instead of 'GetWorld()' since we passed it in
+        CBaseEntity* newEnt = scene->CreateEntity("prop_static"); 
         newEnt->targetName = node.name; 
 
         if (parent) {
@@ -1481,6 +1508,7 @@ namespace Crescendo {
                 const float* texBuffer = nullptr;
                 size_t vertexCount = 0;
 
+                // ATTRIBUTE EXTRACTION
                 if (primitive.attributes.find("POSITION") != primitive.attributes.end()) {
                     const tinygltf::Accessor& accessor = model.accessors[primitive.attributes.at("POSITION")];
                     const tinygltf::BufferView& view = model.bufferViews[accessor.bufferView];
@@ -1498,6 +1526,7 @@ namespace Crescendo {
                     texBuffer = reinterpret_cast<const float*>(&model.buffers[view.buffer].data[accessor.byteOffset + view.byteOffset]);
                 }
 
+                // VERTEX PACKING
                 for (size_t i = 0; i < vertexCount; i++) {
                     Vertex v{};
                     v.pos = glm::vec3(positionBuffer[i * 3], positionBuffer[i * 3 + 1], positionBuffer[i * 3 + 2]);
@@ -1507,6 +1536,7 @@ namespace Crescendo {
                     vertices.push_back(v);
                 }
 
+                // INDEX EXTRACTION
                 if (primitive.indices >= 0) {
                     const tinygltf::Accessor& accessor = model.accessors[primitive.indices];
                     const tinygltf::BufferView& view = model.bufferViews[accessor.bufferView];
@@ -1520,21 +1550,22 @@ namespace Crescendo {
                     }
                 }
                 
+                // MESH RESOURCE CREATION
                 MeshResource newMeshResource;
                 newMeshResource.name = node.name.empty() ? "GLTF_Mesh" : node.name;
                 newMeshResource.indexCount = indices.size();
 
+                // CALL EXISTING RENDERER HELPERS
                 createVertexBuffer(vertices, newMeshResource.vertexBuffer, newMeshResource.vertexBufferMemory);
                 createIndexBuffer(indices, newMeshResource.indexBuffer, newMeshResource.indexBufferMemory);
 
                 meshes.push_back(newMeshResource);
                 newEnt->modelIndex = meshes.size() - 1;
 
-                // --- NEW: MATERIAL & TEXTURE LOADING LOGIC ---
+                // MATERIAL & TEXTURE LOGIC
                 if (primitive.material >= 0) {
                     tinygltf::Material& mat = model.materials[primitive.material];
 
-                    // 1. Get PBR Parameters
                     newEnt->roughness = (float)mat.pbrMetallicRoughness.roughnessFactor;
                     newEnt->metallic = (float)mat.pbrMetallicRoughness.metallicFactor;
                     
@@ -1546,35 +1577,24 @@ namespace Crescendo {
                         );
                     }
 
-                    // 2. Get Texture (Albedo)
                     int texIndex = mat.pbrMetallicRoughness.baseColorTexture.index;
                     if (texIndex >= 0) {
                         tinygltf::Texture& tex = model.textures[texIndex];
                         if (tex.source >= 0) {
                             tinygltf::Image& img = model.images[tex.source];
-                            
                             if (!img.uri.empty()) {
-                                // FIX 1: Decode the URI (convert %20 to space)
                                 std::string decodedUri = decodeUri(img.uri);
-                                
-                                // Construct full path
                                 std::string fullPath = baseDir + decodedUri;
-                                
-                                // Load it
                                 int loadedID = acquireTexture(fullPath);
 
-                                // FIX 2: Safety Check (Prevent Segfault)
                                 if (loadedID == -1) {
-                                    std::cout << "[GLTF] Warning: Failed to load " << fullPath << ". Using default." << std::endl;
-                                    newEnt->textureID = 0; // Fallback to default white/grass texture
+                                    newEnt->textureID = 0; 
                                 } else {
                                     newEnt->textureID = loadedID;
-                                    std::cout << "[GLTF] Assigned Texture: " << fullPath << " (ID: " << loadedID << ")" << std::endl;
                                 }
                             }
                         }
                     } else {
-                        // No texture defined in GLTF, use default white
                         newEnt->textureID = 0; 
                     }
                 }
@@ -1582,11 +1602,12 @@ namespace Crescendo {
         }
 
         for (int childIndex : node.children) {
-            processGLTFNode(model, model.nodes[childIndex], newEnt, baseDir);
+            processGLTFNode(model, model.nodes[childIndex], newEnt, baseDir, scene);
         }
     }
     
-    void RenderingServer::loadGLTF(const std::string& filePath) {
+    // --- MAIN LOADER ---
+    void RenderingServer::loadGLTF(const std::string& filePath, Scene* scene) {
         tinygltf::Model model;
         tinygltf::TinyGLTF loader;
         std::string err;
@@ -1607,18 +1628,17 @@ namespace Crescendo {
             return;
         }
 
-        // Calculate Base Directory 
         std::string baseDir = "";
         size_t lastSlash = filePath.find_last_of("/\\");
         if (lastSlash != std::string::npos) {
             baseDir = filePath.substr(0, lastSlash + 1);
         }
-      
-        const tinygltf::Scene& scene = model.scenes[model.defaultScene > -1 ? model.defaultScene : 0];
+        
+        const tinygltf::Scene& gltfScene = model.scenes[model.defaultScene > -1 ? model.defaultScene : 0];
 
-        for (int nodeIndex : scene.nodes) {
-            // Pass baseDir to the helper
-            processGLTFNode(model, model.nodes[nodeIndex], nullptr, baseDir);
+        for (int nodeIndex : gltfScene.nodes) {
+            // Pass scene to the helper
+            processGLTFNode(model, model.nodes[nodeIndex], nullptr, baseDir, scene);
         }
         
         std::cout << "Successfully loaded GLTF Scene!" << std::endl;
@@ -1690,128 +1710,81 @@ namespace Crescendo {
         return true;
     }
 
-    void RenderingServer::render() {
-        static bool showAboutVisual = false;
-        // 1. Sync
+    void RenderingServer::updateUniformBuffer(uint32_t currentImage, Scene* scene) {
+        // We handle aspect ratio in render() now, so this can be empty for now
+    }
+
+    void RenderingServer::render(Scene* scene) {
+        // [1. Synchronization & Acquire Image]
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-
+        
         uint32_t imageIndex;
-        VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, 
-            imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
-
-        if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-            recreateSwapChain(display_ref->get_window());
-            return;
-        }
-
+        VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+        
+        if (result == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapChain(display_ref->get_window()); return; }
+        
         vkResetFences(device, 1, &inFlightFences[currentFrame]);
-        vkResetCommandBuffer(commandBuffers[currentFrame], 0);  
+        vkResetCommandBuffer(commandBuffers[currentFrame], 0);
+
+        // 1. Calculate Matrices
+        float aspectRatio = 1920.0f / 1080.0f; // Viewport/Window Aspect Ratio
+        glm::mat4 view = mainCamera.GetViewMatrix();
+        glm::mat4 proj = mainCamera.GetProjectionMatrix(aspectRatio); 
+        proj[1][1] *= -1; // Y- Vulkan Flip
+
+        // [Update Uniforms]
+        updateUniformBuffer(currentFrame, scene);
 
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-
-        if (vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo) != VK_SUCCESS) {
-            throw std::runtime_error("failed to begin recording command buffer!");
-        }
+        vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo);
 
         // =========================================================
-        // PASS 1: OFFSCREEN RENDER SET
+        // PASS 1: OFFSCREEN (Render The 3D World)
         // =========================================================
         VkRenderPassBeginInfo viewportPassInfo{};
         viewportPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         viewportPassInfo.renderPass = viewportRenderPass;
         viewportPassInfo.framebuffer = viewportFramebuffer;
-        viewportPassInfo.renderArea.offset = {0, 0};
-        viewportPassInfo.renderArea.extent = swapChainExtent;
+        viewportPassInfo.renderArea.extent = {1920, 1080};
+        
+        // --- FIX: ARRAY SIZE 1, ONLY ACCESS [0] ---
+        std::array<VkClearValue, 2> viewportClearValues{}; 
+        viewportClearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};
+        viewportClearValues[1].depthStencil = {1.0f, 0}; // If this exists, array MUST be 2.
 
-        std::array<VkClearValue, 2> clearValues{};
-        clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}}; 
-        clearValues[1].depthStencil = {1.0f, 0};
-        viewportPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-        viewportPassInfo.pClearValues = clearValues.data();
+        viewportPassInfo.clearValueCount = 1; // Only clear the first one (Color)
+        viewportPassInfo.pClearValues = viewportClearValues.data();
 
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &viewportPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-            
-            // 1. Calculate Aspect Ratio based on the IMGUI WINDOW, not the swapchain
-            // We grab the size of the "Editor Viewport" window we create later
-            // For now, we can calculate the ratio based on the actual render area we plan to use
-            float aspectRatio = lastViewportSize.x / lastViewportSize.y;
-                        
-            glm::mat4 view = mainCamera.GetViewMatrix();
-            glm::mat4 proj = mainCamera.GetProjectionMatrix(aspectRatio);
 
-            mainCamera.fov = 65.0f;
-            // Sky Matrix
-            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
-            glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view)); 
-            MeshPushConstants skyConstants;
-            skyConstants.renderMatrix = glm::inverse(proj * viewNoTrans); 
-            vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
-                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
-                0, sizeof(MeshPushConstants), &skyConstants);
-            
-            vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
-
-            // Object Rendering Setup
+            // --- 1A. OPAQUE OBJECTS (The Logic from the missing 'drawFrame') ---
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-            VkPipeline currentPipeline = VK_NULL_HANDLE;
 
-            // --- SUN SETUP (Add this block) ---
-            glm::vec3 sunDirection = glm::normalize(glm::vec3(0.5f, 1.0f, 0.5f)); 
-            glm::vec3 sunColor = glm::vec3(1.0f, 1.0f, 1.0f);
-            float sunIntensity = 1.0f;
+            for (auto* ent : scene->entities) {
+                // Skip transparent objects (Water) for now
+                if (!ent || ent->targetName.find("water") != std::string::npos) continue; 
+                if (ent->modelIndex < 0 || ent->modelIndex >= meshes.size()) continue;
 
-            // Find the Sun Entity
-            for (auto* sunEnt : gameWorld.entityList) {
-                if (sunEnt && sunEnt->targetName == "Sun") {
-                    glm::mat4 rotMat = glm::mat4(1.0f);
-                    rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.x), glm::vec3(1, 0, 0));
-                    rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.y), glm::vec3(0, 1, 0));
-                    rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.z), glm::vec3(0, 0, 1));
-                    sunDirection = glm::normalize(glm::vec3(rotMat * glm::vec4(0.0f, 0.0f, 1.0f, 0.0f)));
-                    break; 
-                }
-            }
-            // ----------------------------------
-
-            // --- PASS 1: OPAQUE OBJECTS --- 
-            for (auto* ent : gameWorld.entityList) {
-                if (!ent || !ent->visible) continue;
-                // SKIP WATER IN THIS PASS
-                if (ent->className == "prop_water") continue; 
-
-                // 1. Select Pipeline
-                VkPipeline targetPipeline = graphicsPipeline;
-                if (ent->className == "prop_grid") targetPipeline = gridPipeline;
-                
-                // 2. Bind Pipeline
-                if (currentPipeline != targetPipeline) {
-                    vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, targetPipeline);
-                    currentPipeline = targetPipeline;
-                }
-
-                // 3. Draw Mesh
-                MeshResource& mesh = meshes[ent->modelIndex]; 
+                MeshResource& mesh = meshes[ent->modelIndex];
                 VkBuffer vBuffers[] = { mesh.vertexBuffer };
                 VkDeviceSize offsets[] = { 0 };
                 vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
+                // Calc Matrices
                 glm::mat4 model = glm::mat4(1.0f);
                 model = glm::translate(model, ent->origin);
                 model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1));
                 model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0,1,0));
                 model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
                 model = glm::scale(model, ent->scale);
-                
+
                 MeshPushConstants pushConst{};
                 pushConst.renderMatrix = proj * view * model;
                 pushConst.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
-                
-                float texID = (float)ent->textureID;
-                pushConst.pbrParams = glm::vec4(texID, ent->roughness, ent->metallic, 0.0f);
-                
+                // Default PBR params (TextureID, Roughness, Metallic, Time)
+                pushConst.pbrParams = glm::vec4((float)ent->textureID, ent->roughness, ent->metallic, 0.0f);
                 pushConst.sunDir = glm::vec4(sunDirection, sunIntensity);
                 pushConst.sunColor = glm::vec4(sunColor, 1.0f);
 
@@ -1819,21 +1792,15 @@ namespace Crescendo {
                 vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
             }
 
-            // --- PASS 2: TRANSPARENT OBJECTS (Draw these LAST) ---
-            for (auto* ent : gameWorld.entityList) {
-                if (!ent || !ent->visible) continue;
-                // ONLY DRAW WATER IN THIS PASS
-                if (ent->className != "prop_water") continue;
+            // --- 1B. TRANSPARENT OBJECTS (Water/Glass) ---
+            // Crucial: This must be INSIDE Pass 1 to appear in the texture!
+            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipeline);
 
-                // 1. Force Water Pipeline
-                VkPipeline targetPipeline = waterPipeline;
-                if (currentPipeline != targetPipeline) {
-                    vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, targetPipeline);
-                    currentPipeline = targetPipeline;
-                }
+            for (auto* ent : scene->entities) {
+                // Only draw Water
+                if (!ent || ent->targetName.find("water") == std::string::npos) continue;
 
-                // 2. Draw Mesh
-                MeshResource& mesh = meshes[ent->modelIndex]; 
+                MeshResource& mesh = meshes[ent->modelIndex];
                 VkBuffer vBuffers[] = { mesh.vertexBuffer };
                 VkDeviceSize offsets[] = { 0 };
                 vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
@@ -1841,19 +1808,14 @@ namespace Crescendo {
 
                 glm::mat4 model = glm::mat4(1.0f);
                 model = glm::translate(model, ent->origin);
-                model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1));
-                model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0,1,0));
-                model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
-                model = glm::scale(model, ent->scale);
-                
+                model = glm::scale(model, ent->scale); // Water usually doesn't rotate, but you can add it if needed
+
                 MeshPushConstants pushConst{};
                 pushConst.renderMatrix = proj * view * model;
                 pushConst.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
-                
-                // Water Specific Params
+
                 float time = SDL_GetTicks() / 1000.0f;
                 pushConst.pbrParams = glm::vec4((float)this->waterTextureID, 0.1f, 0.8f, time); 
-
                 pushConst.sunDir = glm::vec4(sunDirection, sunIntensity);
                 pushConst.sunColor = glm::vec4(sunColor, 1.0f);
 
@@ -1861,512 +1823,37 @@ namespace Crescendo {
                 vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
             }
 
+        vkCmdEndRenderPass(commandBuffers[currentFrame]); // End Pass 1 (Texture is now painted)
 
-        vkCmdEndRenderPass(commandBuffers[currentFrame]);
 
         // =========================================================
-        // PASS 2: ONSCREEN RENDER SET
+        // PASS 2: ONSCREEN (Render The UI)
         // =========================================================
         VkRenderPassBeginInfo screenPassInfo{};
         screenPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         screenPassInfo.renderPass = renderPass;
         screenPassInfo.framebuffer = swapChainFramebuffers[imageIndex];
-        screenPassInfo.renderArea.offset = {0, 0};
         screenPassInfo.renderArea.extent = swapChainExtent;
         
-        screenPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
-        screenPassInfo.pClearValues = clearValues.data();
+        std::array<VkClearValue, 2> screenClearValues{};
+        screenClearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        screenClearValues[1].depthStencil = {1.0f, 0};
+        screenPassInfo.clearValueCount = 2;
+        screenPassInfo.pClearValues = screenClearValues.data();
 
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &screenPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-            ImGui_ImplVulkan_NewFrame();
-            ImGui_ImplSDL2_NewFrame();
-            ImGui::NewFrame();
-            ImGuizmo::BeginFrame();
-
-            ImGuiIO& io = ImGui::GetIO();
-            
-            // Input Handling
-            if (!io.WantCaptureKeyboard) {
-            
-            if (io.MouseWheel != 0.0f) mainCamera.Zoom(io.MouseWheel * 0.5f);
-            if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
-                mainCamera.Rotate(io.MouseDelta.x * 0.5f, io.MouseDelta.y * 0.5f);
-            }
-            
-            // new wasd temp setup will move to a controller for viewport editor and game mode
-            float moveSpeed = 5.0 * io.DeltaTime; // speed
-            if (ImGui::IsKeyDown(ImGuiKey_LeftShift)) moveSpeed *= 2.0f; // sprint
-
-            float yawRad = glm::radians(mainCamera.yaw);
-
-            glm::vec3 forwardDir = -glm::vec3(cos(yawRad), sin(yawRad), 0.0f);
-            glm::vec3 rightDir   = -glm::vec3(sin(yawRad), -cos(yawRad), 0.0f);
-
-            if (ImGui::IsKeyDown(ImGuiKey_W)) mainCamera.target += forwardDir * moveSpeed;
-            if (ImGui::IsKeyDown(ImGuiKey_S)) mainCamera.target -= forwardDir * moveSpeed;
-            if (ImGui::IsKeyDown(ImGuiKey_D)) mainCamera.target += rightDir * moveSpeed;
-            if (ImGui::IsKeyDown(ImGuiKey_A)) mainCamera.target -= rightDir * moveSpeed;
-                
-            }   
-
-            ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport());
-            
-            
-            if (ImGui::BeginMainMenuBar()) {
-                if (ImGui::BeginMenu("File")) {
-
-                    if (ImGui::MenuItem("Import Model")) {
-                        // 1. Update Filter to include GLTF and GLB
-                        auto selection = pfd::open_file("Select a file", ".",
-                            { "All Models", "*.obj *.gltf *.glb",
-                            "Wavefront OBJ", "*.obj",
-                            "GLTF 2.0", "*.gltf *.glb"
-                            }).result();
-
-                    if (!selection.empty()) {
-                        std::string path = selection[0];
-                        std::cout << "Importing: " << path << std::endl;
-
-                        // 2. Check Extension and call correct loader
-                        if (path.find(".obj") != std::string::npos) {
-                             
-                             loadModel(path); 
-                        } 
-                        else if (path.find(".gltf") != std::string::npos || path.find(".glb") != std::string::npos) {
-                             
-                             loadGLTF(path);
-                        } 
-                    }
-                } 
-
-                ImGui::Separator();
-
-                    if (ImGui::MenuItem("Exit", "Alt+F4")) {
-                        SDL_Event quit_event;
-                        quit_event.type = SDL_QUIT;
-                        SDL_PushEvent(&quit_event);
-                    }
-                    ImGui::EndMenu();
-                }
-
-                if (ImGui::BeginMenu("Edit")) {
-                    if (ImGui::MenuItem("Delete Selected", "Del")) {
-                        if (selectedObjectIndex >= 0) {
-                            
-                            gameWorld.RemoveEntity(selectedObjectIndex);
-                            selectedObjectIndex = -1;
-                        }
-                    }
-                    ImGui::EndMenu();
-                }
-
-                if (ImGui::BeginMenu("Window")) {
-
-                    if (ImGui::MenuItem("Shader Editor", nullptr, showNodeEditor)) {
-                        showNodeEditor = !showNodeEditor;
-                    }
-                    ImGui::EndMenu();
-                }
-                
-                if (ImGui::BeginMenu("Help")) {
-                    if (ImGui::MenuItem("About Crescendo")) {
-                        showAboutVisual = true;
-                    }
-                    ImGui::EndMenu();
-                }
-                ImGui::EndMainMenuBar();
-            }
-
-            if (showAboutVisual) {
-
-                ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-                ImGui::SetNextWindowSize(ImVec2(450, 550));
-
-                ImGui::OpenPopup ("Crescendo Splash");
-
-                if (ImGui::BeginPopupModal("Crescendo Splash", &showAboutVisual, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoTitleBar)) {
-                    // logo and texcentered logic here
-                    float windowWidth = ImGui::GetWindowSize().x;
-                    ImGui::SetCursorPosX((windowWidth - 256) * 0.5f);
-
-                    ImGui::Image((ImTextureID)logoDescriptorSet, ImVec2(256, 256));
-
-                    ImGui::Spacing();
-                    ImGui::Separator();
-                    ImGui::Spacing();
-
-                    TextCentered("CRESCENDO ENGINE");
-                    if (ImGui::Button("Close", ImVec2(ImGui::GetContentRegionAvail().x, 0)) || 
-                        ImGui::IsKeyPressed(ImGuiKey_Escape) || 
-                        (ImGui::IsMouseClicked(0) && !ImGui::IsWindowHovered())) {
-                        showAboutVisual = false;
-                        ImGui::CloseCurrentPopup();
-                    }
-                    ImGui::EndPopup();
-                }
-            }
-            // 1. Viewport Window
-            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-
-            ImGuiWindowFlags viewportFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
-
-            ImGui::Begin("Editor Viewport", nullptr, viewportFlags);
-
-                ImVec2 viewportSize = ImGui::GetContentRegionAvail();
-                ImVec2 viewportPos = ImGui::GetCursorScreenPos(); 
-                lastViewportSize = glm::vec2(viewportSize.x, viewportSize.y);
-
-                // 1. Draw Scene Image (Background)
-                // This sets the Z-Order "Base" for this window.
-                ImGui::Image((ImTextureID)viewportDescriptorSet, viewportSize); 
-
-                // 2. Setup Gizmo Context
-                // Only run gizmo logic if we have a valid viewport
-                if (viewportSize.x > 0 && viewportSize.y > 0) {
-                    
-                    ImGuizmo::SetOrthographic(false);
-                    // FIX: Use WindowDrawList to ensure it layers EXACTLY on top of the Image in this specific window
-                    ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList()); 
-                    ImGuizmo::SetRect(viewportPos.x, viewportPos.y, viewportSize.x, viewportSize.y);
-
-                    // 3. Construct "Clean" Matrices for Gizmo
-                    // We generate a standard OpenGL matrix (Y-Up, Z -1 to 1) just for the UI.
-                    // This guarantees ImGuizmo's internal raycasts work, regardless of your engine's Vulkan specificities.
-                    
-                    glm::mat4 gizmoView = mainCamera.GetViewMatrix();
-                    
-                    float aspect = viewportSize.x / viewportSize.y;
-                    float fov = glm::radians(mainCamera.fov);
-                    float zNear = 0.1f;
-                    float zFar = 100.0f;
-
-                    // GLM default is OpenGL compatible (Right Handed, -1 to 1 Depth)
-                    // We do NOT flip Y here, because glm::perspective is already Y-Up compatible for ImGuizmo.
-                    glm::mat4 gizmoProj = glm::perspective(fov, aspect, zNear, zFar);
-                    
-                    // 4. Draw Gizmo
-                    if (selectedObjectIndex >= 0 && selectedObjectIndex < (int)gameWorld.entityList.size()) {
-                        CBaseEntity* ent = gameWorld.entityList[selectedObjectIndex];
-                        ImGui::PushID((void*)ent);
-
-                        glm::mat4 model = glm::mat4(1.0f);
-                        model = glm::translate(model, ent->origin);
-                        model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0, 0, 1));
-                        model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0, 1, 0));
-                        model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1, 0, 0));
-                        model = glm::scale(model, ent->scale);
-
-                        ImGuizmo::Manipulate(&gizmoView[0][0], &gizmoProj[0][0], mCurrentGizmoOperation, mCurrentGizmoMode, &model[0][0]);
-
-                        if (ImGuizmo::IsUsing()) {
-                            float newTranslation[3], newRotation[3], newScale[3];
-                            ImGuizmo::DecomposeMatrixToComponents(&model[0][0], newTranslation, newRotation, newScale);
-                            ent->origin = glm::make_vec3(newTranslation);
-                            ent->angles = glm::make_vec3(newRotation);
-                            ent->scale  = glm::make_vec3(newScale);
-                            
-                        }
-
-                        ImGui::PopID();
-                    }
-
-                    // 5. Input Logic
-                    // Allow input only if Window is hovered and Gizmo is NOT hovered
-                    bool isWindowHovered = ImGui::IsWindowHovered();
-                    bool isGizmoOver = ImGuizmo::IsOver();
-
-                    if (isWindowHovered && !isGizmoOver && !ImGuizmo::IsUsing()) {
-                        // 3D Cursor (Shift + Click)
-                        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && io.KeyShift) {
-                            ImVec2 mousePos = ImGui::GetMousePos(); 
-                            ImVec2 localMousePos = ImVec2(mousePos.x - viewportPos.x, mousePos.y - viewportPos.y);
-
-                            // Note: We use the SAME gizmoProj for raycasting to stay consistent!
-                            Ray ray = ScreenToWorldRay(glm::vec2(localMousePos.x, localMousePos.y), 
-                                    glm::vec2(viewportSize.x, viewportSize.y), gizmoView, gizmoProj);
-                        
-                            glm::vec3 hitPoint;
-                            if (RayPlaneIntersection(ray, glm::vec3(0.0f, 0.0f, 1.0f), 0.0f, hitPoint)) {
-                                cursor3DPosition = hitPoint; 
-                            }
-                        }
-
-                        // Camera Rotate (Right Click)
-                        if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-                            mainCamera.Rotate(io.MouseDelta.x * 0.5f, io.MouseDelta.y * 0.5f);
-                        }
-                    }
-
-                    // Draw 3D Cursor Visual
-                    glm::mat4 cursorModel = glm::mat4(1.0f);
-                    cursorModel = glm::translate(cursorModel, cursor3DPosition); 
-                    cursorModel = glm::scale(cursorModel, glm::vec3(0.5f));      
-                    ImGuizmo::DrawCubes(&gizmoView[0][0], &gizmoProj[0][0], &cursorModel[0][0], 1);
-                }
-
-            ImGui::End();
-            ImGui::PopStyleVar();
-            ImGui::PopStyleColor();
-
-            // Hierarchy
-            ImGui::Begin("Scene Hierarchy");
-                    // NEW Loop
-            for (size_t i = 0; i < gameWorld.entityList.size(); i++) {
-                CBaseEntity* ent = gameWorld.entityList[i];
-                if (!ent) continue;
-
-                ImGui::PushID(static_cast<int>(i)); 
-
-                // Use 'targetName' or 'className'
-                if (ImGui::Selectable(ent->targetName.c_str(), selectedObjectIndex == (int)i)) {
-                    selectedObjectIndex = (int)i;
-                }
-
-                if (ImGui::BeginPopupContextItem()) {
-                    if (ImGui::MenuItem("Delete Entity")) {
-                        // NEW: Use RemoveEntity
-                        gameWorld.RemoveEntity(i);
-                        selectedObjectIndex = -1;
-                        i--; 
-                    }
-                    ImGui::EndPopup();
-                }
-
-                ImGui::PopID(); 
-            }
-            ImGui::End();
-                
-            // 2. Inspector Window
- 
-            ImGui::Begin("Inspector");
-                
-                // --- 1. NEW: GIZMO CONTROLS ---
-                ImGui::Text("Gizmo Settings");
-                
-                // Operation Toggles (Translate / Rotate / Scale)
-                if (ImGui::RadioButton("Translate", mCurrentGizmoOperation == ImGuizmo::TRANSLATE)) 
-                    mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
-                ImGui::SameLine();
-                if (ImGui::RadioButton("Rotate", mCurrentGizmoOperation == ImGuizmo::ROTATE)) 
-                    mCurrentGizmoOperation = ImGuizmo::ROTATE;
-                ImGui::SameLine();
-                if (ImGui::RadioButton("Scale", mCurrentGizmoOperation == ImGuizmo::SCALE)) 
-                    mCurrentGizmoOperation = ImGuizmo::SCALE;
-
-                // Mode Toggles (Local vs World)
-                if (mCurrentGizmoOperation != ImGuizmo::SCALE) {
-                    if (ImGui::RadioButton("Local", mCurrentGizmoMode == ImGuizmo::LOCAL))
-                        mCurrentGizmoMode = ImGuizmo::LOCAL;
-                    ImGui::SameLine();
-                    if (ImGui::RadioButton("World", mCurrentGizmoMode == ImGuizmo::WORLD))
-                        mCurrentGizmoMode = ImGuizmo::WORLD;
-                }
-
-                ImGui::Separator();
-
-                // --- 2. PERFORMANCE (Kept Safe!) ---
-                static float fpsUpdateTimer = 0.0f;
-                static float fpsLastValue = 0.0f;
-                static float msLastValue = 0.0f;
-
-                fpsUpdateTimer += ImGui::GetIO().DeltaTime;
-
-                if (fpsUpdateTimer > 0.5f) {
-                    fpsLastValue = ImGui::GetIO().Framerate;
-                    msLastValue = 1000.0f / fpsLastValue;
-                    fpsUpdateTimer = 0.0f;
-                }
-
-                ImGui::Text("Performance: %.3f ms/frame (%.1f FPS)", msLastValue, fpsLastValue);
-                ImGui::Separator();
-
-                // --- 3. CAMERA STATS (Kept Safe!) ---
-                ImGui::Text("Camera");
-                if (ImGui::Button("Reset Camera")) {
-                    mainCamera.yaw = -90.0f;
-                    mainCamera.pitch = 0.0f;
-                    mainCamera.target = glm::vec3(0.0f, 0.0f, 0.0f);
-                    mainCamera.distance = 4.0f;
-                }
-
-                ImGui::Text("Position: %.2f, %.2f, %.2f", mainCamera.target.x, mainCamera.target.y, mainCamera.target.z);
-                ImGui::Text("Yaw: %.2f  Pitch: %.2f", mainCamera.yaw, mainCamera.pitch);
-
-            ImGui::End();
-
-            // --- 4. SHADER NODE EDITOR (Upgraded) ---
-            if (showNodeEditor) {
-                ImGui::SetNextWindowSize(ImVec2(800, 400), ImGuiCond_FirstUseEver);
-                
-                // NoScrollbar flag is important so we can handle panning ourselves!
-                if (ImGui::Begin("Shader Editor", &showNodeEditor, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
-                    
-                    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-                    ImVec2 winPos = ImGui::GetCursorScreenPos();
-                    ImVec2 winSize = ImGui::GetContentRegionAvail();
-                    ImGuiIO& io = ImGui::GetIO();
-
-                    // --- A. NAVIGATION LOGIC ---
-                    // Only handle input if mouse is inside this window
-                    if (ImGui::IsWindowHovered()) {
-                        
-                        // Pan: Middle Mouse Button (2)
-                        if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle)) {
-                            nodeGridOffset.x += io.MouseDelta.x;
-                            nodeGridOffset.y += io.MouseDelta.y;
-                        }
-
-                        // Zoom: Mouse Wheel
-                        if (io.MouseWheel != 0.0f) {
-                            float zoomSpeed = 0.1f;
-                            nodeZoom += io.MouseWheel * zoomSpeed;
-                            
-                            // Clamp zoom to reasonable limits (20% to 300%)
-                            if (nodeZoom < 0.2f) nodeZoom = 0.2f;
-                            if (nodeZoom > 3.0f) nodeZoom = 3.0f;
-                        }
-                    }
-
-                    // --- B. DRAW INFINITE GRID ---
-                    // Grid spacing scales with zoom
-                    float gridSize = 64.0f * nodeZoom; 
-                    ImU32 gridColor = IM_COL32(200, 200, 200, 40);
-
-                    // We use fmodf to wrap the grid lines so they look infinite while panning
-                    for (float x = fmodf(nodeGridOffset.x, gridSize); x < winSize.x; x += gridSize)
-                        draw_list->AddLine(ImVec2(winPos.x + x, winPos.y), ImVec2(winPos.x + x, winPos.y + winSize.y), gridColor);
-                    
-                    for (float y = fmodf(nodeGridOffset.y, gridSize); y < winSize.y; y += gridSize)
-                        draw_list->AddLine(ImVec2(winPos.x, winPos.y + y), ImVec2(winPos.x + winSize.x, winPos.y + y), gridColor);
-
-                    // --- C. NODE RENDERING ---
-                    if (selectedObjectIndex >= 0 && selectedObjectIndex < (int)gameWorld.entityList.size()) {
-                        CBaseEntity* ent = gameWorld.entityList[selectedObjectIndex];
-
-                        // 1. Calculate Screen Position
-                        // Formula: Origin + Pan + (LocalPos * Zoom)
-                        ImVec2 nodeLocalPos = ImVec2(100, 100); // Logical position in graph
-                        ImVec2 nodeScreenPos = ImVec2(
-                            winPos.x + nodeGridOffset.x + (nodeLocalPos.x * nodeZoom),
-                            winPos.y + nodeGridOffset.y + (nodeLocalPos.y * nodeZoom)
-                        );
-                        
-                        // 2. Calculate Size
-                        ImVec2 nodeSize = ImVec2(280 * nodeZoom, 320 * nodeZoom);
-
-                        // Place the cursor exactly where the node should be
-                        ImGui::SetCursorScreenPos(nodeScreenPos);
-
-                        // 3. Draw Node Container
-                        ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(40, 40, 40, 240));
-                        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 5.0f * nodeZoom); // Rounding scales too!
-                        
-                        ImGui::BeginChild("Node_Principled", nodeSize, true, ImGuiWindowFlags_NoScrollbar);
-                            
-                            // MAGIC: Scale all text/widgets inside this child window
-                            ImGui::SetWindowFontScale(nodeZoom);
-
-                            // Header
-                            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 255, 255, 255));
-                            ImGui::Text("Principled BSDF");
-                            ImGui::PopStyleColor();
-                            ImGui::Separator();
-                            ImGui::Spacing();
-                            
-                            // Widgets
-                            ImGui::Text("Base Color");
-                            // Scale color picker preview
-                            ImGui::ColorEdit3("##Color", &ent->albedoColor[0], ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel);
-
-                            ImGui::Text("Metallic");
-                            ImGui::SetNextItemWidth(150 * nodeZoom); // Scale slider width
-                            ImGui::SliderFloat("##Met", &ent->metallic, 0.0f, 1.0f, "%.2f");
-
-                            ImGui::Text("Roughness");
-                            ImGui::SetNextItemWidth(150 * nodeZoom);
-                            ImGui::SliderFloat("##Rough", &ent->roughness, 0.01f, 1.0f, "%.2f");
-
-                            ImGui::Spacing();
-                            ImGui::Separator();
-                            
-                            // Output Pin Visual
-                            float footerY = ImGui::GetWindowHeight() - (30 * nodeZoom);
-                            ImGui::SetCursorPosY(footerY);
-                            ImGui::Text("Output");
-                            ImGui::SameLine();
-                            
-                            // Store Output Pin Position for Wire Drawing
-                            ImVec2 pinScreenPos = ImGui::GetCursorScreenPos();
-                            pinScreenPos.x += (20 * nodeZoom); // Offset to right of text
-                            pinScreenPos.y += (10 * nodeZoom); // Center vertically
-
-                        ImGui::EndChild();
-                        ImGui::PopStyleVar();
-                        ImGui::PopStyleColor();
-
-                        // --- D. WIRE RENDERING ---
-                        // Calculate "Material Output" node position dynamically too
-                        ImVec2 outNodeLocal = ImVec2(500, 300);
-                        ImVec2 outNodeScreen = ImVec2(
-                            winPos.x + nodeGridOffset.x + (outNodeLocal.x * nodeZoom),
-                            winPos.y + nodeGridOffset.y + (outNodeLocal.y * nodeZoom)
-                        );
-
-                        // Draw Curve
-                        // P1 = Start, P4 = End. P2/P3 = Control Points
-                        ImVec2 p1 = pinScreenPos; 
-                        ImVec2 p4 = ImVec2(outNodeScreen.x, outNodeScreen.y + (30 * nodeZoom));
-                        
-                        // Tangents scale with zoom to look natural
-                        float tangentDist = 80.0f * nodeZoom; 
-                        ImVec2 p2 = ImVec2(p1.x + tangentDist, p1.y);
-                        ImVec2 p3 = ImVec2(p4.x - tangentDist, p4.y);
-
-                        draw_list->AddBezierCubic(p1, p2, p3, p4, IM_COL32(180, 180, 180, 255), 3.0f * nodeZoom);
-
-                        // --- E. OUTPUT NODE ---
-                        ImGui::SetCursorScreenPos(outNodeScreen);
-                        ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(20, 20, 20, 240));
-                        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 5.0f * nodeZoom);
-                        
-                        ImGui::BeginChild("Node_Output", ImVec2(150 * nodeZoom, 80 * nodeZoom), true);
-                            ImGui::SetWindowFontScale(nodeZoom);
-                            ImGui::Text("Material Output");
-                            ImGui::Separator();
-                            ImGui::Text(" Surface");
-                        ImGui::EndChild();
-                        ImGui::PopStyleVar();
-                        ImGui::PopStyleColor();
-
-                    } else {
-                        // Center text relative to pan
-                        ImVec2 textPos = ImVec2(
-                            winPos.x + (winSize.x * 0.5f) + nodeGridOffset.x, 
-                            winPos.y + (winSize.y * 0.5f) + nodeGridOffset.y
-                        );
-                        ImGui::SetCursorScreenPos(textPos);
-                        ImGui::TextDisabled("Select an object...");
-                    }
-
-                    // F. DEBUG INFO (Overlay)
-                    ImGui::SetCursorScreenPos(ImVec2(winPos.x + 10, winPos.y + winSize.y - 30));
-                    ImGui::TextColored(ImVec4(1,1,0,1), "Zoom: %.2fx | Pan: %.1f, %.1f", nodeZoom, nodeGridOffset.x, nodeGridOffset.y);
-                }
-                ImGui::End();
-            }
-
-            ImGui::Render();
-            ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffers[currentFrame]);
+            // Draw the Editor (which displays the Pass 1 texture)
+            editorUI.Draw(commandBuffers[currentFrame], scene, mainCamera, viewportDescriptorSet);
 
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
 
-        if (vkEndCommandBuffer(commandBuffers[currentFrame]) != VK_SUCCESS) {
-            throw std::runtime_error("failed to record command buffer!");
-        }
 
-        // Submit and Present
+        // =========================================================
+        // [3. End & Submit]
+        // =========================================================
+        vkEndCommandBuffer(commandBuffers[currentFrame]);
+
         VkSubmitInfo submitInfo{};
         submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
@@ -2394,8 +1881,7 @@ namespace Crescendo {
 
         vkQueuePresentKHR(presentQueue, &presentInfo);
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-
-    }
+        }
 
     void RenderingServer::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory) {
         VkImageCreateInfo imageInfo{};
@@ -2718,91 +2204,94 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createViewportResources() {
-        // 1. Create the Image (Must be COLOR_ATTACHMENT and SAMPLED for ImGui)
-        createImage(swapChainExtent.width, swapChainExtent.height, 
-            swapChainImageFormat, // Must match the RenderPass format
-            VK_IMAGE_TILING_OPTIMAL, 
+        // --- 1. Create Image (The Texture) ---
+        createImage(1920, 1080, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, 
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 
-            viewportImage, viewportImageMemory);
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, viewportImage, viewportImageMemory);
 
-        // 2. Create the Image View
-        viewportImageView = createImageView(viewportImage, swapChainImageFormat, VK_IMAGE_ASPECT_COLOR_BIT);
-        
-        // 3. Create a custom sampler for the viewport (Optional, but good for resizing)
-        // You are currently using 'textureSampler' for the viewport descriptor, 
-        // which works, but usually a viewport gets its own Clamp-to-Edge sampler.
-        if (viewportImageView == VK_NULL_HANDLE) return false;
+        // --- 2. Create ImageView ---
+        viewportImageView = createImageView(viewportImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
 
-        return true;
-    }
+        // --- 3. Create Sampler ---
+        VkSamplerCreateInfo samplerInfo{};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.maxAnisotropy = 1.0f;
+        if (vkCreateSampler(device, &samplerInfo, nullptr, &viewportSampler) != VK_SUCCESS) return false;
 
-    bool RenderingServer::createViewportFramebuffer() {
-        // We need a separate RenderPass that prepares the image for SHADERS (ImGui), not PRESENTATION
+        // --- 4. Register with ImGui ---
+        viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(viewportSampler, viewportImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        // --- 5. Create Render Pass (Offscreen) ---
         VkAttachmentDescription colorAttachment{};
-        colorAttachment.format = swapChainImageFormat;
+        colorAttachment.format = VK_FORMAT_R8G8B8A8_SRGB;
         colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
         colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        // CRITICAL: Ends in SHADER_READ_ONLY so ImGui can sample it
-        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; 
+        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // Ready for ImGui
 
         VkAttachmentReference colorAttachmentRef{};
         colorAttachmentRef.attachment = 0;
         colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-        // Reuse the depth attachment logic
-        VkAttachmentDescription depthAttachment{};
-        depthAttachment.format = VK_FORMAT_D32_SFLOAT;
-        depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-        VkAttachmentReference depthAttachmentRef{};
-        depthAttachmentRef.attachment = 1;
-        depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
         VkSubpassDescription subpass{};
         subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         subpass.colorAttachmentCount = 1;
         subpass.pColorAttachments = &colorAttachmentRef;
-        subpass.pDepthStencilAttachment = &depthAttachmentRef;
 
-        std::array<VkAttachmentDescription, 2> attachments = {colorAttachment, depthAttachment};
+        std::array<VkSubpassDependency, 2> dependencies;
+        dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[0].dstSubpass = 0;
+        dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+        dependencies[1].srcSubpass = 0;
+        dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
         VkRenderPassCreateInfo renderPassInfo{};
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-        renderPassInfo.pAttachments = attachments.data();
+        renderPassInfo.attachmentCount = 1;
+        renderPassInfo.pAttachments = &colorAttachment;
         renderPassInfo.subpassCount = 1;
         renderPassInfo.pSubpasses = &subpass;
+        renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
+        renderPassInfo.pDependencies = dependencies.data();
 
-        // Create a specific RenderPass for the Viewport
-        // Note: You'll need to add 'viewportRenderPass' to your .hpp file!
         if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &viewportRenderPass) != VK_SUCCESS) return false;
 
-        // Create the Framebuffer linking the Viewport Image and Depth Image
-        std::array<VkImageView, 2> fbAttachments = {
-            viewportImageView,
-            depthImageView
-        };
-
+        // --- 6. Create Framebuffer ---
+        VkImageView attachments[] = { viewportImageView };
         VkFramebufferCreateInfo framebufferInfo{};
         framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         framebufferInfo.renderPass = viewportRenderPass;
-        framebufferInfo.attachmentCount = static_cast<uint32_t>(fbAttachments.size());
-        framebufferInfo.pAttachments = fbAttachments.data();
-        framebufferInfo.width = swapChainExtent.width;
-        framebufferInfo.height = swapChainExtent.height;
+        framebufferInfo.attachmentCount = 1;
+        framebufferInfo.pAttachments = attachments;
+        framebufferInfo.width = 1920;
+        framebufferInfo.height = 1080;
         framebufferInfo.layers = 1;
 
-        return vkCreateFramebuffer(device, &framebufferInfo, nullptr, &viewportFramebuffer) == VK_SUCCESS;
+        if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &viewportFramebuffer) != VK_SUCCESS) return false;
+
+        return true;
     }
+
+    
 
     void SetCrescendoEditorStyle() {
         ImGuiStyle& style = ImGui::GetStyle();
@@ -2867,70 +2356,6 @@ namespace Crescendo {
         style.PopupRounding  = 5.0f;
     }
 
-    bool RenderingServer::initImGui(SDL_Window* window) {
-        IMGUI_CHECKVERSION();
-        ImGui::CreateContext();
-        ImGuiIO& io = ImGui::GetIO();
-        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-
-        ImGui::StyleColorsDark();
-        SetCrescendoEditorStyle();
-
-        // 1. Initialize SDL2 Platform Backend 
-        if (!ImGui_ImplSDL2_InitForVulkan(window)) {
-            return false;
-        }
-
-        // 2. Initialize Vulkan Renderer Backend
-        ImGui_ImplVulkan_InitInfo init_info = {};
-        init_info.Instance = instance;
-        init_info.PhysicalDevice = physicalDevice;
-        init_info.Device = device;
-        init_info.Queue = graphicsQueue;
-        init_info.DescriptorPool = imguiPool;
-        init_info.MinImageCount = 2;
-        init_info.ImageCount = static_cast<uint32_t>(swapChainImages.size());
-        init_info.PipelineInfoMain.RenderPass = renderPass; 
-        init_info.PipelineInfoMain.Subpass = 0;
-        init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT; 
-
-        if (!ImGui_ImplVulkan_Init(&init_info)) {
-            return false;
-        }
-        
-        // Add your viewport texture
-        viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(
-            textureSampler, 
-            viewportImageView, // Live Viewport
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-        );
-
-        return true;
-    }
-
-    bool RenderingServer::createImGuiDescriptorPool() {
-        VkDescriptorPoolSize pool_sizes[] = {
-            { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
-            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
-            { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000 },
-            { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000 },
-            { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000 },
-            { VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000 },
-            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000 },
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000 },
-            { VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000 }
-        };
-
-        VkDescriptorPoolCreateInfo pool_info = {};
-        pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-        pool_info.maxSets = 1000;
-        pool_info.poolSizeCount = static_cast <uint32_t>(std::size(pool_sizes));
-        pool_info.pPoolSizes = pool_sizes;
-
-        return vkCreateDescriptorPool(device, &pool_info, nullptr, &imguiPool) == VK_SUCCESS;
-    }
-
     void RenderingServer::recreateSwapChain(SDL_Window* window) {
         vkDeviceWaitIdle(device);
         cleanupSwapChain();
@@ -2965,111 +2390,99 @@ namespace Crescendo {
     }
 
     void RenderingServer::shutdown() {
-        if (device != VK_NULL_HANDLE) {
-            vkDeviceWaitIdle(device);
-            
-            if (logoImageView != VK_NULL_HANDLE) {
-                vkDestroyImageView(device, logoImageView, nullptr);
-                logoImageView = VK_NULL_HANDLE;
-            }
-            if (logoImage != VK_NULL_HANDLE) {
-                vkDestroyImage(device, logoImage, nullptr);
-                logoImage = VK_NULL_HANDLE;
-            }
-            if (logoImageMemory != VK_NULL_HANDLE) {
-                vkFreeMemory(device, logoImageMemory, nullptr);
-                logoImageMemory = VK_NULL_HANDLE;
-            }
+       if (device != VK_NULL_HANDLE) {
+           vkDeviceWaitIdle(device);
+           
+           // --- 1. NEW: Editor Cleanup ---
+           // This handles ImGui, Fonts, and internal UI textures automatically.
+           editorUI.Shutdown(device);
 
-            vkDestroyPipeline(device, skyPipeline, nullptr);
-            // 1. ImGui Cleanup
-    
-            ImGui_ImplVulkan_Shutdown();
-            ImGui_ImplSDL2_Shutdown();
-            ImGui::DestroyContext();
-            
-            if (imguiPool != VK_NULL_HANDLE) {
-                vkDestroyDescriptorPool(device, imguiPool, nullptr);
-            }
+           // --- 2. RenderPass & Pipelines ---
+           if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, skyPipeline, nullptr);
+           if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, graphicsPipeline, nullptr);
+           if (gridPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, gridPipeline, nullptr);
+           if (transparentPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, transparentPipeline, nullptr);
+           if (waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, waterPipeline, nullptr);
 
-            // 2. RenderPass & Pipeline (The core of the black screen / layout issues)
-            if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, graphicsPipeline, nullptr);
-            if (gridPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, gridPipeline, nullptr);
-            if (transparentPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, transparentPipeline, nullptr);
-            if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-            if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
-            if (viewportRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, viewportRenderPass, nullptr);
+           if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+           
+           if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
+           
+           // KEEP: We still own the viewport render pass
+           if (viewportRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, viewportRenderPass, nullptr);
 
-            // 3. Mesh Resources
-            //if (vertexBuffer != VK_NULL_HANDLE) vkDestroyBuffer(device, vertexBuffer, nullptr);
-                for (auto& mesh : meshes) {
-                if (mesh.vertexBuffer != VK_NULL_HANDLE) {
-                    vkDestroyBuffer(device, mesh.vertexBuffer, nullptr);
-                    mesh.vertexBuffer = VK_NULL_HANDLE; // Mark as deleted
-                }
-                if (mesh.vertexBufferMemory != VK_NULL_HANDLE) {
-                    vkFreeMemory(device, mesh.vertexBufferMemory, nullptr);
-                    mesh.vertexBufferMemory = VK_NULL_HANDLE;
-                }
-                if (mesh.indexBuffer != VK_NULL_HANDLE) {
-                    vkDestroyBuffer(device, mesh.indexBuffer, nullptr);
-                    mesh.indexBuffer = VK_NULL_HANDLE;
-                }
-                if (mesh.indexBufferMemory != VK_NULL_HANDLE) {
-                    vkFreeMemory(device, mesh.indexBufferMemory, nullptr);
-                    mesh.indexBufferMemory = VK_NULL_HANDLE;
-                }
-            }
-            meshes.clear(); 
-            gameWorld.Clear();
+           // --- 3. Mesh Resources ---
+           for (auto& mesh : meshes) {
+               if (mesh.vertexBuffer != VK_NULL_HANDLE) {
+                   vkDestroyBuffer(device, mesh.vertexBuffer, nullptr);
+                   mesh.vertexBuffer = VK_NULL_HANDLE; 
+               }
+               if (mesh.vertexBufferMemory != VK_NULL_HANDLE) {
+                   vkFreeMemory(device, mesh.vertexBufferMemory, nullptr);
+                   mesh.vertexBufferMemory = VK_NULL_HANDLE;
+               }
+               if (mesh.indexBuffer != VK_NULL_HANDLE) {
+                   vkDestroyBuffer(device, mesh.indexBuffer, nullptr);
+                   mesh.indexBuffer = VK_NULL_HANDLE;
+               }
+               if (mesh.indexBufferMemory != VK_NULL_HANDLE) {
+                   vkFreeMemory(device, mesh.indexBufferMemory, nullptr);
+                   mesh.indexBufferMemory = VK_NULL_HANDLE;
+               }
+           }
+           meshes.clear(); 
+           
+           // If you still have GameWorld defined in header, keep this. 
+           // If you moved fully to Scene*, you can remove it.
+           gameWorld.Clear(); 
 
-            // 4. Texture Assets
-            for (const auto& tex : textureBank) {
-                if (tex.image != VK_NULL_HANDLE && tex.image != textureImage) {
-                    vkDestroyImageView(device, tex.view, nullptr);
-                    vkDestroyImage(device, tex.image, nullptr);
-                    vkFreeMemory(device, tex.memory, nullptr);
-                }
-            }
-            textureBank.clear();
-            textureMap.clear();
+           // --- 4. Texture Assets ---
+           for (const auto& tex : textureBank) {
+               if (tex.image != VK_NULL_HANDLE && tex.image != textureImage) {
+                   vkDestroyImageView(device, tex.view, nullptr);
+                   vkDestroyImage(device, tex.image, nullptr);
+                   vkFreeMemory(device, tex.memory, nullptr);
+               }
+           }
+           textureBank.clear();
+           textureMap.clear();
 
-            if (textureImageView != VK_NULL_HANDLE) vkDestroyImageView(device, textureImageView, nullptr);
-            if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(device, textureSampler, nullptr);
-            if (textureImage != VK_NULL_HANDLE) vkDestroyImage(device, textureImage, nullptr);
-            if (textureImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, textureImageMemory, nullptr);
+           if (textureImageView != VK_NULL_HANDLE) vkDestroyImageView(device, textureImageView, nullptr);
+           if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(device, textureSampler, nullptr);
+           if (textureImage != VK_NULL_HANDLE) vkDestroyImage(device, textureImage, nullptr);
+           if (textureImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, textureImageMemory, nullptr);
 
-            // 5. Descriptors
-            if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-            if (descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+           // --- 5. Descriptors ---
+           if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+           if (descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool, nullptr);
 
-            // 6. Viewport & Swapchain
-            cleanupSwapChain(); 
-            if (viewportImageView != VK_NULL_HANDLE) vkDestroyImageView(device, viewportImageView, nullptr);
-            if (viewportSampler != VK_NULL_HANDLE) vkDestroySampler(device, viewportSampler, nullptr);
-            if (viewportImage != VK_NULL_HANDLE) vkDestroyImage(device, viewportImage, nullptr);
-            if (viewportImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, viewportImageMemory, nullptr);
-
-            // 7. Sync Objects
-            for (size_t i = 0; i < imageAvailableSemaphores.size(); i++) { 
-                vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
-                vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
-            }
-            for (size_t i = 0; i < inFlightFences.size(); i++) {
-                vkDestroyFence(device, inFlightFences[i], nullptr);
+           // --- 6. Viewport & Swapchain ---
+           cleanupSwapChain(); 
+           if (viewportImageView != VK_NULL_HANDLE) vkDestroyImageView(device, viewportImageView, nullptr);
+           if (viewportSampler != VK_NULL_HANDLE) vkDestroySampler(device, viewportSampler, nullptr);
+           if (viewportImage != VK_NULL_HANDLE) vkDestroyImage(device, viewportImage, nullptr);
+           if (viewportImageMemory != VK_NULL_HANDLE) {
+               vkFreeMemory(device, viewportImageMemory, nullptr);
+               viewportImageMemory = VK_NULL_HANDLE; // Reset to avoid double free
             }
 
-            // 8. Command Infrastructure (This frees all Command Buffers automatically)
-            if (commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, commandPool, nullptr);
+           // --- 7. Sync Objects ---
+           for (size_t i = 0; i < imageAvailableSemaphores.size(); i++) { 
+               vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
+               vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
+           }
+           for (size_t i = 0; i < inFlightFences.size(); i++) {
+               vkDestroyFence(device, inFlightFences[i], nullptr);
+           }
 
-            vkDestroyDevice(device, nullptr);
-            device = VK_NULL_HANDLE;
-        }
+           // --- 8. Command Infrastructure ---
+           if (commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, commandPool, nullptr);
 
-        // Instance level cleanup
-        if (surface != VK_NULL_HANDLE) vkDestroySurfaceKHR(instance, surface, nullptr);
-        if (instance != VK_NULL_HANDLE) vkDestroyInstance(instance, nullptr);
+           vkDestroyDevice(device, nullptr);
+           device = VK_NULL_HANDLE;
+       }
 
-        // Implement a world manager to remove world building from render stack.
+       if (surface != VK_NULL_HANDLE) vkDestroySurfaceKHR(instance, surface, nullptr);
+       if (instance != VK_NULL_HANDLE) vkDestroyInstance(instance, nullptr);
     }
 }

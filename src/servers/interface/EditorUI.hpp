@@ -1,0 +1,66 @@
+#pragma once
+
+#include <vulkan/vulkan.h>
+#include <SDL2/SDL.h>
+#include <imgui.h>
+#include "deps/imgui/ImGuizmo.h"
+#include <glm/glm.hpp>
+#include <vector>
+#include <string>
+
+namespace Crescendo {
+    class RenderingServer;
+    class Scene;
+    class Camera;
+
+    struct Console {
+        ImGuiTextBuffer Buf;
+        ImVector<int> LineOffsets;
+        bool AutoScroll = true;
+        bool ScrollToBottom = false;
+
+        void Clear() { Buf.clear(); LineOffsets.clear(); LineOffsets.push_back(0); }
+        void AddLog(const char* fmt, ...);
+        void Draw(const char* title, bool* p_open = nullptr);
+    };
+
+    class EditorUI {
+    public:
+        EditorUI();
+        ~EditorUI();
+
+        void Initialize(RenderingServer* renderer, SDL_Window* window, VkInstance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue graphicsQueue, VkRenderPass, uint32_t imageCount);
+        void Shutdown(VkDevice device);
+        void Draw(VkCommandBuffer cmd, Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor);
+        void HandleInput(SDL_Event& event);
+
+        // Accessors
+        glm::vec2 GetViewportSize() const { return lastViewportSize; }
+        Console& Getconsole() { return gameConsole; }
+
+    private:
+        RenderingServer* rendererRef = nullptr;
+
+        VkDescriptorPool imguiPool = VK_NULL_HANDLE;
+
+        // Editor State
+        Console gameConsole;
+        glm::vec2 lastViewportSize = {1280.0f, 720.0f};
+
+        // Gizmo State
+        ImGuizmo::OPERATION mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
+        ImGuizmo::MODE mCurrentGizmoMode = ImGuizmo::WORLD;
+        int selectedObjectIndex = -1;
+        glm::vec3 cursor3DPosition = glm::vec3(0.0f);
+
+        // Node Editor State
+        bool showNodeEditor = false;
+        ImVec2 nodeGridOffset = {0.0f, 0.0f};
+        float nodeZoom = 1.0f;
+
+        // Internal Helpers
+        void SetupStyle();
+        void CreateLogo(VkDevice device, VkPhysicalDevice, VkCommandPool, VkQueue graphicsQueue);
+        void DrawNodeEditor(Scene* scene);
+    };
+}
