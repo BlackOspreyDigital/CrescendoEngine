@@ -51,6 +51,5 @@ int main(int argc, char* argv[]) {
     std::cout << "Starting Simulation..." << std::endl;
     engine.Run();
 
-    engine.Shutdown();
     return 0;
 }

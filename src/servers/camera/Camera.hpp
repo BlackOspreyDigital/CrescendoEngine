@@ -14,7 +14,7 @@ namespace Crescendo {
         glm::vec3 target = glm::vec3(0.0f);
         
         // Perspective State
-        float fov = 45.0f; // Degrees
+        float fov = 80.0f; // Degrees
         float nearClip = 0.1f;
         float farClip = 2000.0f;
 

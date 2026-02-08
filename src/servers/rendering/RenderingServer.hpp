@@ -1,5 +1,8 @@
 #pragma once
 
+// [CRITICAL] Defines first
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE 
+
 #include "servers/rendering/Vertex.hpp"
 #include "Material.hpp"
 #include "tiny_obj_loader.h"
@@ -16,7 +19,6 @@
 #include "scene/GameWorld.hpp"
 #include "scene/CarController.hpp"
 #include "servers/interface/EditorUI.hpp"
-
 
 namespace tinygltf {
     class Model;
@@ -45,18 +47,15 @@ namespace Crescendo {
     
     struct MeshPushConstants {
         glm::mat4 renderMatrix; 
-               
         glm::vec4 camPos;
         glm::vec4 pbrParams;
-
         glm::vec4 sunDir;
         glm::vec4 sunColor;
-        
     };
 
     class RenderingServer {
     public:
-        void render(Scene* scene); // ever since adding Scene* scene in the parenthesis its breaking the imgui logic and im not sure why.
+        void render(Scene* scene); 
         RenderingServer();
         bool initialize(DisplayServer* display);
         void shutdown();
@@ -73,22 +72,17 @@ namespace Crescendo {
 
         VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
 
-        // EDITOR AND GAME LOGIC
         bool isPlayMode = false;
         CarController* activeCar = nullptr;
 
+        void loadModel(const std::string& path);
         void loadGLTF(const std::string& filePath, Scene* scene);  
+        
         Camera mainCamera;
         GameWorld gameWorld;
         std::vector<MeshResource> meshes;
 
     private:
-        
-        // FIX: Update this signature to match your new logic
-        // changed 'int parentIndex' to 'CBaseEntity* parent'
-        // changed 'std::string path' to 'std::string baseDir'
-        void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene);
-
         EditorUI editorUI;         
         DisplayServer* display_ref;
 
@@ -157,6 +151,11 @@ namespace Crescendo {
         VkRenderPass viewportRenderPass = VK_NULL_HANDLE;
         VkDescriptorSet viewportDescriptorSet = VK_NULL_HANDLE;
     
+        // [FIX] Added missing Depth Resources for Viewport
+        VkImage viewportDepthImage = VK_NULL_HANDLE;
+        VkDeviceMemory viewportDepthImageMemory = VK_NULL_HANDLE;
+        VkImageView viewportDepthImageView = VK_NULL_HANDLE;
+
         glm::vec3 modelPos = glm::vec3(0.0f);
         glm::vec3 modelRot = glm::vec3(90.0f, 0.0f, 0.0f);
         glm::vec3 modelScale = glm::vec3(1.0f);
@@ -210,8 +209,7 @@ namespace Crescendo {
         // end of vulkan core
 
         // loaders
-        void loadModel(const std::string& path);
-        void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir);
+        void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene);
         void createProceduralGrid();
 
         glm::vec3 sunDirection = glm::normalize(glm::vec3(1.0f, -3.0, -1.0));
