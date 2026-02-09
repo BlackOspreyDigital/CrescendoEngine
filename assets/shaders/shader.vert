@@ -10,21 +10,25 @@ layout(location = 1) out vec2 fragTexCoord;
 layout(location = 2) out vec3 fragNormal;
 layout(location = 3) out vec3 fragWorldPos;
 
-// Match C++ MeshPushConstants struct exactly
+// [FIX] Match C++ Struct Layout Exactly (5 items)
 layout(push_constant) uniform PushConstants {
     mat4 renderMatrix; 
     vec4 camPos;
-    vec4 pbrParams;    // x=roughness, y=metallic
-    vec4 albedoColor;
-    int textureID;
+    vec4 pbrParams;    // x = TextureID, y = Roughness, z = Metallic
+    vec4 sunDir;       // [Changed] Was albedoColor
+    vec4 sunColor;     // [Changed] Was int textureID
 } push;
 
 void main() {
     vec4 worldPos = push.renderMatrix * vec4(inPosition, 1.0);
-    gl_Position = worldPos; // Assuming renderMatrix includes View/Proj
+    gl_Position = worldPos;
     
     fragWorldPos = worldPos.xyz;
-    fragColor = inColor * push.albedoColor.rgb;
+    
+    // [FIX] Use vertex color directly. 
+    // If you need global tinting later, use sunColor or add a specific tint field.
+    fragColor = inColor; 
+    
     fragTexCoord = inTexCoord;
-    fragNormal = inNormal; // Pass normals for lighting
+    fragNormal = inNormal;
 }

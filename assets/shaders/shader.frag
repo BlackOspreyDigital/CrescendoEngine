@@ -7,25 +7,27 @@ layout(location = 3) in vec3 fragWorldPos;
 
 layout(location = 0) out vec4 outColor;
 
-// [CRITICAL] Binding 0 to match C++ (was Binding 1)
 layout(binding = 0) uniform sampler2D texSampler[100];
 
+// [FIX] Match C++ Struct Layout Exactly
 layout(push_constant) uniform PushConstants {
     mat4 renderMatrix; 
     vec4 camPos;
-    vec4 pbrParams;
-    vec4 albedoColor;
-    int textureID;
+    vec4 pbrParams;    // x = TextureID, y = Roughness, z = Metallic
+    vec4 sunDir;
+    vec4 sunColor;
 } push;
 
 void main() {
-    // 1. Safe Texture Lookup
-    // If ID is bad, use 0 (Default White)
-    int id = push.textureID;
+    // 1. [FIX] Get ID from pbrParams.x (Float -> Int)
+    int id = int(push.pbrParams.x);
+    
+    // Safety check
     if (id < 0 || id >= 100) id = 0; 
     
     vec4 texColor = texture(texSampler[id], fragTexCoord);
 
-    // 2. Multiply by Vertex Color (from Material/GLTF)
+    // 2. Simple Lighting (Optional: Use sunDir/sunColor if you want)
+    // For now, just show the texture so we know it works.
     outColor = texColor * vec4(fragColor, 1.0);
 }
