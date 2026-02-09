@@ -4,51 +4,46 @@
 int main(int argc, char* argv[]) {
     Crescendo::Engine engine;
 
-    if (!engine.Initialize("Crescendo Engine - Physics Test", 1920, 1080)) {
+    // 1. Initialize
+    if (!engine.Initialize("Crescendo Engine - Water Test", 1920, 1080)) {
         return -1;
     }
 
-    // Access the camera through the rendering server
+    // 2. Setup Camera (Your settings)
     auto& camera = engine.renderingServer.mainCamera;
-    camera.SetPosition(glm::vec3(3.0f, 3.0f, 3.0f)); 
-    camera.SetRotation(glm::vec3(-35.0f, 135.0f, 0.0f)); 
+    camera.SetPosition(glm::vec3(0.0f, -10.0f, 5.0f)); 
+    camera.SetRotation(glm::vec3(0.0f, 90.0f, 0.0f)); 
 
-    // --- FIX START ---
-    // 1. Get the Scene directly from the Engine (It is a public member)
-    // Don't use renderingServer.GetWorld() as it likely points to garbage.
-    // Delete the duck hardcode after testing the sdl imgui refactor 2-7-26
     Crescendo::Scene* scene = &engine.scene;
 
-    // 2. Load the Duck into the Engine's scene
-    engine.renderingServer.loadGLTF("assets/models/Crescenduck/CRESCENDUCK.gltf", scene);
-    // --- FIX END ---
+    // 3. Spawn Water Entity
+    CBaseEntity* water = scene->CreateEntity("prop_water");
+    water->origin = glm::vec3(0.0f, 0.0f, 0.0f);
+    water->scale = glm::vec3(1.0f); 
     
-    // 3. Find the Duck Entity
-    CBaseEntity* duckEntity = nullptr;
+    // [CRITICAL FIX] Assign the Texture ID we loaded in Initialize
+    // If this stays -1, the engine crashes. Now it reads the safe ID (0 or valid).
+    water->textureID = engine.renderingServer.waterTextureID;
 
-    if (scene) {
-        for (auto* ent : scene->entities) {
-            if (ent->targetName.find("Duck") != std::string::npos ||
-                ent->targetName.find("duck") != std::string::npos ||
-                ent->targetName.find("CRESCENDUCK") != std::string::npos) {
-
-                    duckEntity = ent;
-                    duckEntity->origin = glm::vec3(0.0f, 0.0f, 0.2f);
-
-                    // Optional: Attach Lua script for logic
-                    duckEntity->SetScript("assets/scripts/duck.lua");
-
-                    std::cout << "[GAME] CRESCENDUCK FOUND! Preparing for launch." << std::endl;
-                    break;
-            }
+    // 4. Find the Water Mesh
+    // This looks up the mesh named "Internal_Water" created by createWaterMesh()
+    bool foundWater = false;
+    for (size_t i = 0; i < engine.renderingServer.meshes.size(); i++) {
+        if (engine.renderingServer.meshes[i].name == "Internal_Water") {
+            water->modelIndex = i;
+            foundWater = true;
+            break;
         }
     }
-
-    if (!duckEntity) {
-        std::cout << "[GAME] Warning: Crescenduck entity not found in GLTF." << std::endl;
+    
+    if (!foundWater) {
+        std::cout << "[Main] Warning: Could not find 'Internal_Water' mesh!" << std::endl;
     }
+    
+    // 5. Load Duck (Optional - verify path matches your folders)
+    // engine.renderingServer.loadGLTF("assets/models/duck/Duck.gltf", scene);
 
-    std::cout << "Starting Simulation..." << std::endl;
+    // 6. Run
     engine.Run();
 
     return 0;

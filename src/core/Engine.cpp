@@ -2,12 +2,15 @@
 #include <iostream>
 #include <cstdarg> 
 #include <Jolt/Core/IssueReporting.h>
-#include <SDL2/SDL.h>
-#include "core/ScriptSystem.hpp"
+#include <SDL2/SDL_image.h> // [FIX] Required for IMG_Init
 
-// Jolt Callback
+// 1. Jolt Callback
 static bool CustomAssertFailed(const char* inExpression, const char* inMessage, const char* inFile, unsigned int inLine) {
-    std::cerr << "\n!!! JOLT ASSERTION FAILED !!!\n" << inFile << ":" << inLine << "\nExpr: " << inExpression << "\nMsg:  " << (inMessage ? inMessage : "N/A") << "\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n" << std::endl;
+    std::cerr << "\n!!! JOLT ASSERTION FAILED !!!\n";
+    std::cerr << "File: " << inFile << ":" << inLine << "\n";
+    std::cerr << "Expr: " << inExpression << "\n";
+    std::cerr << "Msg:  " << (inMessage ? inMessage : "N/A") << "\n";
+    std::cerr << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n" << std::endl;
     return true; 
 }
 
@@ -21,12 +24,21 @@ namespace Crescendo {
     Engine::~Engine() {}
 
     bool Engine::Initialize(const char* title, int width, int height) {
+        // 1. Initialize Display (SDL_Init happens here)
         if (!displayServer.initialize(title, width, height)) return false;
+
+        // 2. [FIX] Initialize SDL_Image
+        // This must happen AFTER SDL_Init (DisplayServer) but BEFORE RenderingServer tries to load textures.
+        int imgFlags = IMG_INIT_PNG | IMG_INIT_JPG;
+        if (!(IMG_Init(imgFlags) & imgFlags)) {
+            std::cerr << "[Error] SDL_image could not initialize! IMG_Error: " << IMG_GetError() << std::endl;
+            return false;
+        }
+
+        // 3. Initialize Rendering
         if (!renderingServer.initialize(&displayServer)) return false;
 
-        scriptSystem.Initialize();
-        scriptSystem.LoadScript("assets/scripts/car_physics.lua");
-
+        // 4. Initialize Physics
         physicsServer.Initialize();
 
         isRunning = true;
@@ -34,21 +46,12 @@ namespace Crescendo {
     }
 
     void Engine::Run() {
-        std::cout << "[Engine] Entering Main Loop..." << std::endl;
         while (isRunning) {
-            // Checkpoint 1
-            // std::cout << "(1) Polling..." << std::endl;
             ProcessEvents();
-
-            // Checkpoint 2
-            // std::cout << "(2) Updating..." << std::endl;
             Update();
-
-            // Checkpoint 3
-            // std::cout << "(3) Rendering..." << std::endl;
             Render();
         }
-        Shutdown();
+        Shutdown(); // Shutdown is called automatically when loop ends
     }
 
     void Engine::ProcessEvents() {
@@ -57,34 +60,21 @@ namespace Crescendo {
 
     void Engine::Update() {
         float dt = 1.0f / 60.0f; 
-
-        const Uint8* state = SDL_GetKeyboardState(NULL);
-        bool w = state[SDL_SCANCODE_W];
-        bool s = state[SDL_SCANCODE_S];
-        bool a = state[SDL_SCANCODE_A];
-        bool d = state[SDL_SCANCODE_D];
-
-        scriptSystem.UpdateCar(carController, dt, w, s, a, d);
-        carController.SyncVisuals();
-
-        if (scene.entities.size() > 0) {
-            for (auto* entity : scene.entities) {
-                if (entity && entity->hasScript) {
-                    scriptSystem.RunEntityScript(entity, dt);
-                }
-            }
-            // Physics Update
-            physicsServer.Update(dt, scene.entities); 
-        }
+        // Note: Make sure renderingServer.gameWorld.entityList matches your new Scene structure
+        // If you switched to 'scene.entities', update this line accordingly.
+        physicsServer.Update(dt, renderingServer.gameWorld.entityList); 
     }
 
     void Engine::Render() {
-        renderingServer.render(&this->scene);
+        // [FIX] Pass the address of the scene member
+        renderingServer.render(&scene); 
     }
 
     void Engine::Shutdown() {
         physicsServer.Cleanup(); 
         renderingServer.shutdown();
         displayServer.shutdown();
+        
+        IMG_Quit(); 
     }
 }

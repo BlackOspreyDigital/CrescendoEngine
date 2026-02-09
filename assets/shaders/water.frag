@@ -9,57 +9,32 @@ layout(location = 0) out vec4 outColor;
 
 layout(binding = 0) uniform sampler2D texSampler[100];
 
-// FIX: Match C++ Struct (128 Bytes)
 layout(push_constant) uniform constants {
     mat4 renderMatrix;
-    // mat4 normalMatrix; <--- DELETE
     vec4 camPos;
-    vec4 pbrParams;
+    vec4 pbrParams; // x = textureID, w = time
     vec4 sunDir;
     vec4 sunColor;
 } PushConstants;
 
-// --- PASTE GetSkyColor HERE (same as shader.frag) ---
-vec3 GetSkyColor(vec3 viewDir) {
-    vec3 topColor = vec3(0.2, 0.4, 0.8);     
-    vec3 horizonColor = vec3(0.6, 0.7, 0.9); 
-    vec3 groundColor = vec3(0.1, 0.1, 0.1);  
-    
-    vec3 sunDir = normalize(vec3(5.0, 1.0, 1.0)); 
-    if (length(PushConstants.sunDir.xyz) > 0.1) {
-        sunDir = normalize(PushConstants.sunDir.xyz);
-    }
-    
-    float sunSize = 0.998; 
-    float t = viewDir.z; 
-    
-    vec3 skyColor;
-    if (t > 0.0) skyColor = mix(horizonColor, topColor, pow(t, 0.5)); 
-    else skyColor = mix(horizonColor, groundColor, pow(abs(t), 0.5)); 
-
-    float sunDot = dot(viewDir, sunDir);
-    if (sunDot > sunSize) skyColor = vec3(1.0, 1.0, 0.8) * 2.0; 
-    else skyColor += vec3(1.0, 0.8, 0.5) * pow(max(sunDot, 0.0), 100.0) * 0.5;
-    
-    return skyColor;
-}
-// ----------------------------------------------------
-
 void main() {
-    int texID = int(PushConstants.pbrParams.x); 
-    vec4 textureColor = texture(texSampler[texID], fragUV);
+    // 1. Sample Texture
+    int texID = int(PushConstants.pbrParams.x);
+    vec4 texColor = texture(texSampler[texID], fragUV);
+    
+    // 2. Mix with Blue Tint
+    vec3 waterColor = texColor.rgb * vec3(0.0, 0.4, 0.8); // Deep Blue Tint
+    
+    // 3. Simple Specular (Sun Reflection)
+    vec3 viewDir = normalize(PushConstants.camPos.xyz - fragPos);
+    vec3 lightDir = normalize(vec3(5.0, 10.0, 5.0)); // Fake sun
+    if (length(PushConstants.sunDir.xyz) > 0.0) lightDir = normalize(PushConstants.sunDir.xyz);
 
-    vec3 N = normalize(fragNormal);
-    vec3 V = normalize(PushConstants.camPos.xyz - fragPos);
-    vec3 R = reflect(-V, N); 
-    vec3 reflection = GetSkyColor(R);
+    vec3 halfDir = normalize(lightDir + viewDir);
+    float spec = pow(max(dot(normalize(fragNormal), halfDir), 0.0), 32.0);
     
-    vec3 waterBase = textureColor.rgb * vec3(0.5, 0.5, 1.0); 
-    
-    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-    fresnel = clamp(fresnel + 0.2, 0.0, 1.0);
-
-    vec3 finalColor = mix(waterBase, reflection, fresnel * 0.6); 
-    
-    outColor = vec4(finalColor, 0.85); 
+    // 4. Output with Alpha (Transparency)
+    // We assume the pipeline has blending ENABLED (which we did earlier)
+    vec3 finalColor = waterColor + (spec * vec3(1.0));
+    outColor = vec4(finalColor, 0.7); // 0.7 Alpha for transparency
 }

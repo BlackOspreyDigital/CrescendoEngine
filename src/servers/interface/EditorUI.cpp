@@ -203,10 +203,16 @@ namespace Crescendo {
 
             glm::mat4 view = camera.GetViewMatrix();
             float aspect = viewportSize.x / viewportSize.y;
-            glm::mat4 proj = camera.GetProjectionMatrix(aspect); 
-            // ImGuizmo expects OpenGL style projection (Y-Up), but Vulkan is Y-Down.
-            // However, your Camera class might already handle this flip. 
-            // If the Gizmo is upside down, flip proj[1][1] *= -1 here.
+
+            // [FIX] Get the UN-FLIPPED projection for ImGuizmo
+            // We manually construct perspective instead of using camera.GetProjectionMatrix() 
+            // because that function flips Y for Vulkan rendering.
+            glm::mat4 proj = glm::perspective(glm::radians(camera.fov), aspect, camera.nearClip, camera.farClip);
+
+            // [OPTIONAL] Force World Mode for Translation
+            if (mCurrentGizmoOperation == ImGuizmo::TRANSLATE) {
+                 mCurrentGizmoMode = ImGuizmo::WORLD; 
+            }
 
             if (selectedObjectIndex >= 0 && selectedObjectIndex < (int)scene->entities.size()) {
                 CBaseEntity* ent = scene->entities[selectedObjectIndex];

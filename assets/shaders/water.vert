@@ -12,7 +12,6 @@ layout(location = 3) out vec3 fragPos;
 
 layout(push_constant) uniform constants {
     mat4 renderMatrix;
-    // normalMatrix deleted
     vec4 camPos;
     vec4 pbrParams; // w = TIME
     vec4 sunDir;
@@ -21,7 +20,7 @@ layout(push_constant) uniform constants {
 
 void main() {
     vec3 pos = inPos;
-    float time = PushConstants.pbrParams.w; // Defined ONCE here
+    float time = PushConstants.pbrParams.w; 
 
     // --- WAVE LOGIC ---
     float waveHeight = 0.5;
@@ -35,13 +34,16 @@ void main() {
     
     // Normal Matrix
     mat3 normalMatrix = transpose(inverse(mat3(PushConstants.renderMatrix)));
-    
     fragNormal = normalize(normalMatrix * inNormal);
     
-    // SCROLLING UVs
-    float scrollSpeed = 0.01;
-    fragUV = (inTexCoord * 4.0) + vec2(time * scrollSpeed, time * scrollSpeed);
+    // --- SCROLLING & TILING ---
+    float scrollSpeed = 0.05;
     
-    fragPos = vec3(PushConstants.renderMatrix * vec4(pos, 1.0));
-    fragColor = vec3(0.0, 0.2, 0.8);
+    // [FIX] Define tileFactor here
+    float tileFactor = 100.0; 
+    
+    fragUV = (inTexCoord * tileFactor) + vec2(time * scrollSpeed, time * scrollSpeed);
+    
+    fragColor = vec3(1.0, 1.0, 1.0); 
+    fragPos = vec3(PushConstants.renderMatrix * vec4(inPos, 1.0));
 }

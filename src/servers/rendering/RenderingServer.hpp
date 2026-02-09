@@ -29,11 +29,12 @@ namespace Crescendo {
     class DisplayServer;
     class Scene;
     
+    
     struct TextureResource {
         VkImage image;
         VkDeviceMemory memory;
         VkImageView view;
-        VkDescriptorSet descriptorSet;
+        
     };
 
     struct MeshResource {
@@ -44,6 +45,11 @@ namespace Crescendo {
         VkDeviceMemory indexBufferMemory = VK_NULL_HANDLE;
         uint32_t indexCount = 0;
     };   
+
+    struct ResourceCache {
+        std::unordered_map<std::string, int32_t> textures; // Path -> TextureID
+        std::unordered_map<std::string, int32_t> meshes;   // Path_SubIndex -> MeshID
+    };
     
     struct MeshPushConstants {
         glm::mat4 renderMatrix; 
@@ -60,6 +66,9 @@ namespace Crescendo {
         bool initialize(DisplayServer* display);
         void shutdown();
 
+        int acquireMesh(const std::string& path, const std::string& name,
+                        const std::vector<Vertex>& vertices,
+                        const std::vector<uint32_t>& indices);
         int acquireTexture(const std::string& path);
         void UploadTexture(void* pixels, int width, int height, VkFormat format, VkImage& image, VkDeviceMemory& memory);
         GameWorld* GetWorld() { return &gameWorld; }
@@ -81,8 +90,11 @@ namespace Crescendo {
         Camera mainCamera;
         GameWorld gameWorld;
         std::vector<MeshResource> meshes;
+        int waterTextureID = 0;
 
     private:
+        ResourceCache cache;
+        
         EditorUI editorUI;         
         DisplayServer* display_ref;
 
@@ -122,7 +134,7 @@ namespace Crescendo {
 
         VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
         VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+        VkDescriptorSet descriptorSet;
 
         std::vector<Material> materialBank;
         std::map<std::string, uint32_t> materialMap; 
@@ -165,7 +177,7 @@ namespace Crescendo {
 
         VkPipeline waterPipeline = VK_NULL_HANDLE; 
         bool createWaterPipeline();
-        int waterTextureID = -1;
+        
         void createWaterMesh();
 
         bool showNodeEditor = false;
@@ -187,7 +199,8 @@ namespace Crescendo {
         bool createDescriptorSetLayout();
         bool createGraphicsPipeline();
         bool createFramebuffers();
-        bool createTextureImage();
+        
+        //bool createTextureImage();
         bool createTextureImageView();
         bool createTextureImage(const std::string& path, VkImage& image, VkDeviceMemory& memory);
         VkImageView createTextureImageView(VkImage& image); 
@@ -209,6 +222,7 @@ namespace Crescendo {
         // end of vulkan core
 
         // loaders
+        void createDefaultTexture();
         void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene);
         void createProceduralGrid();
 
