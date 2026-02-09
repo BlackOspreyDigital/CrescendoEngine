@@ -4,58 +4,37 @@
 #include "servers/camera/Camera.hpp"
 #include "backends/imgui_impl_sdl2.h"
 #include "backends/imgui_impl_vulkan.h"
-#include "include/portable-file-dialogs.h" // Needed for file picker
+#include "include/portable-file-dialogs.h" 
 #include <iostream>
-#include <cmath> // For sin/cos
-
-// GLM includes for Gizmo
+#include <cmath> 
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 
 namespace Crescendo {
 
-    // Helper functions for Raycasting (needed for 3D cursor)
-    struct Ray { glm::vec3 origin; glm::vec3 direction; };
-
-    Ray ScreenToWorldRay(glm::vec2 mousePos, glm::vec2 viewportSize, glm::mat4 view, glm::mat4 projection) {
-        float x = (2.0f * mousePos.x) / viewportSize.x - 1.0f;
-        float y = 1.0f - (2.0f * mousePos.y) / viewportSize.y;
-        glm::vec4 rayClip = glm::vec4(x, y, -1.0f, 1.0f);
-        glm::vec4 rayEye = glm::inverse(projection) * rayClip;
-        rayEye = glm::vec4(rayEye.x, rayEye.y, -1.0f, 0.0f);
-        glm::vec3 rayWorld = glm::vec3(glm::inverse(view) * rayEye);
-        rayWorld = glm::normalize(rayWorld);
-        return { glm::vec3(glm::inverse(view)[3]), rayWorld };
-    }
-
-    bool RayPlaneIntersection(Ray ray, glm::vec3 planeNormal, float planeHeight, glm::vec3& outIntersection) {
-        float denom = glm::dot(planeNormal, ray.direction);
-        if (std::abs(denom) > 1e-6) {
-            glm::vec3 planeCenter = glm::vec3(0, 0, planeHeight);
-            float t = glm::dot(planeCenter - ray.origin, planeNormal) / denom;
-            if (t >= 0) {
-                outIntersection = ray.origin + (ray.direction * t);
-                return true;
-            }
-        }
-        return false;
-    }
-
+    // --- HELPER FUNCTIONS ---
     static void check_vk_result(VkResult err) {
         if (err == 0) return;
-        std::cerr << "[ImGui Vulkan Error] VkResult = " << err << std::endl;
+        std::cerr << "[ImGui] Vulkan Error: VkResult = " << err << std::endl;
         if (err < 0) abort();
     }
 
     void Console::AddLog(const char* fmt, ...) {}
     void Console::Draw(const char* title, bool* p_open) {}
 
-    EditorUI::EditorUI() {}
+    // --- CONSTRUCTOR / DESTRUCTOR ---
+    EditorUI::EditorUI() : rendererRef(nullptr), selectedObjectIndex(-1) {
+        mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
+        mCurrentGizmoMode = ImGuizmo::WORLD;
+    }
+
     EditorUI::~EditorUI() {}
 
+    // --- INITIALIZE (Restored for your specific ImGui version) ---
     void EditorUI::Initialize(RenderingServer* renderer, SDL_Window* window, VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue graphicsQueue, uint32_t queueFamilyIndex, VkRenderPass renderPass, uint32_t imageCount) {
         this->rendererRef = renderer;
 
+        // 1. Create Descriptor Pool
         VkDescriptorPoolSize pool_sizes[] = {
             { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
             { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
@@ -73,17 +52,18 @@ namespace Crescendo {
         VkDescriptorPoolCreateInfo pool_info = {};
         pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-        pool_info.maxSets = 1000 * IM_ARRAYSIZE(pool_sizes);
-        pool_info.poolSizeCount = (uint32_t)IM_ARRAYSIZE(pool_sizes);
+        pool_info.maxSets = 1000 * 11;
+        pool_info.poolSizeCount = (uint32_t)std::size(pool_sizes);
         pool_info.pPoolSizes = pool_sizes;
 
-        vkCreateDescriptorPool(device, &pool_info, nullptr, &imguiPool);
+        if (vkCreateDescriptorPool(device, &pool_info, nullptr, &imguiPool) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create ImGui Descriptor Pool");
+        }
 
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; 
-
         ImGui::StyleColorsDark();
 
         ImGui_ImplSDL2_InitForVulkan(window);
@@ -100,6 +80,8 @@ namespace Crescendo {
         init_info.ImageCount = imageCount;
         init_info.Allocator = nullptr;
         init_info.CheckVkResultFn = check_vk_result;
+
+        // [FIX] Use the PipelineInfoMain struct required by your header
         init_info.PipelineInfoMain.RenderPass = renderPass; 
         init_info.PipelineInfoMain.Subpass = 0;
         init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT; 
@@ -118,6 +100,7 @@ namespace Crescendo {
         }
     }
 
+    // --- PREPARE (Fixed Gizmo logic and Camera handling) ---
     void EditorUI::Prepare(Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor) {
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -126,33 +109,31 @@ namespace Crescendo {
 
         ImGuiIO& io = ImGui::GetIO();
 
-        // ---------------------------------------------------------
-        // 1. INPUT HANDLING (Camera)
-        // ---------------------------------------------------------
-        // Only move camera if right mouse button is held (standard editor control)
+        // 1. INPUT HANDLING (Free-Fly Camera)
         if (!io.WantCaptureKeyboard || ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-             if (io.MouseWheel != 0.0f) camera.Zoom(io.MouseWheel * 0.5f);
+             if (io.MouseWheel != 0.0f) {
+                 camera.Zoom -= io.MouseWheel; 
+                 if (camera.Zoom < 1.0f) camera.Zoom = 1.0f;
+                 if (camera.Zoom > 120.0f) camera.Zoom = 120.0f;
+                 camera.fov = camera.Zoom; 
+             }
              
              if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-                 camera.Rotate(io.MouseDelta.x * 0.5f, io.MouseDelta.y * 0.5f);
+                 camera.Rotate(io.MouseDelta.x, -io.MouseDelta.y); 
                  
-                 float moveSpeed = 5.0f * io.DeltaTime;
-                 if (ImGui::IsKeyDown(ImGuiKey_LeftShift)) moveSpeed *= 2.0f;
+                 float moveSpeed = 5.0f * io.DeltaTime; 
+                 if (ImGui::IsKeyDown(ImGuiKey_LeftShift)) moveSpeed *= 3.0f; 
 
-                 float yawRad = glm::radians(camera.yaw);
-                 glm::vec3 forwardDir = -glm::vec3(cos(yawRad), sin(yawRad), 0.0f);
-                 glm::vec3 rightDir   = -glm::vec3(sin(yawRad), -cos(yawRad), 0.0f);
-
-                 if (ImGui::IsKeyDown(ImGuiKey_W)) camera.target += forwardDir * moveSpeed;
-                 if (ImGui::IsKeyDown(ImGuiKey_S)) camera.target -= forwardDir * moveSpeed;
-                 if (ImGui::IsKeyDown(ImGuiKey_D)) camera.target += rightDir * moveSpeed;
-                 if (ImGui::IsKeyDown(ImGuiKey_A)) camera.target -= rightDir * moveSpeed;
+                 if (ImGui::IsKeyDown(ImGuiKey_W)) camera.Position += camera.Front * moveSpeed;
+                 if (ImGui::IsKeyDown(ImGuiKey_S)) camera.Position -= camera.Front * moveSpeed;
+                 if (ImGui::IsKeyDown(ImGuiKey_D)) camera.Position += camera.Right * moveSpeed;
+                 if (ImGui::IsKeyDown(ImGuiKey_A)) camera.Position -= camera.Right * moveSpeed;
+                 if (ImGui::IsKeyDown(ImGuiKey_Q)) camera.Position += camera.WorldUp * moveSpeed; // Up
+                 if (ImGui::IsKeyDown(ImGuiKey_E)) camera.Position -= camera.WorldUp * moveSpeed; // Down
              }
         }
 
-        // ---------------------------------------------------------
         // 2. DOCKSPACE & MENU
-        // ---------------------------------------------------------
         ImGuiID dockSpaceId = ImGui::GetID("MainDockSpace");
         ImGui::DockSpaceOverViewport(dockSpaceId, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
 
@@ -178,9 +159,7 @@ namespace Crescendo {
             ImGui::EndMainMenuBar();
         }
 
-        // ---------------------------------------------------------
         // 3. VIEWPORT WINDOW
-        // ---------------------------------------------------------
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
         ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -191,11 +170,9 @@ namespace Crescendo {
 
         if (viewportDescriptor != VK_NULL_HANDLE) {
             ImGui::Image((ImTextureID)viewportDescriptor, viewportSize);
-        } else {
-            ImGui::Text("Loading Viewport...");
         }
 
-        // --- GIZMOS ---
+        // --- GIZMOS (Fixed 'model' matrix undeclared error) ---
         if (viewportSize.x > 0 && viewportSize.y > 0 && scene) {
             ImGuizmo::SetOrthographic(false);
             ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
@@ -203,20 +180,12 @@ namespace Crescendo {
 
             glm::mat4 view = camera.GetViewMatrix();
             float aspect = viewportSize.x / viewportSize.y;
-
-            // [FIX] Get the UN-FLIPPED projection for ImGuizmo
-            // We manually construct perspective instead of using camera.GetProjectionMatrix() 
-            // because that function flips Y for Vulkan rendering.
             glm::mat4 proj = glm::perspective(glm::radians(camera.fov), aspect, camera.nearClip, camera.farClip);
-
-            // [OPTIONAL] Force World Mode for Translation
-            if (mCurrentGizmoOperation == ImGuizmo::TRANSLATE) {
-                 mCurrentGizmoMode = ImGuizmo::WORLD; 
-            }
 
             if (selectedObjectIndex >= 0 && selectedObjectIndex < (int)scene->entities.size()) {
                 CBaseEntity* ent = scene->entities[selectedObjectIndex];
                 if (ent) {
+                    // [FIX] Declare and initialize the 'model' matrix here
                     glm::mat4 model = glm::mat4(1.0f);
                     model = glm::translate(model, ent->origin);
                     model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0, 0, 1));
@@ -241,15 +210,12 @@ namespace Crescendo {
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
 
-        // ---------------------------------------------------------
-        // 4. HIERARCHY
-        // ---------------------------------------------------------
+        // 4. HIERARCHY & INSPECTOR
         ImGui::Begin("Scene Hierarchy");
         if (scene) {
             for (size_t i = 0; i < scene->entities.size(); i++) {
                 CBaseEntity* ent = scene->entities[i];
                 if (!ent) continue;
-
                 ImGui::PushID((int)i);
                 std::string label = ent->targetName.empty() ? "Entity " + std::to_string(i) : ent->targetName;
                 if (ImGui::Selectable(label.c_str(), selectedObjectIndex == (int)i)) {
@@ -260,9 +226,6 @@ namespace Crescendo {
         }
         ImGui::End();
 
-        // ---------------------------------------------------------
-        // 5. INSPECTOR
-        // ---------------------------------------------------------
         ImGui::Begin("Inspector");
         if (selectedObjectIndex >= 0 && scene && selectedObjectIndex < (int)scene->entities.size()) {
             CBaseEntity* ent = scene->entities[selectedObjectIndex];
@@ -277,9 +240,8 @@ namespace Crescendo {
                 ImGui::ColorEdit3("Albedo", glm::value_ptr(ent->albedoColor));
                 ImGui::SliderFloat("Roughness", &ent->roughness, 0.0f, 1.0f);
                 ImGui::SliderFloat("Metallic", &ent->metallic, 0.0f, 1.0f);
+                ImGui::SliderFloat("Emission", &ent->emission, 0.0f, 10.0f);
             }
-        } else {
-            ImGui::Text("Select an object to inspect.");
         }
         
         ImGui::Separator();

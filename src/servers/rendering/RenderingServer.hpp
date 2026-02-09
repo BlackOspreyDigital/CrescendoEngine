@@ -44,6 +44,7 @@ namespace Crescendo {
         VkBuffer indexBuffer = VK_NULL_HANDLE;
         VkDeviceMemory indexBufferMemory = VK_NULL_HANDLE;
         uint32_t indexCount = 0;
+        int textureID = -1;
     };   
 
     struct ResourceCache {
@@ -54,9 +55,10 @@ namespace Crescendo {
     struct MeshPushConstants {
         glm::mat4 renderMatrix; 
         glm::vec4 camPos;
-        glm::vec4 pbrParams;
-        glm::vec4 sunDir;
-        glm::vec4 sunColor;
+        glm::vec4 pbrParams;                                // x:texID. y:roughness, z:mettalic, w:emission
+        glm::vec4 sunDir;                                   // xyz:dir, w:intensity
+        glm::vec4 sunColor;                             
+        glm::vec4 albedoTint;                               // [NEW] Inspector color
     };
 
     class RenderingServer {

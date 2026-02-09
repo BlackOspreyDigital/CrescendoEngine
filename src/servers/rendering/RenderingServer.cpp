@@ -291,7 +291,7 @@ namespace Crescendo {
     bool RenderingServer::createInstance() {
         VkApplicationInfo appInfo{};
         appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        appInfo.pApplicationName = "Crescendo Engine v0.2a";
+        appInfo.pApplicationName = "Crescendo Engine v0.3a";
         appInfo.apiVersion = VK_API_VERSION_1_0;
 
         uint32_t extensionCount = 0;
@@ -1113,7 +1113,7 @@ namespace Crescendo {
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depthStencil.depthTestEnable = VK_TRUE; 
-        depthStencil.depthWriteEnable = VK_FALSE; 
+        depthStencil.depthWriteEnable = VK_TRUE; 
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
         VkPipelineColorBlendAttachmentState colorBlendAttachment{};
@@ -1523,7 +1523,7 @@ namespace Crescendo {
     // GLTF Loading & Handling 
     // --------------------------------------------------------------------
     
-    // [FIX] Ensure this helper is defined
+    // [HELPER] Standardize slashes to forward slashes
     std::string normalizePath(const std::string& path) {
         std::string s = path;
         for (char &c : s) {
@@ -1532,70 +1532,160 @@ namespace Crescendo {
         return s;
     }
 
-    // [FIX] Updated loadGLTF with Scene Safety Check
-    void RenderingServer::loadGLTF(const std::string& filePath, Scene* scene) {
-        // SAFETY CHECK: If scene is null, we cannot proceed
-        if (scene == nullptr) {
-            std::cerr << "[GLTF Error] 'scene' pointer is NULL! Cannot load model." << std::endl;
-            return;
+    // [HELPER] Decode URL characters (e.g. "My%20Texture.png" -> "My Texture.png")
+    std::string decodeUri(const std::string& uri) {
+        std::string result;
+        for (size_t i = 0; i < uri.length(); i++) {
+            if (uri[i] == '%' && i + 2 < uri.length()) {
+                std::string hex = uri.substr(i + 1, 2);
+                char c = static_cast<char>(std::strtol(hex.c_str(), nullptr, 16));
+                result += c;
+                i += 2;
+            } else if (uri[i] == '+') {
+                result += ' ';
+            } else {
+                result += uri[i];
+            }
         }
+        return result;
+    }
+
+    // [FIX] New updated GLTF handling implemented 
+    // GLTF imports with textures but not materials, if its mat based it defaults to off white texture at ID 0.
+    // Could resolve with my principle bsdf shader im building for our default mats to align with Blender standard.
+    // Look into KTX for future scalability for now we aren't exceeding the vram limits so this will not be added unitl needed.
+    
+    void RenderingServer::loadGLTF(const std::string& filePath, Scene* scene) {
+        if (scene == nullptr) return;
 
         tinygltf::Model model;
         tinygltf::TinyGLTF loader;
         std::string err, warn;
 
-        std::cout << "[System] Loading GLTF: " << filePath << std::endl;
+        bool ret = (filePath.find(".glb") != std::string::npos) ? 
+                  loader.LoadBinaryFromFile(&model, &err, &warn, filePath) : 
+                  loader.LoadASCIIFromFile(&model, &err, &warn, filePath);
 
-        bool ret = false;
-        if (filePath.find(".glb") != std::string::npos) {
-            ret = loader.LoadBinaryFromFile(&model, &err, &warn, filePath);
-        } else {
-            ret = loader.LoadASCIIFromFile(&model, &err, &warn, filePath);
-        }
+        if (!ret) { std::cerr << "[GLTF Error] " << err << std::endl; return; }
 
-        if (!warn.empty()) std::cout << "[GLTF Warn] " << warn << std::endl;
-        if (!err.empty()) std::cerr << "[GLTF Err] " << err << std::endl;
-
-        if (!ret) {
-            std::cerr << "[GLTF Failed] Could not parse: " << filePath << std::endl;
-            return;
-        }
-
-        // 1. Base Dir
         std::string baseDir = "";
         size_t lastSlash = filePath.find_last_of("/\\");
-        if (lastSlash != std::string::npos) {
-            baseDir = filePath.substr(0, lastSlash);
-        }
+        if (lastSlash != std::string::npos) baseDir = filePath.substr(0, lastSlash);
         baseDir = normalizePath(baseDir);
 
-        // 2. Load Textures
-        for (const auto& tex : model.textures) {
-            if (tex.source > -1) {
-                const auto& img = model.images[tex.source];
-                if (!img.uri.empty()) {
-                    // 
-                    std::string texPath = baseDir + "/" + decodeUri(img.uri);
-                    acquireTexture(texPath); 
+        // =========================================================
+        // MESH LOADING SECTION
+        // =========================================================
+        for (size_t i = 0; i < model.meshes.size(); i++) {
+            const auto& mesh = model.meshes[i];
+
+            // --- START PRIMITIVE LOOP ---
+            for (size_t j = 0; j < mesh.primitives.size(); j++) {
+                const auto& primitive = mesh.primitives[j];
+                std::vector<Vertex> vertices;
+                std::vector<uint32_t> indices;
+
+                // Helper for memory-safe attribute access
+                auto getAttrData = [&](const std::string& name, int& stride) -> const uint8_t* {
+                    auto it = primitive.attributes.find(name);
+                    if (it == primitive.attributes.end()) return nullptr;
+                    const auto& acc = model.accessors[it->second];
+                    const auto& view = model.bufferViews[acc.bufferView];
+                    stride = acc.ByteStride(view);
+                    return &model.buffers[view.buffer].data[acc.byteOffset + view.byteOffset];
+                };
+
+                // 1. Get Master Vertex Count from POSITION
+                auto posIt = primitive.attributes.find("POSITION");
+                if (posIt == primitive.attributes.end()) continue;
+                const auto& posAccessor = model.accessors[posIt->second];
+                int posCount = posAccessor.count;
+
+                // 2. Setup Base Pointers and Strides
+                int posStride = 0, normStride = 0, texStride = 0;
+                const uint8_t* posBase = getAttrData("POSITION", posStride);
+                const uint8_t* normBase = getAttrData("NORMAL", normStride);
+                const uint8_t* texBase = getAttrData("TEXCOORD_0", texStride);
+
+                vertices.reserve(posCount);
+
+                // 3. Process Vertices
+                for (int v = 0; v < posCount; v++) {
+                    Vertex vert{};
+
+                    // POSITION (Strict Float3)
+                    const float* p = reinterpret_cast<const float*>(posBase + (v * posStride));
+                    vert.pos = { p[0], p[1], p[2] };
+
+                    // NORMAL (Optional Float3)
+                    if (normBase) {
+                        const float* n = reinterpret_cast<const float*>(normBase + (v * normStride));
+                        vert.normal = { n[0], n[1], n[2] };
+                    } else {
+                        vert.normal = { 0.0f, 0.0f, 1.0f };
+                    }
+
+                    // TEXCOORD (Type-Safe: Handles Float and Optimized Shorts)
+                    if (texBase) {
+                        const auto& acc = model.accessors[primitive.attributes.at("TEXCOORD_0")];
+                        // Handle Standard Floats
+                        if (acc.componentType == 5126) { // TINYGLTF_COMPONENT_TYPE_FLOAT
+                            const float* t = reinterpret_cast<const float*>(texBase + (v * texStride));
+                            vert.texCoord = { t[0], t[1] };
+                        } 
+                        // Handle Optimized Shorts (Normalized)
+                        else if (acc.componentType == 5123) { // TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT
+                            const uint16_t* t = reinterpret_cast<const uint16_t*>(texBase + (v * texStride));
+                            vert.texCoord = { t[0] / 65535.0f, t[1] / 65535.0f };
+                        }
+                    }
+
+                    vert.color = { 1.0f, 1.0f, 1.0f };
+                    vertices.push_back(vert);
                 }
+
+                // 4. Fill Indices
+                if (primitive.indices > -1) {
+                    const auto& acc = model.accessors[primitive.indices];
+                    const auto& view = model.bufferViews[acc.bufferView];
+                    const uint8_t* idxData = &model.buffers[view.buffer].data[acc.byteOffset + view.byteOffset];
+                    int idxStride = acc.ByteStride(view);
+
+                    for (size_t k = 0; k < acc.count; k++) {
+                        if (acc.componentType == 5125) // UNSIGNED_INT
+                            indices.push_back(*(const uint32_t*)(idxData + k * idxStride));
+                        else if (acc.componentType == 5123) // UNSIGNED_SHORT
+                            indices.push_back(*(const uint16_t*)(idxData + k * idxStride));
+                    }
+                }
+
+                // 5. Create GPU Resources
+                MeshResource newMesh{};
+                newMesh.indexCount = static_cast<uint32_t>(indices.size());
+                createVertexBuffer(vertices, newMesh.vertexBuffer, newMesh.vertexBufferMemory);
+                createIndexBuffer(indices, newMesh.indexBuffer, newMesh.indexBufferMemory);
+
+                size_t globalIndex = meshes.size();
+                meshes.push_back(newMesh);
+
+                // Create key for node mapping
+                std::string meshKey = baseDir + "_mesh_" + std::to_string(i) + "_" + std::to_string(j);
+                meshMap[meshKey] = globalIndex;
             }
+            // --- END PRIMITIVE LOOP ---
         }
 
-        // 3. Meshes (Simplified loop for brevity, keep your vertex loading logic!)
-        // Note: Assuming you have the vertex loading loop here. 
-        // If you deleted it, paste the vertex loading block back from previous steps!
-        // ... (Vertex Loading Logic) ...
-        
-        // 4. Process Nodes
-        const tinygltf::Scene& gltfScene = model.scenes[model.defaultScene > -1 ? model.defaultScene : 0];
-        for (size_t i = 0; i < gltfScene.nodes.size(); i++) {
-            processGLTFNode(model, model.nodes[gltfScene.nodes[i]], nullptr, baseDir, scene);
+        // =========================================================
+        // NODE PROCESSING (SCENE HIERARCHY)
+        // =========================================================
+        const auto& gltfScene = model.scenes[model.defaultScene > -1 ? model.defaultScene : 0];
+        for (int nodeIdx : gltfScene.nodes) {
+            processGLTFNode(model, model.nodes[nodeIdx], nullptr, baseDir, scene);
         }
-        
-        std::cout << "[System] GLTF Loaded Successfully." << std::endl;
     }
 
     // [FIX] Updated processGLTFNode with Material Color Support
+
     void RenderingServer::processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene) {
         if (!scene) return; // Extra safety
 
@@ -1758,50 +1848,35 @@ namespace Crescendo {
     // --------------------------------------------------------------------
     // Render() / Draw Logic 
     // --------------------------------------------------------------------
-    
-    // [FIX] This is the ONLY definition of render now
+
     void RenderingServer::render(Scene* scene) {
         if (!scene) return;
 
-        // ---------------------------------------------------------
-        // 1. SYNC: Wait for Previous Frame
-        // ---------------------------------------------------------
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
 
-        // ---------------------------------------------------------
-        // 2. ACQUIRE IMAGE
-        // ---------------------------------------------------------
         uint32_t imageIndex;
-        // [FIX] Signal imageAvailableSemaphores[currentFrame] (NOT imageIndex)
         VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, 
                                                 imageAvailableSemaphores[currentFrame], 
                                                 VK_NULL_HANDLE, &imageIndex);
 
         if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-            recreateSwapChain(display_ref->get_window());
+            recreateSwapChain(window);
             return;
-        } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-            throw std::runtime_error("failed to acquire swap chain image!");
         }
 
-        // Only reset fences if we are actually going to submit work
         vkResetFences(device, 1, &inFlightFences[currentFrame]);
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);
 
-        // ---------------------------------------------------------
-        // 3. RECORD COMMANDS
-        // ---------------------------------------------------------
         VkCommandBufferBeginInfo beginInfo{};
         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo);
 
-        // Matrix Setup
         float aspectRatio = (float)swapChainExtent.width / (float)swapChainExtent.height;
         glm::mat4 view = mainCamera.GetViewMatrix();
         glm::mat4 proj = mainCamera.GetProjectionMatrix(aspectRatio);
 
         // =========================================================
-        // PASS 1: 3D WORLD (Offscreen Viewport)
+        // PASS 1: 3D WORLD
         // =========================================================
         VkRenderPassBeginInfo viewportPassInfo{};
         viewportPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1817,93 +1892,39 @@ namespace Crescendo {
 
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &viewportPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-            // Viewport & Scissor
-            VkViewport viewport{};
-            viewport.x = 0.0f; viewport.y = 0.0f;
-            viewport.width = (float)swapChainExtent.width;
-            viewport.height = (float)swapChainExtent.height;
-            viewport.minDepth = 0.0f; viewport.maxDepth = 1.0f;
+            VkViewport viewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
             vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &viewport);
-
-            VkRect2D scissor{};
-            scissor.offset = {0, 0}; scissor.extent = swapChainExtent;
+            VkRect2D scissor{{0, 0}, swapChainExtent};
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
 
             // --- SUB-PASS A: SKY ---
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
-            glm::mat4 invViewProj = glm::inverse(proj * view);
-
             MeshPushConstants skyPush{};
-            skyPush.renderMatrix = invViewProj;
+            skyPush.renderMatrix = glm::inverse(proj * view);
             skyPush.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
             skyPush.sunDir = glm::vec4(sunDirection, sunIntensity);
             skyPush.sunColor = glm::vec4(sunColor, 1.0f);
-
             vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &skyPush);
             vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
 
-            // --- SUB-PASS B: OPAQUE OBJECTS ---
+            // --- SUB-PASS B: GRID ---
+            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, gridPipeline);
+            MeshPushConstants gridPush{};
+            gridPush.renderMatrix = proj * view; 
+            gridPush.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
+            vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &gridPush);
+            vkCmdDraw(commandBuffers[currentFrame], 6, 1, 0, 0);
+
+            // --- SUB-PASS C: OPAQUE OBJECTS ---
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-
-            // [Check] Global Descriptor
-            if (descriptorSet != VK_NULL_HANDLE) {
-                vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-            }
-
-            if (!scene->entities.empty()) {
-                for (auto* ent : scene->entities) {
-                    if (!ent) continue;
-                    if (ent->targetName == "prop_water") continue; // Skip water here
-
-                    // [SAFETY] Bounds Check
-                    if (ent->modelIndex >= meshes.size()) continue;
-
-                    MeshResource& mesh = meshes[ent->modelIndex];
-                    if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE) continue;
-
-                    VkBuffer vBuffers[] = { mesh.vertexBuffer };
-                    VkDeviceSize offsets[] = { 0 };
-                    vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
-                    vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-
-                    glm::mat4 model = glm::mat4(1.0f);
-                    model = glm::translate(model, ent->origin);
-                    model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1));
-                    model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0,1,0));
-                    model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
-                    model = glm::scale(model, ent->scale);
-
-                    MeshPushConstants pushConst{};
-                    pushConst.renderMatrix = proj * view * model;
-                    pushConst.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
-
-                    int safeTexID = ent->textureID;
-                    if (safeTexID < 0 || safeTexID >= MAX_TEXTURES) safeTexID = 0;
-
-                    pushConst.pbrParams = glm::vec4((float)safeTexID, ent->roughness, ent->metallic, 0.0f);
-                    pushConst.sunDir = glm::vec4(sunDirection, sunIntensity);
-                    pushConst.sunColor = glm::vec4(sunColor, 1.0f);
-
-                    vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &pushConst);
-                    vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
-                }
-            }
-
-            // --- SUB-PASS C: WATER ---
-            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipeline);
             if (descriptorSet != VK_NULL_HANDLE) {
                 vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
             }
 
             for (auto* ent : scene->entities) {
-                if (!ent) continue;
-                if (ent->targetName != "prop_water") continue; // Only water here
-
-                if (ent->modelIndex >= meshes.size()) continue;
+                if (!ent || ent->targetName == "prop_water" || ent->modelIndex >= meshes.size()) continue;
 
                 MeshResource& mesh = meshes[ent->modelIndex];
-                if (mesh.vertexBuffer == VK_NULL_HANDLE || mesh.indexBuffer == VK_NULL_HANDLE) continue;
-
                 VkBuffer vBuffers[] = { mesh.vertexBuffer };
                 VkDeviceSize offsets[] = { 0 };
                 vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
@@ -1911,24 +1932,55 @@ namespace Crescendo {
 
                 glm::mat4 model = glm::mat4(1.0f);
                 model = glm::translate(model, ent->origin);
+                model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1));
+                model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0,1,0));
+                model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
                 model = glm::scale(model, ent->scale);
 
-                MeshPushConstants pushConst{};
-                pushConst.renderMatrix = proj * view * model;
-                pushConst.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
+                // Inside the entity loop in RenderingServer::render
+                MeshPushConstants push{};
+                push.renderMatrix = proj * view * model;
+                push.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
+                push.pbrParams = glm::vec4((float)ent->textureID, ent->roughness, ent->metallic, ent->emission);
+                push.sunDir = glm::vec4(sunDirection, sunIntensity);
+                push.sunColor = glm::vec4(sunColor, 1.0f);
 
-                int safeWaterID = waterTextureID;
-                if (safeWaterID < 0 || safeWaterID >= MAX_TEXTURES) safeWaterID = 0;
+                // [FIX] Pass the color from the inspector to the shader
+                push.albedoTint = glm::vec4(ent->albedoColor, 1.0f); 
 
-                pushConst.pbrParams = glm::vec4((float)safeWaterID, SDL_GetTicks() / 1000.0f, 0.0f, 0.0f);
-                pushConst.sunDir = glm::vec4(sunDirection, sunIntensity);
-                pushConst.sunColor = glm::vec4(sunColor, 1.0f);
+                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
+                   0, sizeof(MeshPushConstants), &push);
+                   
+                vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
+            }
 
-                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &pushConst);
+            // --- SUB-PASS D: WATER ---
+            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipeline);
+            for (auto* ent : scene->entities) {
+                if (!ent || ent->targetName != "prop_water" || ent->modelIndex >= meshes.size()) continue;
+
+                MeshResource& mesh = meshes[ent->modelIndex];
+                VkBuffer vBuffers[] = { mesh.vertexBuffer };
+                VkDeviceSize offsets[] = { 0 };
+                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
+                vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+                glm::mat4 model = glm::translate(glm::mat4(1.0f), ent->origin) * glm::scale(glm::mat4(1.0f), ent->scale);
+
+                MeshPushConstants waterPush{};
+                waterPush.renderMatrix = proj * view * model;
+                waterPush.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
+                waterPush.pbrParams = glm::vec4((float)waterTextureID, 0.0f, 0.0f, (float)SDL_GetTicks() / 1000.0f);
+                waterPush.sunDir = glm::vec4(sunDirection, sunIntensity);
+                waterPush.sunColor = glm::vec4(sunColor, 1.0f);
+
+                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &waterPush);
                 vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
             }
 
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
+        
 
         // =========================================================
         // PASS 2: ONSCREEN (UI & ImGui)

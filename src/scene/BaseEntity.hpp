@@ -35,6 +35,7 @@ public:
 
     float roughness = 0.5f;
     float metallic = 0.0f;
+    float emission = 0.0f;
     glm::vec3 albedoColor = {1.0f, 1.0f, 1.0f};
 
     static constexpr float SECTOR_SIZE = 1024.0f;

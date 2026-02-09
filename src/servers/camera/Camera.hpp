@@ -2,47 +2,64 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <algorithm> // For std::clamp if needed
+#include <SDL2/SDL.h> 
+#include <algorithm>
 
 namespace Crescendo {
     class Camera {
     public:
-        // Orbital State
-        float distance = 5.0f;
-        float yaw = 45.0f;
-        float pitch = 30.0f;
-        glm::vec3 target = glm::vec3(0.0f);
+        // Camera Attributes
+        glm::vec3 Position;
+        glm::vec3 Front;
+        glm::vec3 Up;
+        glm::vec3 Right;
+        glm::vec3 WorldUp;
+
+        // Euler Angles
+        float Yaw;
+        float Pitch;
+
+        // Camera Options
+        float MovementSpeed;
+        float MouseSensitivity;
+        float Zoom;
         
         // Perspective State
-        float fov = 80.0f; // Degrees
+        float fov = 80.0f; 
         float nearClip = 0.1f;
         float farClip = 2000.0f;
 
-        // Setters
+        // Constructor
+        Camera(glm::vec3 position = glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f), float yaw = -90.0f, float pitch = 0.0f) 
+            : Front(glm::vec3(0.0f, 1.0f, 0.0f)), MovementSpeed(10.0f), MouseSensitivity(0.1f), Zoom(45.0f) {
+            
+            Position = position;
+            WorldUp = up;
+            Yaw = yaw;
+            Pitch = pitch;
+            UpdateCameraVectors();
+        }
+
+        // --- INTERFACE MATCHING YOUR ENGINE ---
+        
         void SetPosition(const glm::vec3& pos) {
-            // temp camera oribt system
-            target = pos;
+            Position = pos;
+        }
+
+        glm::vec3 GetPosition() {
+            return Position;
         }
 
         void SetRotation(const glm::vec3& rot) {
-            pitch = rot.x;
-            yaw = rot.y;
+            // Assuming rot is (Pitch, Yaw, Roll)
+            Pitch = rot.x;
+            Yaw = rot.y;
+            UpdateCameraVectors();
         }
 
-        // Getters
-        glm::vec3 GetPosition() {
-            glm::vec3 pos;
-            float radYaw = glm::radians(yaw);
-            float radPitch = glm::radians(pitch);
-
-            pos.x = distance * cos(radPitch) * cos(radYaw);
-            pos.y = distance * cos(radPitch) * sin(radYaw);
-            pos.z = distance * sin(radPitch);
-            return target + pos;
-        }
-
+        // Returns the view matrix calculated using Euler Angles and the LookAt Matrix
         glm::mat4 GetViewMatrix() {
-            return glm::lookAt(GetPosition(), target, glm::vec3(0.0f, 0.0f, 1.0f));
+            return glm::lookAt(Position, Position + Front, Up);
         }
 
         glm::mat4 GetProjectionMatrix(float aspectRatio) {
@@ -52,17 +69,53 @@ namespace Crescendo {
             return proj;
         }
 
-        void Zoom(float offset) {
-            distance -= offset;
-            if (distance < 1.0f) distance = 1.0f;
+        // Process Keyboard (WASD + QE)
+        void Update(float deltaTime) {
+            float velocity = MovementSpeed * deltaTime;
+            
+            const Uint8* state = SDL_GetKeyboardState(nullptr);
+            
+            // Forward/Back
+            if (state[SDL_SCANCODE_W]) Position += Front * velocity;
+            if (state[SDL_SCANCODE_S]) Position -= Front * velocity;
+            
+            // Left/Right
+            if (state[SDL_SCANCODE_A]) Position -= Right * velocity;
+            if (state[SDL_SCANCODE_D]) Position += Right * velocity;
+            
+            // Up/Down (World Space)
+            if (state[SDL_SCANCODE_Q]) Position += WorldUp * velocity;
+            if (state[SDL_SCANCODE_E]) Position -= WorldUp * velocity;
         }
 
-        void Rotate(float dx, float dy) {
-            yaw -= dx;
-            pitch += dy;
-            // Clamp to avoid gimbal locking the orbit
-            if (pitch > 89.0f) pitch = 89.0f;
-            if (pitch < -89.0f) pitch = -89.0f;
+        // Process Mouse Movement
+        void Rotate(float xoffset, float yoffset, bool constrainPitch = true) {
+            xoffset *= MouseSensitivity;
+            yoffset *= MouseSensitivity;
+
+            Yaw   += xoffset;
+            Pitch += yoffset;
+
+            if (constrainPitch) {
+                if (Pitch > 89.0f) Pitch = 89.0f;
+                if (Pitch < -89.0f) Pitch = -89.0f;
+            }
+
+            UpdateCameraVectors();
+        }
+
+    private:
+        void UpdateCameraVectors() {
+            // Calculate the new Front vector
+            glm::vec3 front;
+            front.x = cos(glm::radians(Yaw)) * cos(glm::radians(Pitch));
+            front.y = sin(glm::radians(Yaw)) * cos(glm::radians(Pitch));
+            front.z = sin(glm::radians(Pitch));
+            Front = glm::normalize(front);
+            
+            // Also re-calculate the Right and Up vector
+            Right = glm::normalize(glm::cross(Front, WorldUp));  
+            Up    = glm::normalize(glm::cross(Right, Front));
         }
     };
 }

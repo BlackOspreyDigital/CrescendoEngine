@@ -29,7 +29,6 @@ namespace Crescendo {
         EditorUI();
         ~EditorUI();
 
-        // [FIX] Added queueFamilyIndex to arguments
         void Initialize(RenderingServer* renderer, SDL_Window* window, VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue graphicsQueue, uint32_t queueFamilyIndex, VkRenderPass renderPass, uint32_t imageCount);
         void Shutdown(VkDevice device);
 
@@ -43,7 +42,9 @@ namespace Crescendo {
         Console& Getconsole() { return gameConsole; }
 
     private:
-        RenderingServer* rendererRef = nullptr;
+        RenderingServer* rendererRef;
+        
+        // Descriptor Pool for ImGui
         VkDescriptorPool imguiPool = VK_NULL_HANDLE;
 
         // Editor State
@@ -53,7 +54,9 @@ namespace Crescendo {
         // Gizmo State
         ImGuizmo::OPERATION mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
         ImGuizmo::MODE mCurrentGizmoMode = ImGuizmo::WORLD;
-        int selectedObjectIndex = -1;
+        
+        // Selection & Cursor
+        int selectedObjectIndex = -1; // Declared once here
         glm::vec3 cursor3DPosition = glm::vec3(0.0f);
     };
 }
