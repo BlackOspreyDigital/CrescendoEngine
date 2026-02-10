@@ -58,5 +58,8 @@ namespace Crescendo {
         // Selection & Cursor
         int selectedObjectIndex = -1; // Declared once here
         glm::vec3 cursor3DPosition = glm::vec3(0.0f);
+
+        // Themes
+        void SetCrescendoEditorStyle();
     };
 }

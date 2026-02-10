@@ -30,6 +30,58 @@ namespace Crescendo {
 
     EditorUI::~EditorUI() {}
 
+    void EditorUI::SetCrescendoEditorStyle() {
+        ImGuiStyle& style = ImGui::GetStyle();
+        ImVec4* colors = style.Colors;
+
+        ImVec4 ashGreyDark   = ImVec4(0.10f, 0.10f, 0.11f, 1.00f); 
+        ImVec4 ashGreyMedium = ImVec4(0.15f, 0.15f, 0.16f, 1.00f);
+        ImVec4 ashGreyLight  = ImVec4(0.20f, 0.20f, 0.22f, 1.00f);
+        ImVec4 goldOrange    = ImVec4(1.00f, 0.65f, 0.00f, 1.00f);
+        ImVec4 goldHover     = ImVec4(1.00f, 0.80f, 0.30f, 1.00f);
+
+        colors[ImGuiCol_WindowBg]             = ashGreyDark;   
+        colors[ImGuiCol_ChildBg]              = ashGreyDark;
+        colors[ImGuiCol_PopupBg]              = ashGreyDark;
+        colors[ImGuiCol_MenuBarBg]            = ashGreyMedium;
+
+        colors[ImGuiCol_TitleBg]              = ashGreyDark;
+        colors[ImGuiCol_TitleBgActive]        = ashGreyMedium;
+        colors[ImGuiCol_TitleBgCollapsed]     = ashGreyDark;
+        colors[ImGuiCol_Header]               = ashGreyMedium;
+        colors[ImGuiCol_HeaderHovered]        = goldOrange;
+        colors[ImGuiCol_HeaderActive]         = goldOrange;
+
+        colors[ImGuiCol_Text]                 = goldOrange;    
+        colors[ImGuiCol_TextSelectedBg]       = ImVec4(1.00f, 0.65f, 0.00f, 0.35f);
+
+        colors[ImGuiCol_FrameBg]              = ashGreyMedium;
+        colors[ImGuiCol_FrameBgHovered]       = ashGreyLight;
+        colors[ImGuiCol_FrameBgActive]        = ashGreyLight;
+        
+        colors[ImGuiCol_Button]               = ashGreyMedium;
+        colors[ImGuiCol_ButtonHovered]        = goldHover;
+        colors[ImGuiCol_ButtonActive]         = goldOrange;
+
+        colors[ImGuiCol_SliderGrab]           = goldOrange;
+        colors[ImGuiCol_SliderGrabActive]     = goldHover;
+        colors[ImGuiCol_CheckMark]            = goldOrange;
+
+        colors[ImGuiCol_Tab]                  = ashGreyDark;
+        colors[ImGuiCol_TabHovered]           = goldHover;
+        colors[ImGuiCol_TabActive]            = ashGreyMedium;
+        colors[ImGuiCol_TabUnfocused]         = ashGreyDark;
+        colors[ImGuiCol_TabUnfocusedActive]   = ashGreyMedium;
+        colors[ImGuiCol_DockingPreview]       = ImVec4(1.00f, 0.65f, 0.00f, 0.70f);
+
+        colors[ImGuiCol_Border]               = ashGreyMedium;
+        colors[ImGuiCol_Separator]            = ashGreyMedium;
+
+        style.WindowRounding = 5.0f;
+        style.FrameRounding  = 3.0f;
+        style.PopupRounding  = 5.0f;
+    }
+
     // --- INITIALIZE (Restored for your specific ImGui version) ---
     void EditorUI::Initialize(RenderingServer* renderer, SDL_Window* window, VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue graphicsQueue, uint32_t queueFamilyIndex, VkRenderPass renderPass, uint32_t imageCount) {
         this->rendererRef = renderer;
@@ -65,6 +117,8 @@ namespace Crescendo {
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; 
         ImGui::StyleColorsDark();
+
+        SetCrescendoEditorStyle();
 
         ImGui_ImplSDL2_InitForVulkan(window);
         
@@ -102,9 +156,7 @@ namespace Crescendo {
 
     // --- PREPARE (Fixed Gizmo logic and Camera handling) ---
     void EditorUI::Prepare(Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor) {
-        ImGui_ImplVulkan_NewFrame();
-        ImGui_ImplSDL2_NewFrame();
-        ImGui::NewFrame();
+        
         ImGuizmo::BeginFrame();
 
         ImGuiIO& io = ImGui::GetIO();
@@ -254,7 +306,7 @@ namespace Crescendo {
 
         ImGui::End();
 
-        ImGui::Render();
+        //ImGui::Render(); This is closing frame to early
     }
 
     void EditorUI::Render(VkCommandBuffer cmd) {

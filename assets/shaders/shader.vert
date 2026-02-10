@@ -12,6 +12,7 @@ layout(location = 3) out vec3 fragPos;
 
 layout(push_constant) uniform constants {
     mat4 renderMatrix;
+    mat4 modelMatrix; // [NEW]
     vec4 camPos;
     vec4 pbrParams;
     vec4 sunDir;
@@ -19,14 +20,19 @@ layout(push_constant) uniform constants {
 } PushConstants; 
 
 void main() {
-    // Vertex position in clip space
+    // 1. Position on Screen (Clip Space) - Uses MVP
     gl_Position = PushConstants.renderMatrix * vec4(inPos, 1.0);
-    fragPos = inPos; // <--- This must be the raw position for correct world-space lighting!
 
-    // Calculate Normal Matrix manually
-    mat3 normalMatrix = transpose(inverse(mat3(PushConstants.renderMatrix)));
+    // 2. Position in World (World Space) - Uses Model Matrix
+    // [FIX] This enables correct lighting calculations!
+    fragPos = vec3(PushConstants.modelMatrix * vec4(inPos, 1.0));
+
+    // 3. Normal in World Space
+    // [FIX] Inverting the MODEL matrix gives correct normals.
+    // Inverting the Render (MVP) matrix gave garbage results.
+    mat3 normalMatrix = transpose(inverse(mat3(PushConstants.modelMatrix)));
+    fragNormal = normalize(normalMatrix * inNormal);
 
     fragColor = inColor;
-    fragNormal = normalize(normalMatrix * inNormal);
     fragTexCoord = inUV;
 }

@@ -99,8 +99,9 @@ namespace Crescendo {
         window(nullptr),
         currentFrame(0),
         instance(VK_NULL_HANDLE),
+        // [FIX] descriptorSet must come before commandPool based on header order
+        descriptorSet(VK_NULL_HANDLE), 
         commandPool(VK_NULL_HANDLE),
-        descriptorSet(VK_NULL_HANDLE), // [FIX] Initialize this to NULL!
         viewportImage(VK_NULL_HANDLE),
         viewportImageMemory(VK_NULL_HANDLE),
         viewportImageView(VK_NULL_HANDLE),
@@ -154,6 +155,12 @@ namespace Crescendo {
 
         if (!createViewportResources()) return false;
 
+        // Bloom resources before pipelines
+        if (!createBloomResources()) {
+            std::cerr << "!! Failed to create Bloom resources" << std::endl;
+            return false;
+        }
+
         // Now safe to call, because Pool exists!
         viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(
             viewportSampler, 
@@ -168,6 +175,8 @@ namespace Crescendo {
         if (!createGridPipeline()) return false;
         if (!createWaterPipeline()) return false;        
         if (!createTransparentPipeline()) return false;
+        if (!createBloomPipeline()) return false;
+        if (!createCompositePipeline()) return false;
 
         if (!createFramebuffers()) return false;
 
@@ -209,6 +218,8 @@ namespace Crescendo {
 
         std::cout << ">>> ENGINE READY! <<<" << std::endl;
         gameConsole.AddLog("[Render] Viewport resolution: %dx%d\n", swapChainExtent.width, swapChainExtent.height);
+
+        updateCompositeDescriptors();
 
         return true;
     }
@@ -445,7 +456,7 @@ namespace Crescendo {
         vkFreeMemory(device, stagingBufferMemory, nullptr);
         
         // 4. Create View & Sampler
-        textureImageView = createTextureImageView(textureImage);
+        textureImageView = createImageView(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
         createTextureSampler(); 
 
         // 5. Fill the Texture Bank with this Dummy Texture
@@ -575,28 +586,32 @@ namespace Crescendo {
         }
     }
 
-
     VkImageView RenderingServer::createTextureImageView(VkImage& image) {
         return createImageView(image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
     }
 
     bool RenderingServer::createDescriptorSetLayout() {
-        // [FIX] We removed the UBO binding because we use Push Constants now.
-        // We ONLY define the Texture Array at Binding 0.
+        // 1. GLOBAL TEXTURE ARRAY LAYOUT (Binding 0, 100 Textures)
+        VkDescriptorSetLayoutBinding globalBinding{};
+        globalBinding.binding = 0;
+        globalBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        globalBinding.descriptorCount = MAX_TEXTURES;
+        globalBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        VkDescriptorSetLayoutBinding samplerLayoutBinding{};
-        samplerLayoutBinding.binding = 0; // [CRITICAL] Textures must be Binding 0
-        samplerLayoutBinding.descriptorCount = MAX_TEXTURES;
-        samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        samplerLayoutBinding.pImmutableSamplers = nullptr;
-        samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT; // Only pixel shader needs textures
+        VkDescriptorSetLayoutCreateInfo globalInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        globalInfo.bindingCount = 1;
+        globalInfo.pBindings = &globalBinding;
+        if (vkCreateDescriptorSetLayout(device, &globalInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) return false;
 
-        VkDescriptorSetLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 1;
-        layoutInfo.pBindings = &samplerLayoutBinding;
+        // 2. POST-PROCESS LAYOUT (Binding 0: Scene, Binding 1: Bloom)
+        VkDescriptorSetLayoutBinding postBindings[2] = {};
+        postBindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+        postBindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
 
-        return vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) == VK_SUCCESS;
+        VkDescriptorSetLayoutCreateInfo postInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        postInfo.bindingCount = 2;
+        postInfo.pBindings = postBindings;
+        return vkCreateDescriptorSetLayout(device, &postInfo, nullptr, &postProcessLayout) == VK_SUCCESS;
     }
 
     bool RenderingServer::createDescriptorPool() {
@@ -626,6 +641,7 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createDescriptorSets() {
+       // 1. Allocate Global Texture Set
        VkDescriptorSetAllocateInfo allocInfo{};
        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
        allocInfo.descriptorPool = descriptorPool;
@@ -634,11 +650,10 @@ namespace Crescendo {
 
        if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) return false;
 
-       // Prepare info for ALL textures (initially pointing to default)
+       // 2. Update Global Textures (Default Init)
        std::vector<VkDescriptorImageInfo> imageInfos(MAX_TEXTURES);
        for (int i = 0; i < MAX_TEXTURES; i++) {
            imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-           // Ensure textureBank was filled by createDefaultTexture() before this!
            imageInfos[i].imageView = textureBank[i].view; 
            imageInfos[i].sampler = textureSampler;
        }
@@ -647,14 +662,22 @@ namespace Crescendo {
        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
        descriptorWrite.dstSet = descriptorSet;
        descriptorWrite.dstBinding = 0;
-       descriptorWrite.dstArrayElement = 0; // Start at index 0
+       descriptorWrite.dstArrayElement = 0;
        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-       
-       // [CRITICAL] We must update the ENTIRE array, not just one.
-       descriptorWrite.descriptorCount = static_cast<uint32_t>(MAX_TEXTURES); 
+       descriptorWrite.descriptorCount = static_cast<uint32_t>(MAX_TEXTURES);
        descriptorWrite.pImageInfo = imageInfos.data();
 
        vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+
+       // [CRITICAL FIX] 3. Allocate Post-Process (Composite) Set
+       VkDescriptorSetAllocateInfo postAlloc{};
+       postAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+       postAlloc.descriptorPool = descriptorPool;
+       postAlloc.descriptorSetCount = 1;
+       postAlloc.pSetLayouts = &postProcessLayout; // Uses the 2-sampler layout we created earlier
+
+       if (vkAllocateDescriptorSets(device, &postAlloc, &compositeDescriptorSet) != VK_SUCCESS) return false;
+
        return true;
     }
 
@@ -693,8 +716,6 @@ namespace Crescendo {
            return cache.textures[path];
        }
 
-       // [FIX] Ensure ID never exceeds 99 (MAX_TEXTURES - 1)
-       // 0 is default, so we have 1..99 available.
        int newID = static_cast<int>(textureMap.size()) + 1;
        
        if (newID >= MAX_TEXTURES) {
@@ -709,7 +730,12 @@ namespace Crescendo {
            return 0; 
        }
 
-       newTex.view = createTextureImageView(newTex.image);
+       // [FIX] CHANGE THIS LINE
+       // Old: newTex.view = createTextureImageView(newTex.image);
+       // New: Explicitly use SRGB to match the image format
+       newTex.view = createImageView(newTex.image, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
+       
+       // ... (Rest of function remains the same)
        
        // [SAFETY] Double check bounds before array access
        if (newID < textureBank.size()) {
@@ -767,8 +793,9 @@ namespace Crescendo {
         auto bindingDescription = Vertex::getBindingDescription();
         auto attributeDescriptions = Vertex::getAttributeDescriptions();
 
-        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        
+        // [FIX] Assign these! The compiler warned they were unused.
         vertexInputInfo.vertexBindingDescriptionCount = 1;
         vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
         vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
@@ -1066,9 +1093,8 @@ namespace Crescendo {
 
         auto bindingDescription = Vertex::getBindingDescription();
         auto attributeDescriptions = Vertex::getAttributeDescriptions();
-
-        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         vertexInputInfo.vertexBindingDescriptionCount = 1;
         vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
         vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
@@ -1192,9 +1218,8 @@ namespace Crescendo {
 
         auto bindingDescription = Vertex::getBindingDescription();
         auto attributeDescriptions = Vertex::getAttributeDescriptions();
-
-        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         vertexInputInfo.vertexBindingDescriptionCount = 1;
         vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
         vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
@@ -1281,6 +1306,85 @@ namespace Crescendo {
 
         return true;
     }
+
+    bool RenderingServer::createCompositePipeline() {
+        auto vertShaderCode = readFile("assets/shaders/fullscreen_vert.spv");
+        auto fragShaderCode = readFile("assets/shaders/bloom_composite.spv");
+        
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+        
+        VkPipelineShaderStageCreateInfo stages[2] = {};
+        stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertShaderModule, "main", nullptr};
+        stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragShaderModule, "main", nullptr};
+        
+        // [FIX] Zero out Vertex Input (No mesh data for fullscreen quad)
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        vertexInputInfo.vertexBindingDescriptionCount = 0;
+        vertexInputInfo.pVertexBindingDescriptions = nullptr;
+        vertexInputInfo.vertexAttributeDescriptionCount = 0;
+        vertexInputInfo.pVertexAttributeDescriptions = nullptr;
+        
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, nullptr, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE};
+        VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, nullptr, 0, 1, nullptr, 1, nullptr};
+        VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, nullptr, 0, VK_FALSE, VK_FALSE, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE, VK_FALSE, 0, 0, 0, 1.0f};
+        VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, nullptr, 0, VK_SAMPLE_COUNT_1_BIT};
+        VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO}; // Defaults to off
+        
+        
+        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachment.blendEnable = VK_FALSE; 
+
+        // [FIX] Use explicit assignment to prevent type mismatch errors
+        VkPipelineColorBlendStateCreateInfo colorBlending{};
+        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlending.logicOpEnable = VK_FALSE;
+        colorBlending.logicOp = VK_LOGIC_OP_COPY;
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &colorBlendAttachment;
+        colorBlending.blendConstants[0] = 0.0f;
+        colorBlending.blendConstants[1] = 0.0f;
+        colorBlending.blendConstants[2] = 0.0f;
+        colorBlending.blendConstants[3] = 0.0f;
+        
+        std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0, (uint32_t)dynamicStates.size(), dynamicStates.data()};
+        
+        // Reuse the layout created in createBloomPipeline
+        if (compositePipelineLayout == VK_NULL_HANDLE) {
+            // Fallback just in case
+             VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+             layoutInfo.setLayoutCount = 1;
+             layoutInfo.pSetLayouts = &postProcessLayout;
+             vkCreatePipelineLayout(device, &layoutInfo, nullptr, &compositePipelineLayout);
+        }
+    
+        VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = stages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.layout = compositePipelineLayout;
+    
+        // [CRITICAL FIX] Use the SWAPCHAIN Render Pass, NOT the Viewport Render Pass
+        pipelineInfo.renderPass = renderPass; 
+        pipelineInfo.subpass = 0;
+    
+        VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &compositePipeline);
+        
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
+    
+        return result == VK_SUCCESS;
+    }
+    
 
     bool RenderingServer::createRenderPass() {
         VkAttachmentDescription colorAttachment{};
@@ -1551,8 +1655,8 @@ namespace Crescendo {
     }
 
     // [FIX] New updated GLTF handling implemented 
-    // GLTF imports with textures but not materials, if its mat based it defaults to off white texture at ID 0.
-    // Could resolve with my principle bsdf shader im building for our default mats to align with Blender standard.
+    // GLTF Now imports properly again with respected textureID and materialID + pbr extensions
+    // Principle BSDF is now incorporated and can manipulate PBR and IBL mats.
     // Look into KTX for future scalability for now we aren't exceeding the vram limits so this will not be added unitl needed.
     
     void RenderingServer::loadGLTF(const std::string& filePath, Scene* scene) {
@@ -1846,11 +1950,16 @@ namespace Crescendo {
     }
 
     // --------------------------------------------------------------------
-    // Render() / Draw Logic 
+    // Render() / THE RENDER LOOP
     // --------------------------------------------------------------------
 
     void RenderingServer::render(Scene* scene) {
         if (!scene) return;
+
+        // [CRITICAL FIX] Start ImGui Frame FIRST
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplSDL2_NewFrame();
+        ImGui::NewFrame();
 
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
 
@@ -1867,19 +1976,22 @@ namespace Crescendo {
         vkResetFences(device, 1, &inFlightFences[currentFrame]);
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);
 
-        VkCommandBufferBeginInfo beginInfo{};
-        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo);
 
         float aspectRatio = (float)swapChainExtent.width / (float)swapChainExtent.height;
         glm::mat4 view = mainCamera.GetViewMatrix();
         glm::mat4 proj = mainCamera.GetProjectionMatrix(aspectRatio);
 
+        // [FIX] Vulkan Coordinate System Fix
+        // GLM was designed for OpenGL (Y-up), but Vulkan is Y-down.
+        // Without this, your image will be upside-down or squashed.
+        proj[1][1] *= -1;
+
         // =========================================================
-        // PASS 1: 3D WORLD
+        // PASS 1: 3D WORLD (Render to Viewport Image)
         // =========================================================
-        VkRenderPassBeginInfo viewportPassInfo{};
-        viewportPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        VkRenderPassBeginInfo viewportPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         viewportPassInfo.renderPass = viewportRenderPass;
         viewportPassInfo.framebuffer = viewportFramebuffer;
         viewportPassInfo.renderArea.extent = swapChainExtent;
@@ -1890,14 +2002,16 @@ namespace Crescendo {
         viewportPassInfo.clearValueCount = 2;
         viewportPassInfo.pClearValues = viewportClearValues.data();
 
-        vkCmdBeginRenderPass(commandBuffers[currentFrame], &viewportPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        // [FIX] Ensure Viewport is in Color Attachment Mode before rendering
+        transitionImageLayout(viewportImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
+        vkCmdBeginRenderPass(commandBuffers[currentFrame], &viewportPassInfo, VK_SUBPASS_CONTENTS_INLINE);
             VkViewport viewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
             vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &viewport);
             VkRect2D scissor{{0, 0}, swapChainExtent};
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
 
-            // --- SUB-PASS A: SKY ---
+            // --- Draw Sky ---
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
             MeshPushConstants skyPush{};
             skyPush.renderMatrix = glm::inverse(proj * view);
@@ -1907,102 +2021,130 @@ namespace Crescendo {
             vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &skyPush);
             vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
 
-            // --- SUB-PASS B: GRID ---
-            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, gridPipeline);
-            MeshPushConstants gridPush{};
-            gridPush.renderMatrix = proj * view; 
-            gridPush.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
-            vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &gridPush);
-            vkCmdDraw(commandBuffers[currentFrame], 6, 1, 0, 0);
+            // [FIX] Bind the Procedural Grid Mesh!
+            // The procedural grid is likely the first mesh (index 0) if loaded first
+            if (!meshes.empty()) {
+                MeshResource& gridMesh = meshes[0]; // Assuming Procedural Grid is 0
+                VkBuffer vBuffers[] = { gridMesh.vertexBuffer };
+                VkDeviceSize offsets[] = { 0 };
+                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
+                vkCmdBindIndexBuffer(commandBuffers[currentFrame], gridMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-            // --- SUB-PASS C: OPAQUE OBJECTS ---
-            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-            if (descriptorSet != VK_NULL_HANDLE) {
-                vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+                MeshPushConstants gridPush{};
+                gridPush.renderMatrix = proj * view; 
+                gridPush.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
+                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &gridPush);
+
+                // Draw Indexed!
+                vkCmdDrawIndexed(commandBuffers[currentFrame], gridMesh.indexCount, 1, 0, 0, 0);
             }
 
             for (auto* ent : scene->entities) {
                 if (!ent || ent->targetName == "prop_water" || ent->modelIndex >= meshes.size()) continue;
-
                 MeshResource& mesh = meshes[ent->modelIndex];
                 VkBuffer vBuffers[] = { mesh.vertexBuffer };
                 VkDeviceSize offsets[] = { 0 };
                 vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-                glm::mat4 model = glm::mat4(1.0f);
-                model = glm::translate(model, ent->origin);
+                glm::mat4 model = glm::translate(glm::mat4(1.0f), ent->origin);
                 model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1));
                 model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0,1,0));
                 model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
                 model = glm::scale(model, ent->scale);
 
-                // Inside the entity loop in RenderingServer::render
                 MeshPushConstants push{};
-                push.renderMatrix = proj * view * model;
+                push.renderMatrix = proj * view * model;        // Keep this for Position
+                push.modelMatrix = model;                       // [NEW] Pass pure Model matrix
                 push.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
                 push.pbrParams = glm::vec4((float)ent->textureID, ent->roughness, ent->metallic, ent->emission);
                 push.sunDir = glm::vec4(sunDirection, sunIntensity);
                 push.sunColor = glm::vec4(sunColor, 1.0f);
-
-                // [FIX] Pass the color from the inspector to the shader
                 push.albedoTint = glm::vec4(ent->albedoColor, 1.0f); 
 
-                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
-                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
-                   0, sizeof(MeshPushConstants), &push);
-                   
+                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &push);
                 vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
             }
-
-            // --- SUB-PASS D: WATER ---
-            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipeline);
-            for (auto* ent : scene->entities) {
-                if (!ent || ent->targetName != "prop_water" || ent->modelIndex >= meshes.size()) continue;
-
-                MeshResource& mesh = meshes[ent->modelIndex];
-                VkBuffer vBuffers[] = { mesh.vertexBuffer };
-                VkDeviceSize offsets[] = { 0 };
-                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-
-                glm::mat4 model = glm::translate(glm::mat4(1.0f), ent->origin) * glm::scale(glm::mat4(1.0f), ent->scale);
-
-                MeshPushConstants waterPush{};
-                waterPush.renderMatrix = proj * view * model;
-                waterPush.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
-                waterPush.pbrParams = glm::vec4((float)waterTextureID, 0.0f, 0.0f, (float)SDL_GetTicks() / 1000.0f);
-                waterPush.sunDir = glm::vec4(sunDirection, sunIntensity);
-                waterPush.sunColor = glm::vec4(sunColor, 1.0f);
-
-                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &waterPush);
-                vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
-            }
-
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
+
+        // =========================================================
+        // PASS 2: BLOOM EXTRACTION
+        // =========================================================
+        
+        // 1. Prepare Bloom Image (Reset to Write Mode)
+        transitionImageLayout(bloomBrightImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+        // 2. Prepare Viewport Image (For Reading)
+        transitionImageLayout(viewportImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        // 3. Update Descriptor to point to the NOW READABLE viewport image
+        VkDescriptorImageInfo compositeInfos[2] = {};
+        compositeInfos[0] = {viewportSampler, viewportImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        compositeInfos[1] = {viewportSampler, bloomBrightImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}; // Placeholder for now
+
+        VkWriteDescriptorSet postWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        postWrite.dstSet = compositeDescriptorSet;
+        postWrite.dstBinding = 0;
+        postWrite.descriptorCount = 2;
+        postWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        postWrite.pImageInfo = compositeInfos;
+        // vkUpdateDescriptorSets(device, 1, &postWrite, 0, nullptr);
+
+        // 4. Render Bloom
+        VkRenderPassBeginInfo bloomPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        bloomPassInfo.renderPass = bloomRenderPass;
+        bloomPassInfo.framebuffer = bloomFramebuffer;
+        bloomPassInfo.renderArea.extent = swapChainExtent;
+        VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+        bloomPassInfo.clearValueCount = 1;
+        bloomPassInfo.pClearValues = &clearColor;
+        
+        vkCmdBeginRenderPass(commandBuffers[currentFrame], &bloomPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bloomPipeline);
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipelineLayout, 0, 1, &compositeDescriptorSet, 0, nullptr);
+            vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0); 
+        vkCmdEndRenderPass(commandBuffers[currentFrame]);
+
+        // =========================================================
+        // PASS 3: FINAL COMPOSITE (Render to Swapchain)
+        // =========================================================
+
+        // 1. Transition Bloom Image to Read Mode
+        transitionImageLayout(bloomBrightImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        // 2. Update Descriptor AGAIN to point to the NOW READABLE bloom image
+        compositeInfos[1] = {viewportSampler, bloomBrightImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}; 
         
 
-        // =========================================================
-        // PASS 2: ONSCREEN (UI & ImGui)
-        // =========================================================
-        VkRenderPassBeginInfo screenPassInfo{};
-        screenPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        // 3. Render to Screen
+        VkRenderPassBeginInfo screenPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         screenPassInfo.renderPass = renderPass;
         screenPassInfo.framebuffer = swapChainFramebuffers[imageIndex];
-        screenPassInfo.renderArea.offset = {0, 0};
         screenPassInfo.renderArea.extent = swapChainExtent;
-        screenPassInfo.clearValueCount = 0; // Dont clear, just draw on top of what was there (or if loadOp is clear)
+        
+        // [FIX] Provide Clear Values for Swapchain Pass
+        std::array<VkClearValue, 2> clearValues{};
+        clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        clearValues[1].depthStencil = {1.0f, 0};
+        screenPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+        screenPassInfo.pClearValues = clearValues.data();
 
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &screenPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
+            // Composite Quad
+            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipeline);
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipelineLayout, 0, 1, &compositeDescriptorSet, 0, nullptr);
+            vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0); 
+
+            // UI
             if (viewportDescriptorSet != VK_NULL_HANDLE) {
                 editorUI.Prepare(scene, mainCamera, viewportDescriptorSet);
-            } else {
-                std::cerr << "[Render] Warning: Viewport Descriptor is NULL" << std::endl;
             }
-
             bool showConsole = true;
             gameConsole.Draw("Crescendo Console", &showConsole);
+
+            ImGui::Render();
+            
             editorUI.Render(commandBuffers[currentFrame]);
 
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
@@ -2011,23 +2153,15 @@ namespace Crescendo {
             throw std::runtime_error("failed to record command buffer!");
         }
 
-        // ---------------------------------------------------------
-        // 4. SUBMIT & PRESENT (THE FIX IS HERE)
-        // ---------------------------------------------------------
-        VkSubmitInfo submitInfo{};
-        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-
-        // Wait for the image to be available
+        // Submit & Present
+        VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
         VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
         submitInfo.waitSemaphoreCount = 1;
         submitInfo.pWaitSemaphores = waitSemaphores;
         submitInfo.pWaitDstStageMask = waitStages;
-
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
-
-        // [CRITICAL FIX] Signal the semaphore for THIS FRAME, not the image index.
         VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = signalSemaphores;
@@ -2036,8 +2170,7 @@ namespace Crescendo {
             throw std::runtime_error("failed to submit draw command!");
         }
 
-        VkPresentInfoKHR presentInfo{};
-        presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+        VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         presentInfo.waitSemaphoreCount = 1;
         presentInfo.pWaitSemaphores = signalSemaphores;
         presentInfo.swapchainCount = 1;
@@ -2048,8 +2181,6 @@ namespace Crescendo {
 
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
             recreateSwapChain(display_ref->get_window());
-        } else if (result != VK_SUCCESS) {
-            throw std::runtime_error("failed to present swap chain image!");
         }
 
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
@@ -2150,7 +2281,7 @@ namespace Crescendo {
 
     void RenderingServer::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {
         VkCommandBuffer commandBuffer = beginSingleTimeCommands();
-
+ 
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.oldLayout = oldLayout;
@@ -2163,31 +2294,66 @@ namespace Crescendo {
         barrier.subresourceRange.levelCount = 1;
         barrier.subresourceRange.baseArrayLayer = 0;
         barrier.subresourceRange.layerCount = 1;
-
+ 
         VkPipelineStageFlags sourceStage;
         VkPipelineStageFlags destinationStage;
-
+ 
+        // Case 1: Texture Upload (Undefined -> Transfer Dst)
         if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
             barrier.srcAccessMask = 0;
             barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
             destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
         } 
+        // Case 2: Texture Ready (Transfer Dst -> Shader Read)
         else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         } 
-        else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            barrier.srcAccessMask = 0;
+        // Case 3: Bloom/Post-Process (Color Attachment -> Shader Read)
+        else if (oldLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            sourceStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         }
+        // Case 4: Safety Check (Read -> Read)
+        else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        }
+        // Case 5: Recycle/Reset (Shader Read -> Color Attachment) [Fixes 5->2 Error]
+        else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+             barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+             barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+             sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+             destinationStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        }
+        // Case 6: Viewport Init (Undefined -> Shader Read) [Fixes Init Crash]
+        else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+             barrier.srcAccessMask = 0;
+             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+             sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        }
+        // [FIX] Case 7: Initial Render Target Setup (Undefined -> Color Attachment)
+        // This fixes the "[Error] Unsupported Layout Transition: 0 -> 2" crash!
+        else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        }
+
         else {
+            std::cerr << "[Error] Unsupported Layout Transition: " << oldLayout << " -> " << newLayout << std::endl;
             throw std::invalid_argument("unsupported layout transition!");
         }
+        
 
         vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
         endSingleTimeCommands(commandBuffer);
@@ -2502,56 +2668,150 @@ namespace Crescendo {
         return true;
     }
 
-    void SetCrescendoEditorStyle() {
-        ImGuiStyle& style = ImGui::GetStyle();
-        ImVec4* colors = style.Colors;
+    void RenderingServer::updateCompositeDescriptors() {
+       // Only update if resources exist
+       if (viewportImageView == VK_NULL_HANDLE || bloomBrightImageView == VK_NULL_HANDLE) return;
 
-        ImVec4 ashGreyDark   = ImVec4(0.10f, 0.10f, 0.11f, 1.00f); 
-        ImVec4 ashGreyMedium = ImVec4(0.15f, 0.15f, 0.16f, 1.00f);
-        ImVec4 ashGreyLight  = ImVec4(0.20f, 0.20f, 0.22f, 1.00f);
-        ImVec4 goldOrange    = ImVec4(1.00f, 0.65f, 0.00f, 1.00f);
-        ImVec4 goldHover     = ImVec4(1.00f, 0.80f, 0.30f, 1.00f);
+       VkDescriptorImageInfo compositeInfos[2] = {};
+       // Binding 0: The 3D Scene
+       compositeInfos[0].sampler = viewportSampler;
+       compositeInfos[0].imageView = viewportImageView;
+       compositeInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        colors[ImGuiCol_WindowBg]             = ashGreyDark;   
-        colors[ImGuiCol_ChildBg]              = ashGreyDark;
-        colors[ImGuiCol_PopupBg]              = ashGreyDark;
-        colors[ImGuiCol_MenuBarBg]            = ashGreyMedium;
+       // Binding 1: The Bloom Brightness Buffer
+       compositeInfos[1].sampler = viewportSampler;
+       compositeInfos[1].imageView = bloomBrightImageView;
+       compositeInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        colors[ImGuiCol_TitleBg]              = ashGreyDark;
-        colors[ImGuiCol_TitleBgActive]        = ashGreyMedium;
-        colors[ImGuiCol_TitleBgCollapsed]     = ashGreyDark;
-        colors[ImGuiCol_Header]               = ashGreyMedium;
-        colors[ImGuiCol_HeaderHovered]        = goldOrange;
-        colors[ImGuiCol_HeaderActive]         = goldOrange;
+       VkWriteDescriptorSet postWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+       postWrite.dstSet = compositeDescriptorSet;
+       postWrite.dstBinding = 0;
+       postWrite.dstArrayElement = 0;
+       postWrite.descriptorCount = 2;
+       postWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+       postWrite.pImageInfo = compositeInfos;
 
-        colors[ImGuiCol_Text]                 = goldOrange;    
-        colors[ImGuiCol_TextSelectedBg]       = ImVec4(1.00f, 0.65f, 0.00f, 0.35f);
+       vkUpdateDescriptorSets(device, 1, &postWrite, 0, nullptr);
+    }
 
-        colors[ImGuiCol_FrameBg]              = ashGreyMedium;
-        colors[ImGuiCol_FrameBgHovered]       = ashGreyLight;
-        colors[ImGuiCol_FrameBgActive]        = ashGreyLight;
+    bool RenderingServer::createBloomPipeline() {
+        auto vertShaderCode = readFile("assets/shaders/fullscreen_vert.spv");
+        auto fragShaderCode = readFile("assets/shaders/bloom_bright.spv");
+
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+        VkPipelineShaderStageCreateInfo stages[2] = {};
+        stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertShaderModule, "main", nullptr};
+        stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragShaderModule, "main", nullptr};
+
+        // Zero out vertex input for fullscreen pass
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        vertexInputInfo.vertexBindingDescriptionCount = 0;
+        vertexInputInfo.pVertexBindingDescriptions = nullptr;
+        vertexInputInfo.vertexAttributeDescriptionCount = 0;
+        vertexInputInfo.pVertexAttributeDescriptions = nullptr;
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, nullptr, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE};
+        VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, nullptr, 0, 1, nullptr, 1, nullptr};
         
-        colors[ImGuiCol_Button]               = ashGreyMedium;
-        colors[ImGuiCol_ButtonHovered]        = goldHover;
-        colors[ImGuiCol_ButtonActive]         = goldOrange;
+        VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rasterizer.depthClampEnable = VK_FALSE;
+        rasterizer.rasterizerDiscardEnable = VK_FALSE;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE;
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
-        colors[ImGuiCol_SliderGrab]           = goldOrange;
-        colors[ImGuiCol_SliderGrabActive]     = goldHover;
-        colors[ImGuiCol_CheckMark]            = goldOrange;
+        VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, nullptr, 0, VK_SAMPLE_COUNT_1_BIT};
+        VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
 
-        colors[ImGuiCol_Tab]                  = ashGreyDark;
-        colors[ImGuiCol_TabHovered]           = goldHover;
-        colors[ImGuiCol_TabActive]            = ashGreyMedium;
-        colors[ImGuiCol_TabUnfocused]         = ashGreyDark;
-        colors[ImGuiCol_TabUnfocusedActive]   = ashGreyMedium;
-        colors[ImGuiCol_DockingPreview]       = ImVec4(1.00f, 0.65f, 0.00f, 0.70f);
+        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachment.blendEnable = VK_FALSE;
 
-        colors[ImGuiCol_Border]               = ashGreyMedium;
-        colors[ImGuiCol_Separator]            = ashGreyMedium;
+        // [FIX] Use explicit assignment to avoid type errors
+        VkPipelineColorBlendStateCreateInfo colorBlending{};
+        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlending.logicOpEnable = VK_FALSE;
+        colorBlending.logicOp = VK_LOGIC_OP_COPY;
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &colorBlendAttachment;
+        colorBlending.blendConstants[0] = 0.0f;
 
-        style.WindowRounding = 5.0f;
-        style.FrameRounding  = 3.0f;
-        style.PopupRounding  = 5.0f;
+        std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0, (uint32_t)dynamicStates.size(), dynamicStates.data()};
+
+        if (compositePipelineLayout == VK_NULL_HANDLE) {
+             VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+             layoutInfo.setLayoutCount = 1;
+             layoutInfo.pSetLayouts = &postProcessLayout;
+             vkCreatePipelineLayout(device, &layoutInfo, nullptr, &compositePipelineLayout);
+        }
+
+        VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = stages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.layout = compositePipelineLayout;
+        pipelineInfo.renderPass = bloomRenderPass;
+        pipelineInfo.subpass = 0;
+
+        VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &bloomPipeline);
+
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
+
+        return result == VK_SUCCESS;
+    }
+
+    bool RenderingServer::createBloomResources() {
+       uint32_t width = swapChainExtent.width;
+       uint32_t height = swapChainExtent.height;
+
+       // 1. Create the Bright Image (Target for bloom extraction)
+       createImage(width, height, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
+           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, bloomBrightImage, bloomBrightImageMemory);
+       bloomBrightImageView = createImageView(bloomBrightImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
+
+       // 2. Create Bloom Render Pass
+       VkAttachmentDescription colorAttachment{};
+       colorAttachment.format = VK_FORMAT_R8G8B8A8_SRGB;
+       colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+       colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+       colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+       colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+       colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+       VkAttachmentReference colorAttachmentRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+       VkSubpassDescription subpass{0, VK_PIPELINE_BIND_POINT_GRAPHICS, 0, nullptr, 1, &colorAttachmentRef};
+
+       VkRenderPassCreateInfo renderPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+       renderPassInfo.attachmentCount = 1;
+       renderPassInfo.pAttachments = &colorAttachment;
+       renderPassInfo.subpassCount = 1;
+       renderPassInfo.pSubpasses = &subpass;
+
+       if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &bloomRenderPass) != VK_SUCCESS) return false;
+
+       // 3. Create Framebuffer
+       VkFramebufferCreateInfo fbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+       fbInfo.renderPass = bloomRenderPass;
+       fbInfo.attachmentCount = 1;
+       fbInfo.pAttachments = &bloomBrightImageView;
+       fbInfo.width = width;
+       fbInfo.height = height;
+       fbInfo.layers = 1;
+
+       return vkCreateFramebuffer(device, &fbInfo, nullptr, &bloomFramebuffer) == VK_SUCCESS;
     }
 
     void RenderingServer::recreateSwapChain(SDL_Window* window) {
@@ -2579,113 +2839,151 @@ namespace Crescendo {
     }   
 
     void RenderingServer::cleanupSwapChain() {
+        // 1. Existing Depth Cleanup
         vkDestroyImageView(device, depthImageView, nullptr);
         vkDestroyImage(device, depthImage, nullptr);
         vkFreeMemory(device, depthImageMemory, nullptr);
         depthImageView = VK_NULL_HANDLE;
         depthImage = VK_NULL_HANDLE;       
-
+            
+        // 2. Existing Framebuffer Cleanup
         for (auto framebuffer : swapChainFramebuffers) {
             vkDestroyFramebuffer(device, framebuffer, nullptr);
         }
         swapChainFramebuffers.clear();
-
+        
+        // 3. Existing Image View Cleanup
         for (auto imageView : swapChainImageViews) {
             vkDestroyImageView(device, imageView, nullptr);
         }
         swapChainImageViews.clear();
-
+        
+        // =========================================================
+        // [FIX] CLEANUP VIEWPORT RESOURCES
+        // =========================================================
         if (viewportFramebuffer != VK_NULL_HANDLE) {
             vkDestroyFramebuffer(device, viewportFramebuffer, nullptr);
             viewportFramebuffer = VK_NULL_HANDLE;
         }
-
-        vkDestroySwapchainKHR(device, swapChain, nullptr);
+        if (viewportRenderPass != VK_NULL_HANDLE) {
+            vkDestroyRenderPass(device, viewportRenderPass, nullptr);
+            viewportRenderPass = VK_NULL_HANDLE;
+        }
+        if (viewportImageView != VK_NULL_HANDLE) {
+            vkDestroyImageView(device, viewportImageView, nullptr);
+            viewportImageView = VK_NULL_HANDLE;
+        }
+        if (viewportImage != VK_NULL_HANDLE) {
+            vkDestroyImage(device, viewportImage, nullptr);
+            viewportImage = VK_NULL_HANDLE;
+        }
+        if (viewportImageMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, viewportImageMemory, nullptr);
+            viewportImageMemory = VK_NULL_HANDLE;
+        }
+        if (viewportSampler != VK_NULL_HANDLE) {
+            vkDestroySampler(device, viewportSampler, nullptr);
+            viewportSampler = VK_NULL_HANDLE;
+        }
+        
+        // =========================================================
+        // [FIX] CLEANUP BLOOM RESOURCES
+        // =========================================================
+        // [FIX] Ensure Bloom Memory is freed!
+        if (bloomFramebuffer != VK_NULL_HANDLE) { vkDestroyFramebuffer(device, bloomFramebuffer, nullptr); bloomFramebuffer = VK_NULL_HANDLE; }
+        if (bloomRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, bloomRenderPass, nullptr); bloomRenderPass = VK_NULL_HANDLE; }
+        if (bloomBrightImageView != VK_NULL_HANDLE) { vkDestroyImageView(device, bloomBrightImageView, nullptr); bloomBrightImageView = VK_NULL_HANDLE; }
+        if (bloomBrightImage != VK_NULL_HANDLE) { vkDestroyImage(device, bloomBrightImage, nullptr); bloomBrightImage = VK_NULL_HANDLE; }
+        
+        // [ADD THIS BLOCK] This resolves the "VkDeviceMemory" validation error
+        if (bloomBrightMemory != VK_NULL_HANDLE) { 
+            vkFreeMemory(device, bloomBrightMemory, nullptr); 
+            bloomBrightMemory = VK_NULL_HANDLE; 
+        }
+            
+            // 4. Finally, destroy the swapchain
+            vkDestroySwapchainKHR(device, swapChain, nullptr);
     }
 
     void RenderingServer::shutdown() {
        if (device != VK_NULL_HANDLE) {
            vkDeviceWaitIdle(device);
 
-            if (viewportDepthImageView != VK_NULL_HANDLE) vkDestroyImageView(device, viewportDepthImageView, nullptr);
-            if (viewportDepthImage != VK_NULL_HANDLE) vkDestroyImage(device, viewportDepthImage, nullptr);
-            if (viewportDepthImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, viewportDepthImageMemory, nullptr);
+           // 1. Destroy Depth Resources (Not part of swapchain cleanup in your logic)
+           if (viewportDepthImageView != VK_NULL_HANDLE) vkDestroyImageView(device, viewportDepthImageView, nullptr);
+           if (viewportDepthImage != VK_NULL_HANDLE) vkDestroyImage(device, viewportDepthImage, nullptr);
+           if (viewportDepthImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, viewportDepthImageMemory, nullptr);
+          
+           editorUI.Shutdown(device);
+
+           // 2. Destroy Pipelines
+           if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, skyPipeline, nullptr);
+           if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, graphicsPipeline, nullptr);
+           if (gridPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, gridPipeline, nullptr);
+           if (transparentPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, transparentPipeline, nullptr);
+           if (waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, waterPipeline, nullptr);
+           if (bloomPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bloomPipeline, nullptr);
+           if (compositePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, compositePipeline, nullptr);
+
+           // 3. Destroy Layouts
+           if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+           if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
+           if (postProcessLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, postProcessLayout, nullptr);
            
-            editorUI.Shutdown(device);
+           // 4. Destroy Main RenderPass
+           // [NOTE] viewportRenderPass and bloomRenderPass are handled in cleanupSwapChain()!
+           if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
+           
+           // 5. Cleanup Meshes
+           for (auto& mesh : meshes) {
+               if (mesh.vertexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, mesh.vertexBuffer, nullptr); mesh.vertexBuffer = VK_NULL_HANDLE; }
+               if (mesh.vertexBufferMemory != VK_NULL_HANDLE) { vkFreeMemory(device, mesh.vertexBufferMemory, nullptr); mesh.vertexBufferMemory = VK_NULL_HANDLE; }
+               if (mesh.indexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, mesh.indexBuffer, nullptr); mesh.indexBuffer = VK_NULL_HANDLE; }
+               if (mesh.indexBufferMemory != VK_NULL_HANDLE) { vkFreeMemory(device, mesh.indexBufferMemory, nullptr); mesh.indexBufferMemory = VK_NULL_HANDLE; }
+           }
+           meshes.clear(); 
+           gameWorld.Clear(); 
+        
+           // 6. Cleanup Textures
+           for (const auto& tex : textureBank) {
+               if (tex.image != VK_NULL_HANDLE && tex.image != textureImage) {
+                   vkDestroyImageView(device, tex.view, nullptr);
+                   vkDestroyImage(device, tex.image, nullptr);
+                   vkFreeMemory(device, tex.memory, nullptr);
+               }
+           }
+           textureBank.clear();
+           textureMap.clear();
+        
+           // 7. Cleanup Default Texture
+           if (textureImageView != VK_NULL_HANDLE) vkDestroyImageView(device, textureImageView, nullptr);
+           if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(device, textureSampler, nullptr);
+           if (textureImage != VK_NULL_HANDLE) vkDestroyImage(device, textureImage, nullptr);
+           if (textureImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, textureImageMemory, nullptr);
+        
+           // 8. Cleanup Descriptors
+           if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+           if (descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+        
+           // 9. Cleanup Swapchain (Handles Viewport, Bloom, and Framebuffers)
+           cleanupSwapChain(); 
 
-            if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, skyPipeline, nullptr);
-            if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, graphicsPipeline, nullptr);
-            if (gridPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, gridPipeline, nullptr);
-            if (transparentPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, transparentPipeline, nullptr);
-            if (waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, waterPipeline, nullptr);
+           // [FIX] REMOVED the Viewport & Bloom cleanup block that was here.
+           // It caused the crash because cleanupSwapChain() just destroyed them!
 
-            if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-            
-            if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
-            
-            if (viewportRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, viewportRenderPass, nullptr);
-
-            for (auto& mesh : meshes) {
-                if (mesh.vertexBuffer != VK_NULL_HANDLE) {
-                    vkDestroyBuffer(device, mesh.vertexBuffer, nullptr);
-                    mesh.vertexBuffer = VK_NULL_HANDLE; 
-                }
-                if (mesh.vertexBufferMemory != VK_NULL_HANDLE) {
-                    vkFreeMemory(device, mesh.vertexBufferMemory, nullptr);
-                    mesh.vertexBufferMemory = VK_NULL_HANDLE;
-                }
-                if (mesh.indexBuffer != VK_NULL_HANDLE) {
-                    vkDestroyBuffer(device, mesh.indexBuffer, nullptr);
-                    mesh.indexBuffer = VK_NULL_HANDLE;
-                }
-                if (mesh.indexBufferMemory != VK_NULL_HANDLE) {
-                    vkFreeMemory(device, mesh.indexBufferMemory, nullptr);
-                    mesh.indexBufferMemory = VK_NULL_HANDLE;
-                }
-            }
-            meshes.clear(); 
-            
-            gameWorld.Clear(); 
-
-            for (const auto& tex : textureBank) {
-                if (tex.image != VK_NULL_HANDLE && tex.image != textureImage) {
-                    vkDestroyImageView(device, tex.view, nullptr);
-                    vkDestroyImage(device, tex.image, nullptr);
-                    vkFreeMemory(device, tex.memory, nullptr);
-                }
-            }
-            textureBank.clear();
-            textureMap.clear();
-
-            if (textureImageView != VK_NULL_HANDLE) vkDestroyImageView(device, textureImageView, nullptr);
-            if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(device, textureSampler, nullptr);
-            if (textureImage != VK_NULL_HANDLE) vkDestroyImage(device, textureImage, nullptr);
-            if (textureImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, textureImageMemory, nullptr);
-
-            if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-            if (descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool, nullptr);
-
-            cleanupSwapChain(); 
-            if (viewportImageView != VK_NULL_HANDLE) vkDestroyImageView(device, viewportImageView, nullptr);
-            if (viewportSampler != VK_NULL_HANDLE) vkDestroySampler(device, viewportSampler, nullptr);
-            if (viewportImage != VK_NULL_HANDLE) vkDestroyImage(device, viewportImage, nullptr);
-            if (viewportImageMemory != VK_NULL_HANDLE) {
-                vkFreeMemory(device, viewportImageMemory, nullptr);
-                viewportImageMemory = VK_NULL_HANDLE; 
-             }
-
-            for (size_t i = 0; i < imageAvailableSemaphores.size(); i++) { 
-                vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
-                vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
-            }
-            for (size_t i = 0; i < inFlightFences.size(); i++) {
-                vkDestroyFence(device, inFlightFences[i], nullptr);
-            }
-
-            if (commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, commandPool, nullptr);
-
-            vkDestroyDevice(device, nullptr);
-            device = VK_NULL_HANDLE;
+           // 10. Cleanup Sync Objects
+           for (size_t i = 0; i < imageAvailableSemaphores.size(); i++) { 
+               vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
+               vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
+           }
+           for (size_t i = 0; i < inFlightFences.size(); i++) {
+               vkDestroyFence(device, inFlightFences[i], nullptr);
+           }
+        
+           if (commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, commandPool, nullptr);
+        
+           vkDestroyDevice(device, nullptr);
+           device = VK_NULL_HANDLE;
        }
 
        if (surface != VK_NULL_HANDLE) vkDestroySurfaceKHR(instance, surface, nullptr);

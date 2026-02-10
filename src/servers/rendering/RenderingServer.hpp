@@ -54,6 +54,7 @@ namespace Crescendo {
     
     struct MeshPushConstants {
         glm::mat4 renderMatrix; 
+        glm::mat4 modelMatrix;                              // Model only for lighting/normals
         glm::vec4 camPos;
         glm::vec4 pbrParams;                                // x:texID. y:roughness, z:mettalic, w:emission
         glm::vec4 sunDir;                                   // xyz:dir, w:intensity
@@ -151,6 +152,7 @@ namespace Crescendo {
         VkPipeline transparentPipeline = VK_NULL_HANDLE;
         bool createTransparentPipeline();
         
+        // Command Pool
         VkCommandPool commandPool = VK_NULL_HANDLE;
         std::vector<VkCommandBuffer> commandBuffers;        
         std::vector<VkSemaphore> imageAvailableSemaphores;
@@ -165,7 +167,7 @@ namespace Crescendo {
         VkRenderPass viewportRenderPass = VK_NULL_HANDLE;
         VkDescriptorSet viewportDescriptorSet = VK_NULL_HANDLE;
     
-        // [FIX] Added missing Depth Resources for Viewport
+        // Depth Resources
         VkImage viewportDepthImage = VK_NULL_HANDLE;
         VkDeviceMemory viewportDepthImageMemory = VK_NULL_HANDLE;
         VkImageView viewportDepthImageView = VK_NULL_HANDLE;
@@ -174,6 +176,33 @@ namespace Crescendo {
         glm::vec3 modelRot = glm::vec3(90.0f, 0.0f, 0.0f);
         glm::vec3 modelScale = glm::vec3(1.0f);
 
+        // Bloom Resources
+        VkImage bloomBrightImage = VK_NULL_HANDLE;
+        VkDeviceMemory bloomBrightImageMemory = VK_NULL_HANDLE;
+        VkImageView bloomBrightImageView = VK_NULL_HANDLE;
+
+        VkDeviceMemory bloomBrightMemory = VK_NULL_HANDLE;
+
+        VkImage bloomBlurImage = VK_NULL_HANDLE;
+        VkDeviceMemory bloomBlurImageMemory = VK_NULL_HANDLE;
+        VkImageView bloomBlurImageView = VK_NULL_HANDLE;
+
+        VkFramebuffer bloomFramebuffer = VK_NULL_HANDLE;
+        VkRenderPass bloomRenderPass = VK_NULL_HANDLE;
+        VkPipeline bloomPipeline = VK_NULL_HANDLE;
+
+        // Composite Resource
+
+        VkDescriptorSet compositeDescriptorSet = VK_NULL_HANDLE;
+        VkRenderPass postProcessRenderPass = VK_NULL_HANDLE; 
+        VkFramebuffer postProcessFramebuffer = VK_NULL_HANDLE;
+
+        // post scriptorsets
+        VkDescriptorSetLayout postProcessLayout = VK_NULL_HANDLE;
+        VkPipelineLayout compositePipelineLayout = VK_NULL_HANDLE; // [ADD THIS]
+        VkPipeline compositePipeline = VK_NULL_HANDLE;
+
+        // grid
         VkPipeline gridPipeline = VK_NULL_HANDLE;
         bool createGridPipeline();
 
@@ -222,6 +251,13 @@ namespace Crescendo {
         void recreateSwapChain(SDL_Window* window);
         void cleanupSwapChain();
         // end of vulkan core
+
+        // post processing
+        bool createBloomResources();
+        bool createBloomPipeline();
+        bool createCompositePipeline();
+
+        void updateCompositeDescriptors();
 
         // loaders
         void createDefaultTexture();

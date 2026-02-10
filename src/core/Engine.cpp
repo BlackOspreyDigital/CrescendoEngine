@@ -14,16 +14,15 @@ static bool CustomAssertFailed(const char* inExpression, const char* inMessage, 
     return true; 
 }
 
-namespace JPH {
-    bool (*AssertFailed)(const char*, const char*, const char*, unsigned int) = CustomAssertFailed;
-}
-
 namespace Crescendo {
 
     Engine::Engine() : isRunning(false) {}
     Engine::~Engine() {}
 
     bool Engine::Initialize(const char* title, int width, int height) {
+        // Manually Hook Jolt here
+        JPH::AssertFailed = CustomAssertFailed;
+
         // 1. Initialize Display (SDL_Init happens here)
         if (!displayServer.initialize(title, width, height)) return false;
 
