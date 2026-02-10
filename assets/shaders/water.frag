@@ -9,10 +9,12 @@ layout(location = 0) out vec4 outColor;
 
 layout(binding = 0) uniform sampler2D texSampler[100];
 
+// [FIX] ALIGNMENT MUST MATCH C++
 layout(push_constant) uniform constants {
     mat4 renderMatrix;
+    mat4 modelMatrix;  // [WAS MISSING]
     vec4 camPos;
-    vec4 pbrParams; 
+    vec4 pbrParams;
     vec4 sunDir;
     vec4 sunColor;
 } PushConstants;

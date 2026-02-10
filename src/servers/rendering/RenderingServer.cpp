@@ -1954,236 +1954,222 @@ namespace Crescendo {
     // --------------------------------------------------------------------
 
     void RenderingServer::render(Scene* scene) {
-        if (!scene) return;
+       if (!scene) return;
+        
+       // 1. Sync
+       vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+        
+       uint32_t imageIndex;
+       VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, 
+           imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+        
+       if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+           recreateSwapChain(window);
+           return;
+       }
 
-        // [CRITICAL FIX] Start ImGui Frame FIRST
-        ImGui_ImplVulkan_NewFrame();
-        ImGui_ImplSDL2_NewFrame();
-        ImGui::NewFrame();
-
-        vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-
-        uint32_t imageIndex;
-        VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, 
-                                                imageAvailableSemaphores[currentFrame], 
-                                                VK_NULL_HANDLE, &imageIndex);
-
-        if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-            recreateSwapChain(window);
-            return;
-        }
-
-        vkResetFences(device, 1, &inFlightFences[currentFrame]);
-        vkResetCommandBuffer(commandBuffers[currentFrame], 0);
-
-        VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo);
-
-        float aspectRatio = (float)swapChainExtent.width / (float)swapChainExtent.height;
-        glm::mat4 view = mainCamera.GetViewMatrix();
-        glm::mat4 proj = mainCamera.GetProjectionMatrix(aspectRatio);
-
-        // [FIX] Vulkan Coordinate System Fix
-        // GLM was designed for OpenGL (Y-up), but Vulkan is Y-down.
-        // Without this, your image will be upside-down or squashed.
-        proj[1][1] *= -1;
-
-        // =========================================================
-        // PASS 1: 3D WORLD (Render to Viewport Image)
-        // =========================================================
-        VkRenderPassBeginInfo viewportPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-        viewportPassInfo.renderPass = viewportRenderPass;
-        viewportPassInfo.framebuffer = viewportFramebuffer;
-        viewportPassInfo.renderArea.extent = swapChainExtent;
-
-        std::array<VkClearValue, 2> viewportClearValues{};
-        viewportClearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};
-        viewportClearValues[1].depthStencil = {1.0f, 0};
-        viewportPassInfo.clearValueCount = 2;
-        viewportPassInfo.pClearValues = viewportClearValues.data();
-
-        // [FIX] Ensure Viewport is in Color Attachment Mode before rendering
-        transitionImageLayout(viewportImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
-        vkCmdBeginRenderPass(commandBuffers[currentFrame], &viewportPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-            VkViewport viewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
-            vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &viewport);
-            VkRect2D scissor{{0, 0}, swapChainExtent};
-            vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
-
-            // --- Draw Sky ---
-            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
-            MeshPushConstants skyPush{};
-            skyPush.renderMatrix = glm::inverse(proj * view);
-            skyPush.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
-            skyPush.sunDir = glm::vec4(sunDirection, sunIntensity);
-            skyPush.sunColor = glm::vec4(sunColor, 1.0f);
-            vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &skyPush);
-            vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
-
-            // [FIX] Bind the Procedural Grid Mesh!
-            // The procedural grid is likely the first mesh (index 0) if loaded first
-            if (!meshes.empty()) {
-                MeshResource& gridMesh = meshes[0]; // Assuming Procedural Grid is 0
-                VkBuffer vBuffers[] = { gridMesh.vertexBuffer };
-                VkDeviceSize offsets[] = { 0 };
-                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffers[currentFrame], gridMesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-
-                MeshPushConstants gridPush{};
-                gridPush.renderMatrix = proj * view; 
-                gridPush.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
-                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &gridPush);
-
-                // Draw Indexed!
-                vkCmdDrawIndexed(commandBuffers[currentFrame], gridMesh.indexCount, 1, 0, 0, 0);
-            }
-
+       editorUI.Prepare(scene, mainCamera, viewportDescriptorSet);
+    
+       vkResetFences(device, 1, &inFlightFences[currentFrame]);
+       vkResetCommandBuffer(commandBuffers[currentFrame], 0);  
+    
+       VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+       if (vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo) != VK_SUCCESS) {
+           throw std::runtime_error("failed to begin recording command buffer!");
+       }
+    
+       // --- SETUP MATRICES ---
+       // Use the Editor Viewport size for Aspect Ratio if available
+       float aspectRatio = lastViewportSize.x / lastViewportSize.y;
+       if (aspectRatio < 0.1f) aspectRatio = 1.77f; // Safety check
+    
+       glm::mat4 view = mainCamera.GetViewMatrix();
+       glm::mat4 proj = mainCamera.GetProjectionMatrix(aspectRatio);
+       // Note: No proj[1][1] *= -1 here (Camera.hpp handles it)
+    
+       // --- SUN SETUP ---
+       glm::vec3 sunDirection = glm::normalize(glm::vec3(0.5f, 1.0f, 0.5f)); 
+       glm::vec3 sunColor = glm::vec3(1.0f, 1.0f, 1.0f);
+       float sunIntensity = 1.0f;
+    
+       for (auto* sunEnt : scene->entities) {
+           if (sunEnt && sunEnt->targetName == "Sun") {
+               // Calculate sun direction from rotation
+               glm::mat4 rotMat = glm::mat4(1.0f);
+               rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.x), glm::vec3(1, 0, 0));
+               rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.y), glm::vec3(0, 1, 0));
+               rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.z), glm::vec3(0, 0, 1));
+               sunDirection = glm::normalize(glm::vec3(rotMat * glm::vec4(0.0f, 0.0f, 1.0f, 0.0f)));
+               break; 
+           }
+       }
+    
+       // =========================================================
+       // PASS 1: OFFSCREEN RENDER (Sky + Objects)
+       // =========================================================
+       VkRenderPassBeginInfo viewportPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+       viewportPassInfo.renderPass = viewportRenderPass;
+       viewportPassInfo.framebuffer = viewportFramebuffer;
+       viewportPassInfo.renderArea.extent = swapChainExtent;
+    
+       std::array<VkClearValue, 2> clearValues{};
+       clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}}; 
+       clearValues[1].depthStencil = {1.0f, 0};
+       viewportPassInfo.clearValueCount = 2;
+       viewportPassInfo.pClearValues = clearValues.data();
+    
+       // Transition for writing
+       transitionImageLayout(viewportImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    
+       vkCmdBeginRenderPass(commandBuffers[currentFrame], &viewportPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+           
+           // Dynamic Viewport
+           VkViewport viewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
+           vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &viewport);
+           VkRect2D scissor{{0, 0}, swapChainExtent};
+           vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
+    
+           // --- SKY PASS (Restored Logic) ---
+           vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
+           
+           // Strip translation for Skybox (The logic you liked!)
+           glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view)); 
+           MeshPushConstants skyPush{};
+           skyPush.renderMatrix = glm::inverse(proj * viewNoTrans); 
+           
+           vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &skyPush);
+           vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
+    
+           // --- ENTITY PASS ---
+           vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+           VkPipeline currentPipeline = graphicsPipeline;
+          
+           // [FIX] BIND GLOBAL DESCRIPTOR SET (Set 0) HERE
+           // This gives the shader access to the texture array (sampler2D textures[100])
+           vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                                   pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+           
             for (auto* ent : scene->entities) {
-                if (!ent || ent->targetName == "prop_water" || ent->modelIndex >= meshes.size()) continue;
+                if (!ent || ent->modelIndex >= meshes.size()) continue;
+        
+            // ... (rest of your loop logic) ...
+            
+                // Pipeline Switching (Normal vs Grid vs Water)
+                VkPipeline targetPipeline = graphicsPipeline;
+                if (ent->className == "prop_grid") targetPipeline = gridPipeline;
+                else if (ent->className == "prop_water") targetPipeline = waterPipeline;
+             
+                if (currentPipeline != targetPipeline) {
+                    vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, targetPipeline);
+                    currentPipeline = targetPipeline;
+                }
+             
                 MeshResource& mesh = meshes[ent->modelIndex];
                 VkBuffer vBuffers[] = { mesh.vertexBuffer };
                 VkDeviceSize offsets[] = { 0 };
                 vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-
-                glm::mat4 model = glm::translate(glm::mat4(1.0f), ent->origin);
+             
+                // 1. Calculate Model Matrix
+                glm::mat4 model = glm::mat4(1.0f);
+                model = glm::translate(model, ent->origin);
                 model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1));
                 model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0,1,0));
                 model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
                 model = glm::scale(model, ent->scale);
-
+             
+                // 2. Fill Push Constants (MERGED FIX)
                 MeshPushConstants push{};
-                push.renderMatrix = proj * view * model;        // Keep this for Position
-                push.modelMatrix = model;                       // [NEW] Pass pure Model matrix
+                push.renderMatrix = proj * view * model; // MVP
+                
+                // [CRITICAL ADDITION] This was missing in your old code!
+                push.modelMatrix  = model;               // World Space (For Lighting)
+             
                 push.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
-                push.pbrParams = glm::vec4((float)ent->textureID, ent->roughness, ent->metallic, ent->emission);
+                push.pbrParams = glm::vec4((float)mesh.textureID, ent->roughness, ent->metallic, ent->emission);
+                
+                // Special case for Water
+                if (ent->className == "prop_water") {
+                     float time = SDL_GetTicks() / 1000.0f;
+                     push.pbrParams.w = time; 
+                }
+             
                 push.sunDir = glm::vec4(sunDirection, sunIntensity);
                 push.sunColor = glm::vec4(sunColor, 1.0f);
-                push.albedoTint = glm::vec4(ent->albedoColor, 1.0f); 
-
+                push.albedoTint = glm::vec4(ent->albedoColor, 1.0f);
+             
                 vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &push);
+             
                 vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
             }
+           
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
-
-        // =========================================================
-        // PASS 2: BLOOM EXTRACTION
-        // =========================================================
         
-        // 1. Prepare Bloom Image (Reset to Write Mode)
-        transitionImageLayout(bloomBrightImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-
-        // 2. Prepare Viewport Image (For Reading)
+        // Transition back for Shader Sampling (ImGui Viewport)
         transitionImageLayout(viewportImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-        // 3. Update Descriptor to point to the NOW READABLE viewport image
-        VkDescriptorImageInfo compositeInfos[2] = {};
-        compositeInfos[0] = {viewportSampler, viewportImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        compositeInfos[1] = {viewportSampler, bloomBrightImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}; // Placeholder for now
-
-        VkWriteDescriptorSet postWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        postWrite.dstSet = compositeDescriptorSet;
-        postWrite.dstBinding = 0;
-        postWrite.descriptorCount = 2;
-        postWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        postWrite.pImageInfo = compositeInfos;
-        // vkUpdateDescriptorSets(device, 1, &postWrite, 0, nullptr);
-
-        // 4. Render Bloom
-        VkRenderPassBeginInfo bloomPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-        bloomPassInfo.renderPass = bloomRenderPass;
-        bloomPassInfo.framebuffer = bloomFramebuffer;
-        bloomPassInfo.renderArea.extent = swapChainExtent;
-        VkClearValue clearColor = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
-        bloomPassInfo.clearValueCount = 1;
-        bloomPassInfo.pClearValues = &clearColor;
-        
-        vkCmdBeginRenderPass(commandBuffers[currentFrame], &bloomPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bloomPipeline);
-            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipelineLayout, 0, 1, &compositeDescriptorSet, 0, nullptr);
-            vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0); 
-        vkCmdEndRenderPass(commandBuffers[currentFrame]);
-
+         
         // =========================================================
-        // PASS 3: FINAL COMPOSITE (Render to Swapchain)
+        // PASS 2: COMPOSITE & UI RENDER
         // =========================================================
-
-        // 1. Transition Bloom Image to Read Mode
-        transitionImageLayout(bloomBrightImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-        // 2. Update Descriptor AGAIN to point to the NOW READABLE bloom image
-        compositeInfos[1] = {viewportSampler, bloomBrightImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}; 
-        
-
-        // 3. Render to Screen
         VkRenderPassBeginInfo screenPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         screenPassInfo.renderPass = renderPass;
         screenPassInfo.framebuffer = swapChainFramebuffers[imageIndex];
         screenPassInfo.renderArea.extent = swapChainExtent;
-        
-        // [FIX] Provide Clear Values for Swapchain Pass
-        std::array<VkClearValue, 2> clearValues{};
-        clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-        clearValues[1].depthStencil = {1.0f, 0};
-        screenPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
+        screenPassInfo.clearValueCount = 2;
         screenPassInfo.pClearValues = clearValues.data();
 
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &screenPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-            // Composite Quad
+            // [FIX] 1. DRAW THE BACKGROUND (The 3D Scene)
+            // This copies your off-screen viewportImage to the actual screen
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipeline);
-            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipelineLayout, 0, 1, &compositeDescriptorSet, 0, nullptr);
-            vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0); 
 
-            // UI
-            if (viewportDescriptorSet != VK_NULL_HANDLE) {
-                editorUI.Prepare(scene, mainCamera, viewportDescriptorSet);
-            }
-            bool showConsole = true;
-            gameConsole.Draw("Crescendo Console", &showConsole);
-
-            ImGui::Render();
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                                    compositePipelineLayout, 0, 1, &compositeDescriptorSet, 0, nullptr);
             
+            // Draw a full-screen triangle (generated by the vertex shader)
+            vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
+            
+            // [FIX] 2. DRAW UI ON TOP
             editorUI.Render(commandBuffers[currentFrame]);
-
+            
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
-
+            
         if (vkEndCommandBuffer(commandBuffers[currentFrame]) != VK_SUCCESS) {
             throw std::runtime_error("failed to record command buffer!");
         }
-
-        // Submit & Present
-        VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-        VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
-        VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-        submitInfo.waitSemaphoreCount = 1;
-        submitInfo.pWaitSemaphores = waitSemaphores;
-        submitInfo.pWaitDstStageMask = waitStages;
-        submitInfo.commandBufferCount = 1;
-        submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
-        VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[currentFrame]};
-        submitInfo.signalSemaphoreCount = 1;
-        submitInfo.pSignalSemaphores = signalSemaphores;
-
-        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
-            throw std::runtime_error("failed to submit draw command!");
-        }
-
-        VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-        presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores = signalSemaphores;
-        presentInfo.swapchainCount = 1;
-        presentInfo.pSwapchains = &swapChain;
-        presentInfo.pImageIndices = &imageIndex;
-
-        result = vkQueuePresentKHR(presentQueue, &presentInfo);
-
-        if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
-            recreateSwapChain(display_ref->get_window());
-        }
-
-        currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+    
+       // Submit and Present
+       VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+       VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
+       VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+       submitInfo.waitSemaphoreCount = 1;
+       submitInfo.pWaitSemaphores = waitSemaphores;
+       submitInfo.pWaitDstStageMask = waitStages;
+       submitInfo.commandBufferCount = 1;
+       submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
+       VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[imageIndex]};
+       submitInfo.signalSemaphoreCount = 1;
+       submitInfo.pSignalSemaphores = signalSemaphores;
+    
+       if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
+           throw std::runtime_error("failed to submit draw command!");
+       }
+    
+       VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+       presentInfo.waitSemaphoreCount = 1;
+       presentInfo.pWaitSemaphores = signalSemaphores;
+       presentInfo.swapchainCount = 1;
+       presentInfo.pSwapchains = &swapChain;
+       presentInfo.pImageIndices = &imageIndex;
+    
+       result = vkQueuePresentKHR(presentQueue, &presentInfo);
+    
+       if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+           recreateSwapChain(window);
+       }
+    
+       currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
     void RenderingServer::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory) {
@@ -2470,7 +2456,7 @@ namespace Crescendo {
         return true;
     }
 
-    RenderingServer::QueueFamilyIndices RenderingServer::findQueueFamilies(VkPhysicalDevice device) {
+    QueueFamilyIndices RenderingServer::findQueueFamilies(VkPhysicalDevice device) {
         QueueFamilyIndices indices;
         uint32_t queueFamilyCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
@@ -2499,7 +2485,7 @@ namespace Crescendo {
         return true;
     }
 
-    RenderingServer::SwapChainSupportDetails RenderingServer::querySwapChainSupport(VkPhysicalDevice device) {
+    SwapChainSupportDetails RenderingServer::querySwapChainSupport(VkPhysicalDevice device) {
         SwapChainSupportDetails details;
         vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities);
         uint32_t formatCount;
@@ -2780,6 +2766,13 @@ namespace Crescendo {
        createImage(width, height, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, bloomBrightImage, bloomBrightImageMemory);
+       
+       // [FIX] ADD THIS LINE HERE -----------------------------------------
+       // Transition the bloom image to READ_ONLY so the Composite Pass doesn't crash
+       // when it tries to sample it (even if it's empty/black for now).
+       transitionImageLayout(bloomBrightImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+       // ------------------------------------------------------------------
+
        bloomBrightImageView = createImageView(bloomBrightImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
 
        // 2. Create Bloom Render Pass
@@ -2900,6 +2893,12 @@ namespace Crescendo {
             vkFreeMemory(device, bloomBrightMemory, nullptr); 
             bloomBrightMemory = VK_NULL_HANDLE; 
         }
+
+        // [FIX] Free the memory for the bloom Image
+        if (bloomBrightImageMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, bloomBrightImageMemory, nullptr);
+            bloomBrightImageMemory = VK_NULL_HANDLE;
+        }
             
             // 4. Finally, destroy the swapchain
             vkDestroySwapchainKHR(device, swapChain, nullptr);
@@ -2932,7 +2931,7 @@ namespace Crescendo {
            
            // 4. Destroy Main RenderPass
            // [NOTE] viewportRenderPass and bloomRenderPass are handled in cleanupSwapChain()!
-           if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
+           // if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
            
            // 5. Cleanup Meshes
            for (auto& mesh : meshes) {
@@ -2972,6 +2971,9 @@ namespace Crescendo {
            // It caused the crash because cleanupSwapChain() just destroyed them!
 
            // 10. Cleanup Sync Objects
+
+           if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
+
            for (size_t i = 0; i < imageAvailableSemaphores.size(); i++) { 
                vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
                vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);

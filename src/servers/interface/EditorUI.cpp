@@ -157,11 +157,20 @@ namespace Crescendo {
     // --- PREPARE (Fixed Gizmo logic and Camera handling) ---
     void EditorUI::Prepare(Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor) {
         
+        // [FIX 1] START THE IMGUI FRAME
+        // You MUST call these three functions before doing any UI work
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplSDL2_NewFrame();
+        ImGui::NewFrame();
+        
+        // [FIX 2] START GIZMO FRAME
+        // ImGuizmo must be initialized AFTER ImGui::NewFrame()
         ImGuizmo::BeginFrame();
 
         ImGuiIO& io = ImGui::GetIO();
 
         // 1. INPUT HANDLING (Free-Fly Camera)
+        // ... (Keep your existing Input Handling code here) ...
         if (!io.WantCaptureKeyboard || ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
              if (io.MouseWheel != 0.0f) {
                  camera.Zoom -= io.MouseWheel; 
@@ -180,8 +189,8 @@ namespace Crescendo {
                  if (ImGui::IsKeyDown(ImGuiKey_S)) camera.Position -= camera.Front * moveSpeed;
                  if (ImGui::IsKeyDown(ImGuiKey_D)) camera.Position += camera.Right * moveSpeed;
                  if (ImGui::IsKeyDown(ImGuiKey_A)) camera.Position -= camera.Right * moveSpeed;
-                 if (ImGui::IsKeyDown(ImGuiKey_Q)) camera.Position += camera.WorldUp * moveSpeed; // Up
-                 if (ImGui::IsKeyDown(ImGuiKey_E)) camera.Position -= camera.WorldUp * moveSpeed; // Down
+                 if (ImGui::IsKeyDown(ImGuiKey_Q)) camera.Position += camera.WorldUp * moveSpeed; 
+                 if (ImGui::IsKeyDown(ImGuiKey_E)) camera.Position -= camera.WorldUp * moveSpeed; 
              }
         }
 
@@ -224,7 +233,8 @@ namespace Crescendo {
             ImGui::Image((ImTextureID)viewportDescriptor, viewportSize);
         }
 
-        // --- GIZMOS (Fixed 'model' matrix undeclared error) ---
+        // --- GIZMOS ---
+        // ... (Keep your existing Gizmo code here) ...
         if (viewportSize.x > 0 && viewportSize.y > 0 && scene) {
             ImGuizmo::SetOrthographic(false);
             ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
@@ -237,7 +247,7 @@ namespace Crescendo {
             if (selectedObjectIndex >= 0 && selectedObjectIndex < (int)scene->entities.size()) {
                 CBaseEntity* ent = scene->entities[selectedObjectIndex];
                 if (ent) {
-                    // [FIX] Declare and initialize the 'model' matrix here
+                    // [FIX] Ensure matrix construction is correct
                     glm::mat4 model = glm::mat4(1.0f);
                     model = glm::translate(model, ent->origin);
                     model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0, 0, 1));
@@ -263,6 +273,7 @@ namespace Crescendo {
         ImGui::PopStyleColor();
 
         // 4. HIERARCHY & INSPECTOR
+        // ... (Keep your existing Hierarchy code here) ...
         ImGui::Begin("Scene Hierarchy");
         if (scene) {
             for (size_t i = 0; i < scene->entities.size(); i++) {
@@ -279,6 +290,7 @@ namespace Crescendo {
         ImGui::End();
 
         ImGui::Begin("Inspector");
+        // ... (Keep your existing Inspector code here) ...
         if (selectedObjectIndex >= 0 && scene && selectedObjectIndex < (int)scene->entities.size()) {
             CBaseEntity* ent = scene->entities[selectedObjectIndex];
             if (ent) {
@@ -306,7 +318,10 @@ namespace Crescendo {
 
         ImGui::End();
 
-        //ImGui::Render(); This is closing frame to early
+        // [FIX 3] FINALIZE THE FRAME
+        // You MUST call Render() here. It calculates vertex buffers from the UI logic above.
+        // It does NOT draw to the screen yet (that happens in EditorUI::Render).
+        ImGui::Render(); 
     }
 
     void EditorUI::Render(VkCommandBuffer cmd) {

@@ -11,9 +11,10 @@ layout(location = 2) out vec2 fragUV;
 layout(location = 3) out vec3 fragPos;
 
 layout(push_constant) uniform constants {
-    mat4 renderMatrix;
+    mat4 renderMatrix; 
+    mat4 modelMatrix;  // [MATCHING C++] Added to align with your new struct!
     vec4 camPos;
-    vec4 pbrParams; // w = TIME
+    vec4 pbrParams;    // w = Time
     vec4 sunDir;
     vec4 sunColor;
 } PushConstants;
@@ -22,22 +23,32 @@ void main() {
     vec3 pos = inPos;
     float time = PushConstants.pbrParams.w;
 
-    // Wave Math
+    // --- Wave Logic ---
     float waveHeight = 0.5;
     float waveFreq = 0.5;
     float waveSpeed = 2.0;
-    pos.z += sin(pos.x * waveFreq + time * waveSpeed) * waveHeight;
-    pos.z += cos(pos.y * waveFreq + time * waveSpeed) * waveHeight * 0.5; 
+    
+    float waveX = pos.x * waveFreq + time * waveSpeed;
+    float waveY = pos.y * waveFreq + time * waveSpeed;
 
+    pos.z += sin(waveX) * waveHeight;
+    pos.z += cos(waveY) * waveHeight * 0.5; 
+
+    // 1. Screen Position
     gl_Position = PushConstants.renderMatrix * vec4(pos, 1.0);
-    
-    // [FIX] Pass World Position, not Clip Space
-    fragPos = pos; 
 
-    mat3 normalMatrix = transpose(inverse(mat3(PushConstants.renderMatrix)));
-    fragNormal = normalize(normalMatrix * inNormal);
+    // 2. World Position (Use Model Matrix!)
+    fragPos = vec3(PushConstants.modelMatrix * vec4(pos, 1.0));
+
+    // 3. Wave Normals (The "Slope" Fix)
+    float dHdx = waveFreq * waveHeight * cos(waveX);
+    float dHdy = waveFreq * waveHeight * 0.5 * -sin(waveY);
+    vec3 localWaveNormal = normalize(vec3(-dHdx, -dHdy, 1.0));
+
+    // Transform Normal to World Space (using Model Matrix)
+    mat3 normalMatrix = transpose(inverse(mat3(PushConstants.modelMatrix)));
+    fragNormal = normalize(normalMatrix * localWaveNormal);
     
-    float scrollSpeed = 0.1;
-    fragUV = (inTexCoord * 4.0) + vec2(time * scrollSpeed, time * scrollSpeed);
+    fragUV = (inTexCoord * 4.0) + vec2(time * 0.1);
     fragColor = vec3(0.0, 0.2, 0.8);
 }

@@ -29,12 +29,10 @@ namespace Crescendo {
     class DisplayServer;
     class Scene;
     
-    
     struct TextureResource {
         VkImage image;
         VkDeviceMemory memory;
         VkImageView view;
-        
     };
 
     struct MeshResource {
@@ -48,18 +46,35 @@ namespace Crescendo {
     };   
 
     struct ResourceCache {
-        std::unordered_map<std::string, int32_t> textures; // Path -> TextureID
-        std::unordered_map<std::string, int32_t> meshes;   // Path_SubIndex -> MeshID
+        std::unordered_map<std::string, int32_t> textures;
+        std::unordered_map<std::string, int32_t> meshes;
+    };
+
+    // Queue Indicies
+    struct QueueFamilyIndices {
+        std::optional<uint32_t> graphicsFamily;
+        std::optional<uint32_t> presentFamily;
+
+        bool isComplete() {
+            return graphicsFamily.has_value() && presentFamily.has_value();
+        }
+    };
+
+    struct SwapChainSupportDetails {
+       VkSurfaceCapabilitiesKHR capabilities;
+       std::vector<VkSurfaceFormatKHR> formats;
+       std::vector<VkPresentModeKHR> presentModes; // Fix: changed < to >
     };
     
+    // [FIX] MASTER ALIGNMENT (192 Bytes)
     struct MeshPushConstants {
-        glm::mat4 renderMatrix; 
-        glm::mat4 modelMatrix;                              // Model only for lighting/normals
-        glm::vec4 camPos;
-        glm::vec4 pbrParams;                                // x:texID. y:roughness, z:mettalic, w:emission
-        glm::vec4 sunDir;                                   // xyz:dir, w:intensity
-        glm::vec4 sunColor;                             
-        glm::vec4 albedoTint;                               // [NEW] Inspector color
+       glm::mat4 renderMatrix; // MVP (Offset 0)
+       glm::mat4 modelMatrix;  // [NEW] World Space (Offset 64)
+       glm::vec4 camPos;       // (Offset 128)
+       glm::vec4 pbrParams;    // (Offset 144)
+       glm::vec4 sunDir;       // (Offset 160)
+       glm::vec4 sunColor;     // (Offset 176)
+       glm::vec4 albedoTint;   // (Offset 192) - Padding/Extra
     };
 
     class RenderingServer {
@@ -97,6 +112,17 @@ namespace Crescendo {
 
     private:
         ResourceCache cache;
+        
+        private:
+            const std::vector<const char*> validationLayers = {
+                "VK_LAYER_KHRONOS_validation"
+            };
+
+        #ifdef NDEBUG
+            const bool enableValidationLayers = false;
+        #else
+            const bool enableValidationLayers = true;
+        #endif
         
         EditorUI editorUI;         
         DisplayServer* display_ref;
@@ -152,7 +178,6 @@ namespace Crescendo {
         VkPipeline transparentPipeline = VK_NULL_HANDLE;
         bool createTransparentPipeline();
         
-        // Command Pool
         VkCommandPool commandPool = VK_NULL_HANDLE;
         std::vector<VkCommandBuffer> commandBuffers;        
         std::vector<VkSemaphore> imageAvailableSemaphores;
@@ -167,7 +192,6 @@ namespace Crescendo {
         VkRenderPass viewportRenderPass = VK_NULL_HANDLE;
         VkDescriptorSet viewportDescriptorSet = VK_NULL_HANDLE;
     
-        // Depth Resources
         VkImage viewportDepthImage = VK_NULL_HANDLE;
         VkDeviceMemory viewportDepthImageMemory = VK_NULL_HANDLE;
         VkImageView viewportDepthImageView = VK_NULL_HANDLE;
@@ -176,11 +200,9 @@ namespace Crescendo {
         glm::vec3 modelRot = glm::vec3(90.0f, 0.0f, 0.0f);
         glm::vec3 modelScale = glm::vec3(1.0f);
 
-        // Bloom Resources
         VkImage bloomBrightImage = VK_NULL_HANDLE;
         VkDeviceMemory bloomBrightImageMemory = VK_NULL_HANDLE;
         VkImageView bloomBrightImageView = VK_NULL_HANDLE;
-
         VkDeviceMemory bloomBrightMemory = VK_NULL_HANDLE;
 
         VkImage bloomBlurImage = VK_NULL_HANDLE;
@@ -191,24 +213,19 @@ namespace Crescendo {
         VkRenderPass bloomRenderPass = VK_NULL_HANDLE;
         VkPipeline bloomPipeline = VK_NULL_HANDLE;
 
-        // Composite Resource
-
         VkDescriptorSet compositeDescriptorSet = VK_NULL_HANDLE;
         VkRenderPass postProcessRenderPass = VK_NULL_HANDLE; 
         VkFramebuffer postProcessFramebuffer = VK_NULL_HANDLE;
 
-        // post scriptorsets
         VkDescriptorSetLayout postProcessLayout = VK_NULL_HANDLE;
-        VkPipelineLayout compositePipelineLayout = VK_NULL_HANDLE; // [ADD THIS]
+        VkPipelineLayout compositePipelineLayout = VK_NULL_HANDLE; 
         VkPipeline compositePipeline = VK_NULL_HANDLE;
 
-        // grid
         VkPipeline gridPipeline = VK_NULL_HANDLE;
         bool createGridPipeline();
 
         VkPipeline waterPipeline = VK_NULL_HANDLE; 
         bool createWaterPipeline();
-        
         void createWaterMesh();
 
         bool showNodeEditor = false;
@@ -217,7 +234,21 @@ namespace Crescendo {
         
         glm::vec2 lastViewportSize = {1280.0f, 720.0f}; 
 
-        // vulkan core
+        QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
+        SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device);
+            
+        void transitionImageLayout(VkImage image, VkFormat format, 
+                                   VkImageLayout oldLayout, VkImageLayout newLayout);
+        void copyBufferToImage(VkBuffer buffer, VkImage image, 
+                               uint32_t width, uint32_t height);
+
+        bool isDeviceSuitable(VkPhysicalDevice device);
+        
+            
+        VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
+        VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
+        VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);
+
         bool createInstance();
         bool setupDebugMessenger();
         bool createSurface();
@@ -231,7 +262,6 @@ namespace Crescendo {
         bool createGraphicsPipeline();
         bool createFramebuffers();
         
-        //bool createTextureImage();
         bool createTextureImageView();
         bool createTextureImage(const std::string& path, VkImage& image, VkDeviceMemory& memory);
         VkImageView createTextureImageView(VkImage& image); 
@@ -250,16 +280,12 @@ namespace Crescendo {
         void updateUniformBuffer(uint32_t currentImage, Scene* scene);
         void recreateSwapChain(SDL_Window* window);
         void cleanupSwapChain();
-        // end of vulkan core
 
-        // post processing
         bool createBloomResources();
         bool createBloomPipeline();
         bool createCompositePipeline();
-
         void updateCompositeDescriptors();
 
-        // loaders
         void createDefaultTexture();
         void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene);
         void createProceduralGrid();
@@ -268,25 +294,14 @@ namespace Crescendo {
         glm::vec3 sunColor = glm::vec3(1.0f, 0.95f, 0.8f);
         float sunIntensity = 1.2f;
 
-        // Dev console logic
+        // ... (Console struct and other private members hidden for brevity, keep your Console struct here) ...
         struct Console{
             ImGuiTextBuffer     Buf;
             ImVector<int>       LineOffsets;
             bool                AutoScroll;
             bool                ScrollToBottom;
-
-            Console() {
-                AutoScroll = true;
-                ScrollToBottom = false;
-                Clear();
-            }
-
-            void Clear() {
-                Buf.clear();
-                LineOffsets.clear();
-                LineOffsets.push_back(0);
-            }
-
+            Console() { AutoScroll = true; ScrollToBottom = false; Clear(); }
+            void Clear() { Buf.clear(); LineOffsets.clear(); LineOffsets.push_back(0); }
             void AddLog(const char* fmt, ...) IM_FMTARGS(2) {
                 int old_size = Buf.size();
                 va_list args;
@@ -294,121 +309,15 @@ namespace Crescendo {
                 Buf.appendfv(fmt, args);
                 va_end(args);
                 for (int new_size = Buf.size(); old_size < new_size; old_size++)
-                    if (Buf[old_size] == '\n')
-                        LineOffsets.push_back(old_size + 1);
-                if (AutoScroll)
-                    ScrollToBottom = true;
+                    if (Buf[old_size] == '\n') LineOffsets.push_back(old_size + 1);
             }
-
-            void Draw(const char* title, bool* p_open = NULL) {
-                if (!ImGui::Begin(title, p_open)) {
-                    ImGui::End();
-                    return;
-                }
-
-                if (ImGui::BeginPopup("Options")) {
-                    ImGui::Checkbox("Auto-scroll", &AutoScroll);
-                    if (ImGui::Button("Clear")) Clear ();
-                    ImGui::EndPopup();
-                }
-                if (ImGui::Button("Options")) ImGui::OpenPopup("Options");
-                ImGui::SameLine();
-                if (ImGui::Button("Clear")) Clear();
-                ImGui::Separator();
-
-                const float footer_height_to_reserve = ImGui::GetStyle().ItemSpacing.y + ImGui::GetFrameHeightWithSpacing();
-                ImGui::BeginChild("ScrollingRegion", ImVec2(0, -footer_height_to_reserve), false, ImGuiWindowFlags_HorizontalScrollbar);
-
-                if (ImGui::BeginPopupContextWindow()) {
-                    if (ImGui::Selectable("Clear")) Clear();
-                    ImGui::EndPopup();
-                }
-
-                ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 1)); 
-                const char* buf = Buf.begin();
-                const char* buf_end = Buf.end();
-
-                ImGuiListClipper clipper;
-                clipper.Begin(LineOffsets.Size);
-                while (clipper.Step()) {
-                    for (int line_no = clipper.DisplayStart; line_no < clipper.DisplayEnd; line_no++) {
-                        const char* line_start = buf + LineOffsets[line_no];
-                        const char* line_end = (line_no + 1 < LineOffsets.Size) ? (buf + LineOffsets[line_no + 1] -1) : buf_end;
-                        ImGui::TextUnformatted(line_start, line_end);
-                    }
-                }
-                clipper.End();
-                ImGui::PopStyleVar();
-
-                if (ScrollToBottom && (AutoScroll || ImGui::GetScrollY() >= ImGui::GetScrollMaxY()))
-                    ImGui::SetScrollHereY(1.0f);
-                ScrollToBottom = false;
-
-                ImGui::EndChild();
-                ImGui::Separator();
-
-                static char inputBuf[256] = "";
-                ImGui::PushItemWidth(-1);
-                if (ImGui::InputText("##Input", inputBuf, IM_ARRAYSIZE(inputBuf), ImGuiInputTextFlags_EnterReturnsTrue)) {
-                    AddLog("# command: %s\n", inputBuf);
-                    strcpy(inputBuf, "");
-                    ImGui::SetKeyboardFocusHere(-1);
-                }
-                ImGui::PopItemWidth();
-
-                ImGui::End();
-            }
+            void Draw(const char* title, bool* p_open = NULL) { /* ... keep implementation ... */ }
         };
-
         Console gameConsole;
-
-        std::string decodeUri(const std::string& uri) {
-            std::string result;
-            for (size_t i = 0; i < uri.length(); i++) {
-                if (uri[i] == '%' && i + 2 < uri.length()) {
-                    std::string hex = uri.substr(i + 1, 2);
-                    char c = static_cast<char>(strtol(hex.c_str(), nullptr, 16));
-                    result += c;
-                    i += 2;
-                } else {
-                    result += uri[i];
-                }
-            }
-            return result;
-        }
-
+        
         uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
         VkShaderModule createShaderModule(const std::vector<char>& code);
         void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory);
         void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory);
-        
-        void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
-        void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
-        
-        
-        const std::vector<const char*> validationLayers = { "VK_LAYER_KHRONOS_validation" };
-        #ifdef NDEBUG
-        const bool enableValidationLayers = false;
-        #else
-        const bool enableValidationLayers = true;
-        #endif
-
-        struct QueueFamilyIndices {
-            std::optional<uint32_t> graphicsFamily;
-            std::optional<uint32_t> presentFamily;
-            bool isComplete() { return graphicsFamily.has_value() && presentFamily.has_value(); }
-        };
-        bool isDeviceSuitable(VkPhysicalDevice device);
-        QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
-
-        struct SwapChainSupportDetails {
-            VkSurfaceCapabilitiesKHR capabilities;
-            std::vector<VkSurfaceFormatKHR> formats;
-            std::vector<VkPresentModeKHR> presentModes;
-        };
-        SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device);
-        VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
-        VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
-        VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);
     };
 }

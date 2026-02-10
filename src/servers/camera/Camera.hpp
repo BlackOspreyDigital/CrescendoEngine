@@ -1,5 +1,7 @@
 #pragma once
 
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <SDL2/SDL.h> 
@@ -78,12 +80,8 @@ namespace Crescendo {
             // Forward/Back
             if (state[SDL_SCANCODE_W]) Position += Front * velocity;
             if (state[SDL_SCANCODE_S]) Position -= Front * velocity;
-            
-            // Left/Right
             if (state[SDL_SCANCODE_A]) Position -= Right * velocity;
             if (state[SDL_SCANCODE_D]) Position += Right * velocity;
-            
-            // Up/Down (World Space)
             if (state[SDL_SCANCODE_Q]) Position += WorldUp * velocity;
             if (state[SDL_SCANCODE_E]) Position -= WorldUp * velocity;
         }
