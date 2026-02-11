@@ -33,56 +33,7 @@
 #include "deps/json/json.hpp"
 
 namespace Crescendo {
-    /*
-    struct Ray {
-        glm::vec3 origin;
-        glm::vec3 direction;
-    };
-
-    Ray ScreenToWorldRay(glm::vec2 mousePos, glm::vec2 viewportSize, glm::mat4 view, glm::mat4 projection) {
-        float x = (2.0f * mousePos.x) / viewportSize.x - 1.0f; 
-        float y = 1.0f - (2.0f * mousePos.y) / viewportSize.y; 
-
-        glm::vec4 rayClip = glm::vec4(x, y, -1.0f, 1.0f); 
-
-        glm::vec4 rayEye = glm::inverse(projection) * rayClip; 
-        rayEye = glm::vec4(rayEye.x, rayEye.y, -1.0f, 0.0f);
-
-        glm::vec3 rayWorld = glm::vec3(glm::inverse(view) * rayEye);
-        rayWorld = glm::normalize(rayWorld);
-
-        Ray r;
-        r.origin = glm::vec3(glm::inverse(view)[3]);
-        r.direction = rayWorld;
-        return r;
-    }
-
-    bool RayPlaneIntersection(Ray ray, glm::vec3 planeNormal, float planeHeight, glm::vec3& outIntersection) {
-        float denom = glm::dot(planeNormal, ray.direction);
-
-        if (abs(denom) > 1e-6) {
-            glm::vec3 planeCenter = glm::vec3(0, 0, planeHeight);
-            if (planeNormal.y == 1.0f) planeCenter = glm::vec3(0, planeHeight, 0);
-
-            glm::vec3 p010 = planeCenter - ray.origin;
-            float t= glm::dot(p010, planeNormal) / denom;
-
-            if (t >= 0) {
-                outIntersection = ray.origin + (ray.direction * t);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    void TextCentered(std::string text) {
-        auto windowWidth = ImGui::GetWindowSize().x;
-        auto textWidth = ImGui::CalcTextSize(text.c_str()).x;
-
-        ImGui::SetCursorPosX((windowWidth - textWidth) * 0.5f);
-        ImGui::Text("%s", text.c_str());
-    } */
-
+    
     static std::vector<char> readFile(const std::string& filename) {
         std::ifstream file(filename, std::ios::ate | std::ios::binary);
         if (!file.is_open()) throw std::runtime_error("failed to open file: " + filename);
@@ -131,8 +82,6 @@ namespace Crescendo {
         if (!createCommandPool()) return false;
         if (!createDepthResources()) return false;
         if (!createDescriptorSetLayout()) return false;
-
-        // [CRITICAL FIX] Create Descriptor Pool HERE (Before UI)
         // ImGui needs this to exist to allocate fonts and textures.
         if (!createDescriptorPool()) return false;
 
@@ -161,10 +110,10 @@ namespace Crescendo {
             return false;
         }
 
-        // Now safe to call, because Pool exists!
+        // Now calls final image for full composition
         viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(
             viewportSampler, 
-            viewportImageView, 
+            finalImageView, // Changed from viewportImageView 
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
         );
 
@@ -432,8 +381,8 @@ namespace Crescendo {
     }   
 
     void RenderingServer::createDefaultTexture() {
-        // 1. Create a 1x1 white pixel (R, G, B, A)
-        uint32_t pixel = 0xFFFFFFFF; 
+        // White reflects 100% light, making bloom explode. Grey is a neutral material.
+        unsigned char pixels[4] = { 128, 128, 128, 255 };
         
         VkBuffer stagingBuffer;
         VkDeviceMemory stagingBufferMemory;
@@ -441,26 +390,23 @@ namespace Crescendo {
         
         void* data;
         vkMapMemory(device, stagingBufferMemory, 0, 4, 0, &data);
-        memcpy(data, &pixel, 4);
+        memcpy(data, pixels, 4);
         vkUnmapMemory(device, stagingBufferMemory);
         
-        // 2. Create the Image Object (Using class member variables for storage)
-        createImage(1, 1, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
+        // [FIX] Use UNORM (Raw values) instead of SRGB
+        createImage(1, 1, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, textureImage, textureImageMemory);
         
-        // 3. Transition Layout & Copy Buffer
-        transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         copyBufferToImage(stagingBuffer, textureImage, 1, 1);
-        transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        transitionImageLayout(textureImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingBufferMemory, nullptr);
         
-        // 4. Create View & Sampler
-        textureImageView = createImageView(textureImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
+        // [FIX] Use UNORM View
+        textureImageView = createImageView(textureImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
         createTextureSampler(); 
 
-        // 5. Fill the Texture Bank with this Dummy Texture
-        // This PREVENTS THE CRASH by ensuring every slot [0..99] is valid.
         TextureResource defaultTex;
         defaultTex.image = textureImage;
         defaultTex.view = textureImageView;
@@ -477,17 +423,14 @@ namespace Crescendo {
     bool RenderingServer::createTextureImage(const std::string& path, VkImage& image, VkDeviceMemory& memory) {
         int texWidth, texHeight, texChannels;
         
-        // 1. Load with STB (Standard, Safe)
+        // Load with STB
         stbi_uc* pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
 
         if (!pixels) {
-            // If this fails, we return false. 
-            // The acquireTexture function will catch this and assign the Default Texture (ID 0).
             std::cerr << "[Texture] Warning: Failed to load image (STB): " << path << std::endl;
             return false;
         }
 
-        // 2. Create Staging Buffer
         VkDeviceSize imageSize = texWidth * texHeight * 4;
         VkBuffer stagingBuffer;
         VkDeviceMemory stagingBufferMemory;
@@ -496,26 +439,22 @@ namespace Crescendo {
                      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 
                      stagingBuffer, stagingBufferMemory);
 
-        // 3. Upload to Staging
         void* data;
         vkMapMemory(device, stagingBufferMemory, 0, imageSize, 0, &data);
         memcpy(data, pixels, static_cast<size_t>(imageSize));
         vkUnmapMemory(device, stagingBufferMemory);
 
-        // 4. Safe Cleanup
         stbi_image_free(pixels); 
 
-        // 5. Create GPU Image
-        createImage(texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, 
+        // [FIX] Use UNORM instead of SRGB
+        createImage(texWidth, texHeight, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TILING_OPTIMAL, 
                     VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
 
-        // 6. Copy & Transition
-        transitionImageLayout(image, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        transitionImageLayout(image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         copyBufferToImage(stagingBuffer, image, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
-        transitionImageLayout(image, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        transitionImageLayout(image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        // 7. Cleanup Buffer
         vkDestroyBuffer(device, stagingBuffer, nullptr);
         vkFreeMemory(device, stagingBufferMemory, nullptr);
 
@@ -730,14 +669,10 @@ namespace Crescendo {
            return 0; 
        }
 
-       // [FIX] CHANGE THIS LINE
-       // Old: newTex.view = createTextureImageView(newTex.image);
-       // New: Explicitly use SRGB to match the image format
-       newTex.view = createImageView(newTex.image, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
+       // [FIX] Restored to use UNORM (Raw Color)
+       // This matches the format used in createTextureImage now.
+       newTex.view = createImageView(newTex.image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
        
-       // ... (Rest of function remains the same)
-       
-       // [SAFETY] Double check bounds before array access
        if (newID < textureBank.size()) {
            textureBank[newID] = newTex; 
        }
@@ -759,11 +694,8 @@ namespace Crescendo {
        descriptorWrite.descriptorCount = 1;
        descriptorWrite.pImageInfo = &imageInfo;
 
-       // [SAFETY] Check descriptor set validity
        if (descriptorSet != VK_NULL_HANDLE) {
            vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
-       } else {
-           std::cerr << "[Render] Error: Attempted to update NULL Descriptor Set" << std::endl;
        }
 
        return newID;
@@ -1318,46 +1250,50 @@ namespace Crescendo {
         stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertShaderModule, "main", nullptr};
         stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragShaderModule, "main", nullptr};
         
-        // [FIX] Zero out Vertex Input (No mesh data for fullscreen quad)
+        // Vertex Input (No mesh data for fullscreen quad)
         VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-        vertexInputInfo.vertexBindingDescriptionCount = 0;
-        vertexInputInfo.pVertexBindingDescriptions = nullptr;
-        vertexInputInfo.vertexAttributeDescriptionCount = 0;
-        vertexInputInfo.pVertexAttributeDescriptions = nullptr;
         
         VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, nullptr, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE};
         VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, nullptr, 0, 1, nullptr, 1, nullptr};
         VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, nullptr, 0, VK_FALSE, VK_FALSE, VK_POLYGON_MODE_FILL, VK_CULL_MODE_NONE, VK_FRONT_FACE_COUNTER_CLOCKWISE, VK_FALSE, 0, 0, 0, 1.0f};
         VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, nullptr, 0, VK_SAMPLE_COUNT_1_BIT};
-        VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO}; // Defaults to off
         
+        // [FIX] Disable Depth Test for Composite Pass (It's just a 2D quad)
+        VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        depthStencil.depthTestEnable = VK_FALSE;
+        depthStencil.depthWriteEnable = VK_FALSE;
         
         VkPipelineColorBlendAttachmentState colorBlendAttachment{};
         colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
         colorBlendAttachment.blendEnable = VK_FALSE; 
 
-        // [FIX] Use explicit assignment to prevent type mismatch errors
         VkPipelineColorBlendStateCreateInfo colorBlending{};
         colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        colorBlending.logicOpEnable = VK_FALSE;
-        colorBlending.logicOp = VK_LOGIC_OP_COPY;
         colorBlending.attachmentCount = 1;
         colorBlending.pAttachments = &colorBlendAttachment;
-        colorBlending.blendConstants[0] = 0.0f;
-        colorBlending.blendConstants[1] = 0.0f;
-        colorBlending.blendConstants[2] = 0.0f;
-        colorBlending.blendConstants[3] = 0.0f;
         
         std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
         VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0, (uint32_t)dynamicStates.size(), dynamicStates.data()};
         
-        // Reuse the layout created in createBloomPipeline
-        if (compositePipelineLayout == VK_NULL_HANDLE) {
-            // Fallback just in case
-             VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-             layoutInfo.setLayoutCount = 1;
-             layoutInfo.pSetLayouts = &postProcessLayout;
-             vkCreatePipelineLayout(device, &layoutInfo, nullptr, &compositePipelineLayout);
+        // [FIX 1] Define Push Constant Range
+        VkPushConstantRange pushConstantRange{};
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        pushConstantRange.offset = 0;
+        pushConstantRange.size = sizeof(PostProcessPushConstants); // Ensure this struct is defined in HPP!
+
+        // [FIX 2] Create Layout with Push Constants
+        if (compositePipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
+        }
+
+        VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        layoutInfo.setLayoutCount = 1;
+        layoutInfo.pSetLayouts = &postProcessLayout;
+        layoutInfo.pushConstantRangeCount = 1;       // Add this
+        layoutInfo.pPushConstantRanges = &pushConstantRange; // Add this
+
+        if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &compositePipelineLayout) != VK_SUCCESS) {
+            return false;
         }
     
         VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -1372,9 +1308,7 @@ namespace Crescendo {
         pipelineInfo.pColorBlendState = &colorBlending;
         pipelineInfo.pDynamicState = &dynamicState;
         pipelineInfo.layout = compositePipelineLayout;
-    
-        // [CRITICAL FIX] Use the SWAPCHAIN Render Pass, NOT the Viewport Render Pass
-        pipelineInfo.renderPass = renderPass; 
+        pipelineInfo.renderPass = compositeRenderPass; 
         pipelineInfo.subpass = 0;
     
         VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &compositePipeline);
@@ -1791,7 +1725,7 @@ namespace Crescendo {
     // [FIX] Updated processGLTFNode with Material Color Support
 
     void RenderingServer::processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene) {
-        if (!scene) return; // Extra safety
+        if (!scene) return; 
 
         CBaseEntity* newEnt = scene->CreateEntity("prop_static"); 
         newEnt->targetName = node.name; 
@@ -1803,7 +1737,7 @@ namespace Crescendo {
             newEnt->origin = parent->origin; 
         }
 
-        // Transform
+        // --- Transform Logic ---
         glm::vec3 translation(0.0f);
         glm::quat rotation = glm::identity<glm::quat>();
         glm::vec3 scale(1.0f);
@@ -1838,14 +1772,13 @@ namespace Crescendo {
                     targetEnt->scale = newEnt->scale;
                 }
 
-                // Material Logic
+                // --- Material Logic ---
                 if (primitive.material >= 0) {
                     const tinygltf::Material& mat = model.materials[primitive.material];
                     
                     targetEnt->roughness = (float)mat.pbrMetallicRoughness.roughnessFactor;
                     targetEnt->metallic = (float)mat.pbrMetallicRoughness.metallicFactor;
 
-                    // [FIX] Load Base Color (Albedo)
                     if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
                         targetEnt->albedoColor = glm::vec3(
                             (float)mat.pbrMetallicRoughness.baseColorFactor[0],
@@ -1858,22 +1791,75 @@ namespace Crescendo {
                     if (texIndex >= 0) {
                         const tinygltf::Texture& tex = model.textures[texIndex];
                         const tinygltf::Image& img = model.images[tex.source];
-                        std::string texPath = baseDir + "/" + decodeUri(img.uri);
                         
-                        // Check map
-                        if (textureMap.find(texPath) != textureMap.end()) {
-                            targetEnt->textureID = textureMap[texPath];
+                        // [FIX] Handle Embedded vs External Textures
+                        std::string texKey;
+                        if (!img.uri.empty()) {
+                            texKey = baseDir + "/" + decodeUri(img.uri);
                         } else {
-                            // Fallback load
-                            targetEnt->textureID = acquireTexture(texPath);
+                            // Generate unique key for embedded texture
+                            texKey = "EMBEDDED_" + std::to_string(tex.source) + "_" + node.name;
+                        }
+                        
+                        // Check Cache
+                        if (textureMap.find(texKey) != textureMap.end()) {
+                            targetEnt->textureID = textureMap[texKey];
+                        } else {
+                            // Load New Texture
+                            int newID = static_cast<int>(textureMap.size()) + 1;
+                            
+                            if (newID < MAX_TEXTURES) {
+                                TextureResource newTex;
+                                bool success = false;
+                                VkFormat format = VK_FORMAT_R8G8B8A8_UNORM; // Match engine format
+
+                                // Option A: Memory (Embedded in GLB/GLTF)
+                                if (!img.image.empty()) {
+                                    UploadTexture((void*)img.image.data(), img.width, img.height, format, newTex.image, newTex.memory);
+                                    newTex.view = createImageView(newTex.image, format, VK_IMAGE_ASPECT_COLOR_BIT);
+                                    success = true;
+                                } 
+                                // Option B: File (External reference)
+                                else if (!img.uri.empty()) {
+                                    if (createTextureImage(texKey, newTex.image, newTex.memory)) {
+                                         newTex.view = createImageView(newTex.image, format, VK_IMAGE_ASPECT_COLOR_BIT);
+                                         success = true;
+                                    }
+                                }
+
+                                if (success) {
+                                    textureBank[newID] = newTex;
+                                    textureMap[texKey] = newID;
+                                    cache.textures[texKey] = newID; // Sync with main cache
+                                    targetEnt->textureID = newID;
+
+                                    // Update Descriptor Set Immediately
+                                    VkDescriptorImageInfo imageInfo{};
+                                    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                                    imageInfo.imageView = newTex.view; 
+                                    imageInfo.sampler = textureSampler;
+
+                                    VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                                    descriptorWrite.dstSet = descriptorSet; 
+                                    descriptorWrite.dstBinding = 0;
+                                    descriptorWrite.dstArrayElement = newID; 
+                                    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                                    descriptorWrite.descriptorCount = 1;
+                                    descriptorWrite.pImageInfo = &imageInfo;
+                                    vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+                                    
+                                    std::cout << "[GLTF] Loaded Texture: " << texKey << " (ID: " << newID << ")" << std::endl;
+                                } else {
+                                    std::cerr << "[GLTF] Failed to load texture: " << texKey << std::endl;
+                                }
+                            }
                         }
                     } else {
-                        targetEnt->textureID = 0; // Use default if no texture
+                        targetEnt->textureID = 0; // Use default
                     }
                 }
                 
                 // Assign Mesh Index
-                // Note: We use the simpler logic here. If you have the meshMap logic, keep it!
                  std::string meshKey = normalizePath(baseDir) + "_mesh_" + std::to_string(node.mesh) + "_" + std::to_string(i); 
                  if (meshMap.find(meshKey) != meshMap.end()) {
                      targetEnt->modelIndex = meshMap[meshKey];
@@ -1954,107 +1940,108 @@ namespace Crescendo {
     // --------------------------------------------------------------------
 
     void RenderingServer::render(Scene* scene) {
-       if (!scene) return;
-        
-       // 1. Sync
-       vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-        
-       uint32_t imageIndex;
-       VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, 
-           imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
-        
-       if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-           recreateSwapChain(window);
-           return;
-       }
+        if (!scene) return;
+         
+        // 1. Sync
+        vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
+         
+        uint32_t imageIndex;
+        VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, 
+            imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+         
+        if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+            recreateSwapChain(window);
+            return;
+        }
+ 
+        editorUI.Prepare(scene, mainCamera, viewportDescriptorSet);
+     
+        vkResetFences(device, 1, &inFlightFences[currentFrame]);
+        vkResetCommandBuffer(commandBuffers[currentFrame], 0);  
+     
+        VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        if (vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo) != VK_SUCCESS) {
+            throw std::runtime_error("failed to begin recording command buffer!");
+        }
+     
+        float aspectRatio = 1.0f;
+        glm::vec2 viewportSize = editorUI.GetViewportSize();
+        if (viewportSize.x > 0 && viewportSize.y > 0) { aspectRatio = viewportSize.x / viewportSize.y; }
+        glm::mat4 view = mainCamera.GetViewMatrix();
+        glm::mat4 proj = mainCamera.GetProjectionMatrix(aspectRatio);
+            
+        // --- SUN LOGIC ---
+        glm::vec3 sunDirection = glm::normalize(glm::vec3(0.5f, 1.0f, 0.5f)); 
+        glm::vec3 sunColor = glm::vec3(1.0f, 1.0f, 1.0f);
+        float sunIntensity = 1.0f;
+     
+        for (auto* sunEnt : scene->entities) {
+            if (sunEnt && sunEnt->targetName == "Sun") {
+                glm::mat4 rotMat = glm::mat4(1.0f);
+                rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.x), glm::vec3(1, 0, 0));
+                rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.y), glm::vec3(0, 1, 0));
+                rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.z), glm::vec3(0, 0, 1));
+                sunDirection = glm::normalize(glm::vec3(rotMat * glm::vec4(0.0f, 0.0f, 1.0f, 0.0f)));
+                break; 
+            }
+        }
+     
+        // =========================================================
+        // PASS 1: OFFSCREEN SCENE (HDR) -> viewportFramebuffer
+        // =========================================================
+        VkRenderPassBeginInfo viewportPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        viewportPassInfo.renderPass = viewportRenderPass;
+        viewportPassInfo.framebuffer = viewportFramebuffer;
+        viewportPassInfo.renderArea.extent = swapChainExtent;
+     
+        std::array<VkClearValue, 2> clearValues{};
+        clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}}; 
+        clearValues[1].depthStencil = {1.0f, 0};
+        viewportPassInfo.clearValueCount = 2;
+        viewportPassInfo.pClearValues = clearValues.data();
+     
+        transitionImageLayout(viewportImage, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+     
+        vkCmdBeginRenderPass(commandBuffers[currentFrame], &viewportPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+           
+            VkViewport viewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
+            vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &viewport);
+            VkRect2D scissor{{0, 0}, swapChainExtent};
+            vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
 
-       editorUI.Prepare(scene, mainCamera, viewportDescriptorSet);
-    
-       vkResetFences(device, 1, &inFlightFences[currentFrame]);
-       vkResetCommandBuffer(commandBuffers[currentFrame], 0);  
-    
-       VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-       if (vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo) != VK_SUCCESS) {
-           throw std::runtime_error("failed to begin recording command buffer!");
-       }
-    
-       // --- SETUP MATRICES ---
-       // Use the Editor Viewport size for Aspect Ratio if available
-       float aspectRatio = lastViewportSize.x / lastViewportSize.y;
-       if (aspectRatio < 0.1f) aspectRatio = 1.77f; // Safety check
-    
-       glm::mat4 view = mainCamera.GetViewMatrix();
-       glm::mat4 proj = mainCamera.GetProjectionMatrix(aspectRatio);
-       // Note: No proj[1][1] *= -1 here (Camera.hpp handles it)
-    
-       // --- SUN SETUP ---
-       glm::vec3 sunDirection = glm::normalize(glm::vec3(0.5f, 1.0f, 0.5f)); 
-       glm::vec3 sunColor = glm::vec3(1.0f, 1.0f, 1.0f);
-       float sunIntensity = 1.0f;
-    
-       for (auto* sunEnt : scene->entities) {
-           if (sunEnt && sunEnt->targetName == "Sun") {
-               // Calculate sun direction from rotation
-               glm::mat4 rotMat = glm::mat4(1.0f);
-               rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.x), glm::vec3(1, 0, 0));
-               rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.y), glm::vec3(0, 1, 0));
-               rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.z), glm::vec3(0, 0, 1));
-               sunDirection = glm::normalize(glm::vec3(rotMat * glm::vec4(0.0f, 0.0f, 1.0f, 0.0f)));
-               break; 
-           }
-       }
-    
-       // =========================================================
-       // PASS 1: OFFSCREEN RENDER (Sky + Objects)
-       // =========================================================
-       VkRenderPassBeginInfo viewportPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-       viewportPassInfo.renderPass = viewportRenderPass;
-       viewportPassInfo.framebuffer = viewportFramebuffer;
-       viewportPassInfo.renderArea.extent = swapChainExtent;
-    
-       std::array<VkClearValue, 2> clearValues{};
-       clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}}; 
-       clearValues[1].depthStencil = {1.0f, 0};
-       viewportPassInfo.clearValueCount = 2;
-       viewportPassInfo.pClearValues = clearValues.data();
-    
-       // Transition for writing
-       transitionImageLayout(viewportImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-    
-       vkCmdBeginRenderPass(commandBuffers[currentFrame], &viewportPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-           
-           // Dynamic Viewport
-           VkViewport viewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
-           vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &viewport);
-           VkRect2D scissor{{0, 0}, swapChainExtent};
-           vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
-    
-           // --- SKY PASS (Restored Logic) ---
-           vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
-           
-           // Strip translation for Skybox (The logic you liked!)
-           glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view)); 
-           MeshPushConstants skyPush{};
-           skyPush.renderMatrix = glm::inverse(proj * viewNoTrans); 
-           
-           vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &skyPush);
-           vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
-    
-           // --- ENTITY PASS ---
-           vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-           VkPipeline currentPipeline = graphicsPipeline;
-          
-           // [FIX] BIND GLOBAL DESCRIPTOR SET (Set 0) HERE
-           // This gives the shader access to the texture array (sampler2D textures[100])
-           vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                                   pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+            // -----------------------------------------------------------------
+            // DRAW SKYBOX
+            // -----------------------------------------------------------------
+            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
+            
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                                    pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+
+            {
+                glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view)); 
+                MeshPushConstants skyPush{};
+                skyPush.renderMatrix = glm::inverse(proj * viewNoTrans); 
+                
+                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
+                                   0, sizeof(MeshPushConstants), &skyPush);
+            }
+            
+            vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
+
+            // -----------------------------------------------------------------
+            // DRAW ENTITIES
+            // -----------------------------------------------------------------
+            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+            VkPipeline currentPipeline = graphicsPipeline;
+            
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                                    pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
            
             for (auto* ent : scene->entities) {
                 if (!ent || ent->modelIndex >= meshes.size()) continue;
-        
-            // ... (rest of your loop logic) ...
-            
-                // Pipeline Switching (Normal vs Grid vs Water)
+                 
+                // Pipeline Switching
                 VkPipeline targetPipeline = graphicsPipeline;
                 if (ent->className == "prop_grid") targetPipeline = gridPipeline;
                 else if (ent->className == "prop_water") targetPipeline = waterPipeline;
@@ -2070,7 +2057,6 @@ namespace Crescendo {
                 vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
              
-                // 1. Calculate Model Matrix
                 glm::mat4 model = glm::mat4(1.0f);
                 model = glm::translate(model, ent->origin);
                 model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1));
@@ -2078,68 +2064,88 @@ namespace Crescendo {
                 model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
                 model = glm::scale(model, ent->scale);
              
-                // 2. Fill Push Constants (MERGED FIX)
                 MeshPushConstants push{};
-                push.renderMatrix = proj * view * model; // MVP
-                
-                // [CRITICAL ADDITION] This was missing in your old code!
-                push.modelMatrix  = model;               // World Space (For Lighting)
-             
+                push.renderMatrix = proj * view * model; 
+                push.modelMatrix  = model;               
                 push.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
-                push.pbrParams = glm::vec4((float)mesh.textureID, ent->roughness, ent->metallic, ent->emission);
-                
-                // Special case for Water
+
+                // Texture Selection Logic
+                int selectedTexID = (ent->textureID > 0) ? ent->textureID : mesh.textureID;
+                int safeTextureID = (selectedTexID < 0) ? 0 : selectedTexID;
+
+                // [FIX] Base Assignment FIRST
+                push.pbrParams = glm::vec4((float)safeTextureID, ent->roughness, ent->metallic, ent->emission);
+
+                // [FIX] Water Override SECOND (Time in .w component)
                 if (ent->className == "prop_water") {
-                     float time = SDL_GetTicks() / 1000.0f;
-                     push.pbrParams.w = time; 
+                if (safeTextureID == 0 && this->waterTextureID > 0) {
+                    push.pbrParams.x = (float)this->waterTextureID;
                 }
+            
+                // [FIX] Multiply by 0.05f to slow it down (adjust this number to taste!)
+                float time = (SDL_GetTicks() / 1000.0f) * 0.5f; 
+                push.pbrParams.w = time; 
+            }
              
                 push.sunDir = glm::vec4(sunDirection, sunIntensity);
                 push.sunColor = glm::vec4(sunColor, 1.0f);
                 push.albedoTint = glm::vec4(ent->albedoColor, 1.0f);
              
-                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(MeshPushConstants), &push);
+                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
+                                   0, sizeof(MeshPushConstants), &push);
              
                 vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
             }
            
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
         
-        // Transition back for Shader Sampling (ImGui Viewport)
-        transitionImageLayout(viewportImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        transitionImageLayout(viewportImage, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
          
         // =========================================================
-        // PASS 2: COMPOSITE & UI RENDER
+        // PASS 2: POST-PROCESSING (Composite) -> finalFramebuffer
         // =========================================================
-        VkRenderPassBeginInfo screenPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-        screenPassInfo.renderPass = renderPass;
-        screenPassInfo.framebuffer = swapChainFramebuffers[imageIndex];
-        screenPassInfo.renderArea.extent = swapChainExtent;
-        screenPassInfo.clearValueCount = 2;
-        screenPassInfo.pClearValues = clearValues.data();
+        VkRenderPassBeginInfo compositePassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        compositePassInfo.renderPass = compositeRenderPass;  
+        compositePassInfo.framebuffer = finalFramebuffer;    
+        compositePassInfo.renderArea.extent = swapChainExtent;
+        compositePassInfo.clearValueCount = 1;
+        compositePassInfo.pClearValues = &clearValues[0]; 
 
-        vkCmdBeginRenderPass(commandBuffers[currentFrame], &screenPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdBeginRenderPass(commandBuffers[currentFrame], &compositePassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-            // [FIX] 1. DRAW THE BACKGROUND (The 3D Scene)
-            // This copies your off-screen viewportImage to the actual screen
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipeline);
 
-            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     compositePipelineLayout, 0, 1, &compositeDescriptorSet, 0, nullptr);
+
+            vkCmdPushConstants(commandBuffers[currentFrame], compositePipelineLayout,
+                               VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PostProcessPushConstants), &postProcessSettings);
             
-            // Draw a full-screen triangle (generated by the vertex shader)
             vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
             
-            // [FIX] 2. DRAW UI ON TOP
+        vkCmdEndRenderPass(commandBuffers[currentFrame]);
+
+        // =========================================================
+        // PASS 3: UI & SWAPCHAIN -> Screen
+        // =========================================================
+        VkRenderPassBeginInfo swapChainPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        swapChainPassInfo.renderPass = renderPass; 
+        swapChainPassInfo.framebuffer = swapChainFramebuffers[imageIndex]; 
+        swapChainPassInfo.renderArea.extent = swapChainExtent;
+        swapChainPassInfo.clearValueCount = 2; 
+        swapChainPassInfo.pClearValues = clearValues.data();
+
+        vkCmdBeginRenderPass(commandBuffers[currentFrame], &swapChainPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        
             editorUI.Render(commandBuffers[currentFrame]);
-            
+
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
             
         if (vkEndCommandBuffer(commandBuffers[currentFrame]) != VK_SUCCESS) {
             throw std::runtime_error("failed to record command buffer!");
         }
     
-       // Submit and Present
        VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
        VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
        VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
@@ -2267,7 +2273,7 @@ namespace Crescendo {
 
     void RenderingServer::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {
         VkCommandBuffer commandBuffer = beginSingleTimeCommands();
- 
+
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.oldLayout = oldLayout;
@@ -2280,66 +2286,56 @@ namespace Crescendo {
         barrier.subresourceRange.levelCount = 1;
         barrier.subresourceRange.baseArrayLayer = 0;
         barrier.subresourceRange.layerCount = 1;
- 
+
         VkPipelineStageFlags sourceStage;
         VkPipelineStageFlags destinationStage;
- 
-        // Case 1: Texture Upload (Undefined -> Transfer Dst)
+
         if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
             barrier.srcAccessMask = 0;
             barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
             destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
         } 
-        // Case 2: Texture Ready (Transfer Dst -> Shader Read)
         else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         } 
-        // Case 3: Bloom/Post-Process (Color Attachment -> Shader Read)
         else if (oldLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             sourceStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         }
-        // Case 4: Safety Check (Read -> Read)
         else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         }
-        // Case 5: Recycle/Reset (Shader Read -> Color Attachment) [Fixes 5->2 Error]
         else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
-             barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-             barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-             sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-             destinationStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+                barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+                sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+                destinationStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         }
-        // Case 6: Viewport Init (Undefined -> Shader Read) [Fixes Init Crash]
         else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-             barrier.srcAccessMask = 0;
-             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-             sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+                barrier.srcAccessMask = 0;
+                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+                destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         }
-        // [FIX] Case 7: Initial Render Target Setup (Undefined -> Color Attachment)
-        // This fixes the "[Error] Unsupported Layout Transition: 0 -> 2" crash!
         else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
             barrier.srcAccessMask = 0;
             barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
             sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
             destinationStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         }
-
         else {
             std::cerr << "[Error] Unsupported Layout Transition: " << oldLayout << " -> " << newLayout << std::endl;
             throw std::invalid_argument("unsupported layout transition!");
         }
-        
 
         vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
         endSingleTimeCommands(commandBuffer);
@@ -2537,119 +2533,146 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createViewportResources() {
-        // [FIX] Use actual SwapChain dimensions, not hardcoded 1920x1080
         uint32_t width = swapChainExtent.width;
         uint32_t height = swapChainExtent.height;
 
-        // 1. Create Color Image
-        createImage(width, height, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, 
+        // 1. SCENE IMAGE (HDR)
+        createImage(width, height, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_TILING_OPTIMAL, 
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, viewportImage, viewportImageMemory);
 
-        transitionImageLayout(viewportImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        viewportImageView = createImageView(viewportImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
+        // Transition HDR image
+        transitionImageLayout(viewportImage, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        viewportImageView = createImageView(viewportImage, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT);
 
-        // 2. Create Depth Image (Matched to SwapChain Size)
-        VkFormat depthFormat = VK_FORMAT_D32_SFLOAT;
-        createImage(width, height, depthFormat, VK_IMAGE_TILING_OPTIMAL, 
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, viewportDepthImage, viewportDepthImageMemory);
+        // 2. FINAL IMAGE (LDR) - [FIX] Add Transition Here!
+        createImage(width, height, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, 
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, finalImage, finalImageMemory);
+
+        // [CRITICAL FIX] Transition Final Image so ImGui doesn't crash reading Undefined layout
+        transitionImageLayout(finalImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         
-        viewportDepthImageView = createImageView(viewportDepthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
+        finalImageView = createImageView(finalImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
 
-        // 3. Create Sampler 
-        VkSamplerCreateInfo samplerInfo{};
-        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        samplerInfo.magFilter = VK_FILTER_LINEAR;
-        samplerInfo.minFilter = VK_FILTER_LINEAR;
-        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.maxAnisotropy = 1.0f;
-        if (vkCreateSampler(device, &samplerInfo, nullptr, &viewportSampler) != VK_SUCCESS) return false;
+        // 3. DEPTH IMAGE
+        createImage(width, height, VK_FORMAT_D32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, viewportDepthImage, viewportDepthImageMemory); // [FIX] Removed extra args
 
-        // [IMPORTANT] Add to ImGui (Only do this once or ensure cleanup!)
-        viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(viewportSampler, viewportImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        viewportDepthImageView = createImageView(viewportDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT);
 
-        // 4. Create Render Pass 
-        VkAttachmentDescription colorAttachment{};
-        colorAttachment.format = VK_FORMAT_R8G8B8A8_SRGB;
-        colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; 
-        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; 
+        // 4. RENDER PASS 1: 3D SCENE
+        VkAttachmentDescription attachments[2] = {};
 
-        VkAttachmentReference colorAttachmentRef{};
-        colorAttachmentRef.attachment = 0;
-        colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        // Color
+        attachments[0].format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+        attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        VkAttachmentDescription depthAttachment{};
-        depthAttachment.format = depthFormat;
-        depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        // Depth
+        attachments[1].format = VK_FORMAT_D32_SFLOAT;
+        attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+        attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-        VkAttachmentReference depthAttachmentRef{};
-        depthAttachmentRef.attachment = 1;
-        depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        VkAttachmentReference colorRef = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+        VkAttachmentReference depthRef = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
 
         VkSubpassDescription subpass{};
         subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         subpass.colorAttachmentCount = 1;
-        subpass.pColorAttachments = &colorAttachmentRef;
-        subpass.pDepthStencilAttachment = &depthAttachmentRef;
+        subpass.pColorAttachments = &colorRef;
+        subpass.pDepthStencilAttachment = &depthRef;
 
-        std::array<VkSubpassDependency, 2> dependencies;
-        dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-        dependencies[0].dstSubpass = 0;
-        dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+        VkSubpassDependency dependency{};
+        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependency.dstSubpass = 0;
+        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dependency.srcAccessMask = 0;
+        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
-        dependencies[1].srcSubpass = 0;
-        dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-        dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
-
-        std::array<VkAttachmentDescription, 2> attachments = { colorAttachment, depthAttachment };
-
-        VkRenderPassCreateInfo renderPassInfo{};
-        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        renderPassInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-        renderPassInfo.pAttachments = attachments.data();
+        VkRenderPassCreateInfo renderPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        renderPassInfo.attachmentCount = 2;
+        renderPassInfo.pAttachments = attachments;
         renderPassInfo.subpassCount = 1;
         renderPassInfo.pSubpasses = &subpass;
-        renderPassInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
-        renderPassInfo.pDependencies = dependencies.data();
+        renderPassInfo.dependencyCount = 1;
+        renderPassInfo.pDependencies = &dependency;
 
         if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &viewportRenderPass) != VK_SUCCESS) return false;
 
-        // 5. Create Framebuffer (Using Dynamic Width/Height)
         std::array<VkImageView, 2> fbAttachments = { viewportImageView, viewportDepthImageView };
+        VkFramebufferCreateInfo fbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+        fbInfo.renderPass = viewportRenderPass;
+        fbInfo.attachmentCount = 2;
+        fbInfo.pAttachments = fbAttachments.data();
+        fbInfo.width = width;
+        fbInfo.height = height;
+        fbInfo.layers = 1;
+        vkCreateFramebuffer(device, &fbInfo, nullptr, &viewportFramebuffer);
 
-        VkFramebufferCreateInfo framebufferInfo{};
-        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        framebufferInfo.renderPass = viewportRenderPass;
-        framebufferInfo.attachmentCount = static_cast<uint32_t>(fbAttachments.size());
-        framebufferInfo.pAttachments = fbAttachments.data();
-        framebufferInfo.width = width;  // [CRITICAL FIX]
-        framebufferInfo.height = height; // [CRITICAL FIX]
-        framebufferInfo.layers = 1;
+        // 5. RENDER PASS 2: COMPOSITE
+        VkAttachmentDescription compositeAttachment{};
+        compositeAttachment.format = VK_FORMAT_R8G8B8A8_SRGB;
+        compositeAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        compositeAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        compositeAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        compositeAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        compositeAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        compositeAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        compositeAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &viewportFramebuffer) != VK_SUCCESS) return false;
+        VkAttachmentReference compositeRef = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+
+        VkSubpassDescription compositeSubpass{};
+        compositeSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        compositeSubpass.colorAttachmentCount = 1;
+        compositeSubpass.pColorAttachments = &compositeRef;
+        
+        VkRenderPassCreateInfo compositePassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        compositePassInfo.attachmentCount = 1;
+        compositePassInfo.pAttachments = &compositeAttachment;
+        compositePassInfo.subpassCount = 1;
+        compositePassInfo.pSubpasses = &compositeSubpass;
+
+        if (vkCreateRenderPass(device, &compositePassInfo, nullptr, &compositeRenderPass) != VK_SUCCESS) return false;
+
+        VkFramebufferCreateInfo compositeFbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+        compositeFbInfo.renderPass = compositeRenderPass;
+        compositeFbInfo.attachmentCount = 1;
+        compositeFbInfo.pAttachments = &finalImageView;
+        compositeFbInfo.width = width;
+        compositeFbInfo.height = height;
+        compositeFbInfo.layers = 1;
+        vkCreateFramebuffer(device, &compositeFbInfo, nullptr, &finalFramebuffer);
+
+        // [FIX] CREATE SAMPLER (Previous step missed this inside the function body?)
+        VkSamplerCreateInfo samplerInfo{};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.minFilter = VK_FILTER_LINEAR;
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.maxAnisotropy = 1.0f;
+        samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+        samplerInfo.unnormalizedCoordinates = VK_FALSE;
+        samplerInfo.compareEnable = VK_FALSE;
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+
+        if (vkCreateSampler(device, &samplerInfo, nullptr, &viewportSampler) != VK_SUCCESS) return false;
 
         return true;
     }
@@ -2808,110 +2831,110 @@ namespace Crescendo {
     }
 
     void RenderingServer::recreateSwapChain(SDL_Window* window) {
+        int width = 0, height = 0;
+        SDL_Vulkan_GetDrawableSize(window, &width, &height);
+        
+        // 1. Handle Minimization (Pause until window is visible again)
+        while (width == 0 || height == 0) {
+            SDL_Vulkan_GetDrawableSize(window, &width, &height);
+            SDL_WaitEvent(nullptr);
+        }
+
         vkDeviceWaitIdle(device);
 
+        // 2. Cleanup Old Resources
         cleanupSwapChain();
-        
-        // [ADD] Cleanup Viewport Resources explicitly so they can be rebuilt with new size
-        if (viewportFramebuffer != VK_NULL_HANDLE) { vkDestroyFramebuffer(device, viewportFramebuffer, nullptr); viewportFramebuffer = VK_NULL_HANDLE; }
-        if (viewportImageView != VK_NULL_HANDLE) { vkDestroyImageView(device, viewportImageView, nullptr); viewportImageView = VK_NULL_HANDLE; }
-        if (viewportImage != VK_NULL_HANDLE) { vkDestroyImage(device, viewportImage, nullptr); viewportImage = VK_NULL_HANDLE; }
-        if (viewportImageMemory != VK_NULL_HANDLE) { vkFreeMemory(device, viewportImageMemory, nullptr); viewportImageMemory = VK_NULL_HANDLE; }
-        if (viewportDepthImageView != VK_NULL_HANDLE) { vkDestroyImageView(device, viewportDepthImageView, nullptr); viewportDepthImageView = VK_NULL_HANDLE; }
-        if (viewportDepthImage != VK_NULL_HANDLE) { vkDestroyImage(device, viewportDepthImage, nullptr); viewportDepthImage = VK_NULL_HANDLE; }
-        if (viewportDepthImageMemory != VK_NULL_HANDLE) { vkFreeMemory(device, viewportDepthImageMemory, nullptr); viewportDepthImageMemory = VK_NULL_HANDLE; }
-        if (viewportRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, viewportRenderPass, nullptr); viewportRenderPass = VK_NULL_HANDLE; }
-        // Note: Do NOT destroy viewportSampler here, it can be reused.
 
+        // 3. Recreate Base Swapchain
         createSwapChain();
         createImageViews();
+        // (RenderPass is usually not destroyed in cleanupSwapChain, so we reuse it)
         createFramebuffers();
-        
-        // [ADD] Recreate viewport with new swapChainExtent
-        createViewportResources(); 
-    }   
+
+        // 4. Recreate Custom Offscreen Resources (HDR, Bloom, Final)
+        createViewportResources();
+
+        // 5. Update ImGui Descriptor
+        // Since we destroyed the 'finalImageView', the old descriptor set is invalid.
+        // We must create a new one pointing to the NEW finalImageView.
+        if (finalImageView != VK_NULL_HANDLE) {
+            viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(
+                viewportSampler, 
+                finalImageView, 
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+            );
+        }
+    }
 
     void RenderingServer::cleanupSwapChain() {
-        // 1. Existing Depth Cleanup
-        vkDestroyImageView(device, depthImageView, nullptr);
-        vkDestroyImage(device, depthImage, nullptr);
-        vkFreeMemory(device, depthImageMemory, nullptr);
-        depthImageView = VK_NULL_HANDLE;
-        depthImage = VK_NULL_HANDLE;       
-            
-        // 2. Existing Framebuffer Cleanup
+        // 1. Destroy Standard Swapchain Resources
         for (auto framebuffer : swapChainFramebuffers) {
             vkDestroyFramebuffer(device, framebuffer, nullptr);
         }
-        swapChainFramebuffers.clear();
-        
-        // 3. Existing Image View Cleanup
+
         for (auto imageView : swapChainImageViews) {
             vkDestroyImageView(device, imageView, nullptr);
         }
-        swapChainImageViews.clear();
-        
-        // =========================================================
-        // [FIX] CLEANUP VIEWPORT RESOURCES
-        // =========================================================
-        if (viewportFramebuffer != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(device, viewportFramebuffer, nullptr);
-            viewportFramebuffer = VK_NULL_HANDLE;
-        }
-        if (viewportRenderPass != VK_NULL_HANDLE) {
-            vkDestroyRenderPass(device, viewportRenderPass, nullptr);
-            viewportRenderPass = VK_NULL_HANDLE;
-        }
-        if (viewportImageView != VK_NULL_HANDLE) {
-            vkDestroyImageView(device, viewportImageView, nullptr);
-            viewportImageView = VK_NULL_HANDLE;
-        }
-        if (viewportImage != VK_NULL_HANDLE) {
-            vkDestroyImage(device, viewportImage, nullptr);
-            viewportImage = VK_NULL_HANDLE;
-        }
-        if (viewportImageMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(device, viewportImageMemory, nullptr);
-            viewportImageMemory = VK_NULL_HANDLE;
-        }
-        if (viewportSampler != VK_NULL_HANDLE) {
-            vkDestroySampler(device, viewportSampler, nullptr);
-            viewportSampler = VK_NULL_HANDLE;
-        }
-        
-        // =========================================================
-        // [FIX] CLEANUP BLOOM RESOURCES
-        // =========================================================
-        // [FIX] Ensure Bloom Memory is freed!
-        if (bloomFramebuffer != VK_NULL_HANDLE) { vkDestroyFramebuffer(device, bloomFramebuffer, nullptr); bloomFramebuffer = VK_NULL_HANDLE; }
-        if (bloomRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, bloomRenderPass, nullptr); bloomRenderPass = VK_NULL_HANDLE; }
-        if (bloomBrightImageView != VK_NULL_HANDLE) { vkDestroyImageView(device, bloomBrightImageView, nullptr); bloomBrightImageView = VK_NULL_HANDLE; }
-        if (bloomBrightImage != VK_NULL_HANDLE) { vkDestroyImage(device, bloomBrightImage, nullptr); bloomBrightImage = VK_NULL_HANDLE; }
-        
-        // [ADD THIS BLOCK] This resolves the "VkDeviceMemory" validation error
-        if (bloomBrightMemory != VK_NULL_HANDLE) { 
-            vkFreeMemory(device, bloomBrightMemory, nullptr); 
-            bloomBrightMemory = VK_NULL_HANDLE; 
+
+        if (swapChain != VK_NULL_HANDLE) {
+            vkDestroySwapchainKHR(device, swapChain, nullptr);
+            swapChain = VK_NULL_HANDLE;
         }
 
-        // [FIX] Free the memory for the bloom Image
-        if (bloomBrightImageMemory != VK_NULL_HANDLE) {
-            vkFreeMemory(device, bloomBrightImageMemory, nullptr);
-            bloomBrightImageMemory = VK_NULL_HANDLE;
-        }
-            
-            // 4. Finally, destroy the swapchain
-            vkDestroySwapchainKHR(device, swapChain, nullptr);
+        // 2. Destroy Main Depth Resources (Created in createDepthResources)
+        if (depthImageView != VK_NULL_HANDLE) { vkDestroyImageView(device, depthImageView, nullptr); depthImageView = VK_NULL_HANDLE; }
+        if (depthImage != VK_NULL_HANDLE) { vkDestroyImage(device, depthImage, nullptr); depthImage = VK_NULL_HANDLE; }
+        if (depthImageMemory != VK_NULL_HANDLE) { vkFreeMemory(device, depthImageMemory, nullptr); depthImageMemory = VK_NULL_HANDLE; }
+
+        // =========================================================
+        // CLEANUP CUSTOM OFFSCREEN RESOURCES
+        // =========================================================
+
+        // [FIX] Destroy Viewport Sampler
+        if (viewportSampler != VK_NULL_HANDLE) { vkDestroySampler(device, viewportSampler, nullptr); viewportSampler = VK_NULL_HANDLE; }
+
+        // A. Framebuffers
+        if (viewportFramebuffer != VK_NULL_HANDLE) { vkDestroyFramebuffer(device, viewportFramebuffer, nullptr); viewportFramebuffer = VK_NULL_HANDLE; }
+        if (finalFramebuffer != VK_NULL_HANDLE) { vkDestroyFramebuffer(device, finalFramebuffer, nullptr); finalFramebuffer = VK_NULL_HANDLE; }
+        
+        // [FIX] Destroy Bloom Framebuffer
+        if (bloomFramebuffer != VK_NULL_HANDLE) { vkDestroyFramebuffer(device, bloomFramebuffer, nullptr); bloomFramebuffer = VK_NULL_HANDLE; }
+
+        // B. Render Passes
+        if (viewportRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, viewportRenderPass, nullptr); viewportRenderPass = VK_NULL_HANDLE; }
+        if (compositeRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, compositeRenderPass, nullptr); compositeRenderPass = VK_NULL_HANDLE; }
+        
+        // [FIX] Destroy Bloom RenderPass
+        if (bloomRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, bloomRenderPass, nullptr); bloomRenderPass = VK_NULL_HANDLE; }
+
+        // C. Image Views
+        if (viewportImageView != VK_NULL_HANDLE) { vkDestroyImageView(device, viewportImageView, nullptr); viewportImageView = VK_NULL_HANDLE; }
+        if (viewportDepthImageView != VK_NULL_HANDLE) { vkDestroyImageView(device, viewportDepthImageView, nullptr); viewportDepthImageView = VK_NULL_HANDLE; }
+        if (finalImageView != VK_NULL_HANDLE) { vkDestroyImageView(device, finalImageView, nullptr); finalImageView = VK_NULL_HANDLE; }
+        
+        // [FIX] Destroy Bloom Views
+        if (bloomBrightImageView != VK_NULL_HANDLE) { vkDestroyImageView(device, bloomBrightImageView, nullptr); bloomBrightImageView = VK_NULL_HANDLE; }
+
+        // D. Images & Memory
+        if (viewportImage != VK_NULL_HANDLE) { vkDestroyImage(device, viewportImage, nullptr); viewportImage = VK_NULL_HANDLE; }
+        if (viewportImageMemory != VK_NULL_HANDLE) { vkFreeMemory(device, viewportImageMemory, nullptr); viewportImageMemory = VK_NULL_HANDLE; }
+
+        if (viewportDepthImage != VK_NULL_HANDLE) { vkDestroyImage(device, viewportDepthImage, nullptr); viewportDepthImage = VK_NULL_HANDLE; }
+        if (viewportDepthImageMemory != VK_NULL_HANDLE) { vkFreeMemory(device, viewportDepthImageMemory, nullptr); viewportDepthImageMemory = VK_NULL_HANDLE; }
+
+        if (finalImage != VK_NULL_HANDLE) { vkDestroyImage(device, finalImage, nullptr); finalImage = VK_NULL_HANDLE; }
+        if (finalImageMemory != VK_NULL_HANDLE) { vkFreeMemory(device, finalImageMemory, nullptr); finalImageMemory = VK_NULL_HANDLE; }
+
+        // [FIX] Destroy Bloom Images
+        if (bloomBrightImage != VK_NULL_HANDLE) { vkDestroyImage(device, bloomBrightImage, nullptr); bloomBrightImage = VK_NULL_HANDLE; }
+        if (bloomBrightImageMemory != VK_NULL_HANDLE) { vkFreeMemory(device, bloomBrightImageMemory, nullptr); bloomBrightImageMemory = VK_NULL_HANDLE; }
     }
 
     void RenderingServer::shutdown() {
        if (device != VK_NULL_HANDLE) {
            vkDeviceWaitIdle(device);
 
-           // 1. Destroy Depth Resources (Not part of swapchain cleanup in your logic)
-           if (viewportDepthImageView != VK_NULL_HANDLE) vkDestroyImageView(device, viewportDepthImageView, nullptr);
-           if (viewportDepthImage != VK_NULL_HANDLE) vkDestroyImage(device, viewportDepthImage, nullptr);
-           if (viewportDepthImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, viewportDepthImageMemory, nullptr);
+           
           
            editorUI.Shutdown(device);
 

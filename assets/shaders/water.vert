@@ -23,32 +23,41 @@ void main() {
     vec3 pos = inPos;
     float time = PushConstants.pbrParams.w;
 
-    // --- Wave Logic ---
-    float waveHeight = 0.5;
-    float waveFreq = 0.5;
-    float waveSpeed = 2.0;
+    // --- 1. CALM WATER SETTINGS ---
+    // Lower height significantly (e.g., 0.05 instead of 0.5) for "calm" water.
+    // Lower speed (e.g., 0.5 instead of 2.0) for a gentle drift.
+    float waveHeight = 0.05; 
+    float waveFreq = 0.5;    
+    float waveSpeed = 0.5;   
     
+    // Calculate Wave Phases
     float waveX = pos.x * waveFreq + time * waveSpeed;
     float waveY = pos.y * waveFreq + time * waveSpeed;
 
+    // Apply Displacement (Z-Up)
     pos.z += sin(waveX) * waveHeight;
     pos.z += cos(waveY) * waveHeight * 0.5; 
 
-    // 1. Screen Position
-    gl_Position = PushConstants.renderMatrix * vec4(pos, 1.0);
+    // --- 2. MATCH UV SCROLLING ---
+    // Instead of hardcoding 0.1, we define a ratio relative to waveSpeed.
+    // "0.1" here is the "drag" factor. Water textures usually move slower than the physical wave.
+    float uvScrollSpeed = waveSpeed * 0.1; 
+    
+    // Apply the scrolling. 
+    // We add 'uvScrollSpeed' to the time calculation.
+    fragUV = (inTexCoord * 4.0) + vec2(time * uvScrollSpeed);
 
-    // 2. World Position (Use Model Matrix!)
+    // --- 3. OUTPUTS ---
+    gl_Position = PushConstants.renderMatrix * vec4(pos, 1.0);
     fragPos = vec3(PushConstants.modelMatrix * vec4(pos, 1.0));
 
-    // 3. Wave Normals (The "Slope" Fix)
+    // Recalculate Normals for the new calmer waves
     float dHdx = waveFreq * waveHeight * cos(waveX);
     float dHdy = waveFreq * waveHeight * 0.5 * -sin(waveY);
     vec3 localWaveNormal = normalize(vec3(-dHdx, -dHdy, 1.0));
 
-    // Transform Normal to World Space (using Model Matrix)
     mat3 normalMatrix = transpose(inverse(mat3(PushConstants.modelMatrix)));
     fragNormal = normalize(normalMatrix * localWaveNormal);
     
-    fragUV = (inTexCoord * 4.0) + vec2(time * 0.1);
     fragColor = vec3(0.0, 0.2, 0.8);
 }

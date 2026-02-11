@@ -14,10 +14,14 @@ namespace Crescendo {
     class Camera;
 
     struct Console {
-        ImGuiTextBuffer Buf;
-        ImVector<int> LineOffsets;
-        bool AutoScroll = true;
-        bool ScrollToBottom = false;
+        ImGuiTextBuffer     Buf;
+        
+        // This line was missing causing text to not filter
+        ImGuiTextFilter     Filter; 
+
+        ImVector<int>       LineOffsets;
+        bool                AutoScroll = true;
+        bool                ScrollToBottom = false;
 
         void Clear() { Buf.clear(); LineOffsets.clear(); LineOffsets.push_back(0); }
         void AddLog(const char* fmt, ...);

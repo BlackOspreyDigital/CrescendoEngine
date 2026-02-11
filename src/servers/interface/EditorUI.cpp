@@ -19,8 +19,76 @@ namespace Crescendo {
         if (err < 0) abort();
     }
 
-    void Console::AddLog(const char* fmt, ...) {}
-    void Console::Draw(const char* title, bool* p_open) {}
+    void Console::AddLog(const char* fmt, ...) {
+        int old_size = Buf.size();
+        va_list args;
+        va_start(args, fmt);
+        Buf.appendfv(fmt, args);
+        va_end(args);
+        for (int new_size = Buf.size(); old_size < new_size; old_size++)
+            if (Buf[old_size] == '\n') LineOffsets.push_back(old_size + 1);
+
+        if (AutoScroll) ScrollToBottom = true;
+    }
+
+    void Console::Draw(const char* title, bool* p_open) {
+        ImGui::SetNextWindowSize(ImVec2(520, 600), ImGuiCond_FirstUseEver);
+        if (!ImGui::Begin(title, p_open)) {
+            ImGui::End();
+            return;
+        }
+
+        if (ImGui::BeginPopup("Options")) {
+            ImGui::Checkbox("Auto-scroll", &AutoScroll);
+            if (ImGui::Button("Clear")) Clear();
+            ImGui::EndPopup();
+        }
+
+        if (ImGui::Button("Options")) ImGui::OpenPopup("Options");
+        ImGui::SameLine();
+        bool clear = ImGui::Button("Clear");
+        if (clear) Clear();
+        ImGui::SameLine();
+        bool copy = ImGui::Button("Copy");
+
+        ImGui::Separator();
+        ImGui::BeginChild("ScrollingRegion", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+
+        if (clear) Clear();
+        if (copy) ImGui::LogToClipboard();
+
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 1));
+        const char* buf = Buf.begin();
+        const char* buf_end = Buf.end();
+
+        if (Filter.IsActive()) {
+            for (int line_no = 0; line_no < LineOffsets.Size; line_no++) {
+                const char* line_start = buf + LineOffsets[line_no];
+                const char* line_end = (line_no + 1 < LineOffsets.Size) ? (buf + LineOffsets[line_no + 1] - 1) : buf_end;
+                if (Filter.PassFilter(line_start, line_end))
+                    ImGui::TextUnformatted(line_start, line_end);
+            }
+        } else {
+            ImGuiListClipper clipper;
+            clipper.Begin(LineOffsets.Size);
+            while (clipper.Step()) {
+                for (int line_no = clipper.DisplayStart; line_no < clipper.DisplayEnd; line_no++) {
+                    const char* line_start = buf + LineOffsets[line_no];
+                    const char* line_end = (line_no + 1 < LineOffsets.Size) ? (buf + LineOffsets[line_no + 1] - 1) : buf_end;
+                    ImGui::TextUnformatted(line_start, line_end);
+                }
+            }
+            clipper.End();
+        }
+        ImGui::PopStyleVar();
+
+        if (ScrollToBottom && ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
+            ImGui::SetScrollHereY(1.0f);
+
+        ScrollToBottom = false;
+        ImGui::EndChild();
+        ImGui::End();
+    }
 
     // --- CONSTRUCTOR / DESTRUCTOR ---
     EditorUI::EditorUI() : rendererRef(nullptr), selectedObjectIndex(-1) {
@@ -273,8 +341,12 @@ namespace Crescendo {
         ImGui::PopStyleColor();
 
         // 4. HIERARCHY & INSPECTOR
-        // ... (Keep your existing Hierarchy code here) ...
+        
+        // [FIX] Push Black Background for Hierarchy Window Only
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
         ImGui::Begin("Scene Hierarchy");
+        ImGui::PopStyleColor(); // Must pop immediately after Begin so it doesn't affect child windows
+
         if (scene) {
             for (size_t i = 0; i < scene->entities.size(); i++) {
                 CBaseEntity* ent = scene->entities[i];
@@ -316,14 +388,27 @@ namespace Crescendo {
         ImGui::SameLine();
         if (ImGui::RadioButton("Scale", mCurrentGizmoOperation == ImGuizmo::SCALE)) mCurrentGizmoOperation = ImGuizmo::SCALE;
 
+        
+
+        ImGui::Separator();
+        ImGui::Text("Post Processing");
+
+        // [FIX] Use 'rendererRef' (not renderRef)
+        ImGui::DragFloat("Bloom Intensity", &rendererRef->postProcessSettings.bloomIntensity, 0.01f, 0.0f, 5.0f);
+        ImGui::DragFloat("Exposure", &rendererRef->postProcessSettings.exposure, 0.01f, 0.1f, 5.0f);
+        ImGui::DragFloat("Gamma", &rendererRef->postProcessSettings.gamma, 0.01f, 0.1f, 3.0f);
+
         ImGui::End();
+
+        bool showConsole = true;
+        gameConsole.Draw("Console", &showConsole);
 
         // [FIX 3] FINALIZE THE FRAME
         // You MUST call Render() here. It calculates vertex buffers from the UI logic above.
         // It does NOT draw to the screen yet (that happens in EditorUI::Render).
         ImGui::Render(); 
     }
-
+    
     void EditorUI::Render(VkCommandBuffer cmd) {
         ImDrawData* draw_data = ImGui::GetDrawData();
         if (draw_data) {

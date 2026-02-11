@@ -77,6 +77,13 @@ namespace Crescendo {
        glm::vec4 albedoTint;   // (Offset 192) - Padding/Extra
     };
 
+    struct PostProcessPushConstants {
+        float bloomIntensity;
+        float exposure;
+        float gamma;
+        float padding; // Align to 16 bytes
+    };
+
     class RenderingServer {
     public:
         void render(Scene* scene); 
@@ -104,6 +111,12 @@ namespace Crescendo {
 
         void loadModel(const std::string& path);
         void loadGLTF(const std::string& filePath, Scene* scene);  
+
+        struct {
+            float bloomIntensity = 1.0f;
+            float exposure = 1.0f;
+            float gamma = 1.0f;
+        } postProcessSettings;
         
         Camera mainCamera;
         GameWorld gameWorld;
@@ -217,6 +230,13 @@ namespace Crescendo {
         VkRenderPass postProcessRenderPass = VK_NULL_HANDLE; 
         VkFramebuffer postProcessFramebuffer = VK_NULL_HANDLE;
 
+        VkImage finalImage = VK_NULL_HANDLE;
+        VkDeviceMemory finalImageMemory = VK_NULL_HANDLE;
+        VkImageView finalImageView = VK_NULL_HANDLE;
+        VkFramebuffer finalFramebuffer = VK_NULL_HANDLE;
+        
+        VkRenderPass compositeRenderPass = VK_NULL_HANDLE; // RenderPass for the Post-Process Stage
+
         VkDescriptorSetLayout postProcessLayout = VK_NULL_HANDLE;
         VkPipelineLayout compositePipelineLayout = VK_NULL_HANDLE; 
         VkPipeline compositePipeline = VK_NULL_HANDLE;
@@ -237,8 +257,8 @@ namespace Crescendo {
         QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
         SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device);
             
-        void transitionImageLayout(VkImage image, VkFormat format, 
-                                   VkImageLayout oldLayout, VkImageLayout newLayout);
+       void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
+                    
         void copyBufferToImage(VkBuffer buffer, VkImage image, 
                                uint32_t width, uint32_t height);
 
