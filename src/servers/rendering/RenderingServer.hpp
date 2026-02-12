@@ -1,6 +1,5 @@
 #pragma once
 
-// [CRITICAL] Defines first
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE 
 
 #include "servers/rendering/Vertex.hpp"
@@ -14,7 +13,10 @@
 #include <glm/glm.hpp>
 #include <SDL2/SDL.h>
 #include <imgui.h>
-#include "deps/imgui/ImGuizmo.h"
+
+// [FIX] Direct include (Makefile handles path)
+#include "ImGuizmo.h" 
+
 #include "servers/camera/Camera.hpp"
 #include "scene/GameWorld.hpp"
 #include "scene/CarController.hpp"
@@ -169,6 +171,11 @@ namespace Crescendo {
         VkDeviceMemory depthImageMemory = VK_NULL_HANDLE;
         VkImageView depthImageView = VK_NULL_HANDLE;
 
+        VkImage skyImage = VK_NULL_HANDLE;
+        VkDeviceMemory skyImageMemory =VK_NULL_HANDLE;
+        VkImageView skyImageView = VK_NULL_HANDLE;
+        VkSampler skySampler = VK_NULL_HANDLE;
+
         VkImage textureImage = VK_NULL_HANDLE;
         VkDeviceMemory textureImageMemory = VK_NULL_HANDLE;
         VkImageView textureImageView = VK_NULL_HANDLE;
@@ -240,10 +247,7 @@ namespace Crescendo {
         VkDescriptorSetLayout postProcessLayout = VK_NULL_HANDLE;
         VkPipelineLayout compositePipelineLayout = VK_NULL_HANDLE; 
         VkPipeline compositePipeline = VK_NULL_HANDLE;
-
-        VkPipeline gridPipeline = VK_NULL_HANDLE;
-        bool createGridPipeline();
-
+        
         VkPipeline waterPipeline = VK_NULL_HANDLE; 
         bool createWaterPipeline();
         void createWaterMesh();
@@ -263,8 +267,7 @@ namespace Crescendo {
                                uint32_t width, uint32_t height);
 
         bool isDeviceSuitable(VkPhysicalDevice device);
-        
-            
+                    
         VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
         VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
         VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);
@@ -300,21 +303,19 @@ namespace Crescendo {
         void updateUniformBuffer(uint32_t currentImage, Scene* scene);
         void recreateSwapChain(SDL_Window* window);
         void cleanupSwapChain();
-
         bool createBloomResources();
         bool createBloomPipeline();
         bool createCompositePipeline();
         void updateCompositeDescriptors();
-
+        bool createHDRImage(const std::string& path, VkImage& image, VkDeviceMemory& memory);
         void createDefaultTexture();
         void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene);
-        void createProceduralGrid();
+        
 
         glm::vec3 sunDirection = glm::normalize(glm::vec3(1.0f, -3.0, -1.0));
         glm::vec3 sunColor = glm::vec3(1.0f, 0.95f, 0.8f);
         float sunIntensity = 1.2f;
 
-        // ... (Console struct and other private members hidden for brevity, keep your Console struct here) ...
         struct Console{
             ImGuiTextBuffer     Buf;
             ImVector<int>       LineOffsets;

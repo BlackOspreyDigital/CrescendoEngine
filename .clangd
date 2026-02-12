@@ -1,0 +1,17 @@
+CompileFlags:
+  Add: [
+    "-xc++",
+    "-std=c++17",
+    "-I.",
+    "-I./src",
+    "-I./include",
+    "-I./deps/sol/include",
+    "-I./deps/tinygltf",
+    "-I./deps/json",
+    "-I./deps/stb",
+    "-I./deps/imgui",
+    "-I./deps/imgui/backends",
+    "-I./JoltPhysics",
+    "-DJPH_PROFILE_ENABLED",
+    "-DGLM_ENABLE_EXPERIMENTAL" 
+  ]

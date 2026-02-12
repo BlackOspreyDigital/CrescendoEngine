@@ -5,7 +5,6 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <SDL2/SDL.h> 
-#include <algorithm>
 
 namespace Crescendo {
     class Camera {
@@ -84,6 +83,21 @@ namespace Crescendo {
             if (state[SDL_SCANCODE_D]) Position += Right * velocity;
             if (state[SDL_SCANCODE_Q]) Position += WorldUp * velocity;
             if (state[SDL_SCANCODE_E]) Position -= WorldUp * velocity;
+        }
+
+        void LookAt(glm::vec3 target) {
+            glm::vec3 direction = glm::normalize(target - Position);
+
+            // Calculate Pitch (Z-Up)
+            Pitch = glm::degrees(asin(direction.z));
+            
+            // Calculate Yaw (Z-Up)
+            Yaw = glm::degrees(atan2(direction.y, direction.x));
+
+            if (Pitch > 89.0f) Pitch = 89.0f;
+            if (Pitch < -89.0f) Pitch = -89.0f;
+
+            UpdateCameraVectors();
         }
 
         // Process Mouse Movement

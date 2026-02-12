@@ -1,12 +1,18 @@
-# Ignore build artifacts
+# --- Build Artifacts ---
 obj/
+build/
+.cache/
+compile_commands.json
 crescendo_engine
 *.o
 
-# Ignore compiled shaders (since make builds them)
+# --- Compiled Shaders ---
 assets/shaders/*.spv
 
-# Ignore system/editor files
+# --- Editor/System Files ---
 .vscode/
 .DS_Store
 imgui.ini
+
+# --- OS Specific ---
+Thumbs.db

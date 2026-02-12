@@ -4,6 +4,7 @@
 #include <Jolt/Physics/Vehicle/VehicleConstraint.h>
 #include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
 #include <glm/glm.hpp>
+#include <glm/gtx/compatibility.hpp>
 #include "scene/GameWorld.hpp" 
 
 using namespace JPH;
@@ -21,8 +22,7 @@ namespace Crescendo {
         // Lua can change these numbers to tune the car!
         float engineTorque = 500.0f;
         float brakeForce = 1500.0f;
-        // -----------------------------
-
+        
         void SetVehicle(VehicleConstraint* v) {
             vehicle = v;
         }
@@ -41,10 +41,12 @@ namespace Crescendo {
         void SetDriverInput(float forward, float right, float brake, float handbrake) {
             if (vehicle) {
                 WheeledVehicleController* controller = static_cast<WheeledVehicleController*>(vehicle->GetController());
-                
-                // We don't just set the input, we can also apply the torque here if we wanted
-                // But for now, just passing the control values is enough.
-                controller->SetDriverInput(forward, right, brake, handbrake);
+
+                // Jolt rquires seperate calls for each input
+                controller->SetForwardInput(forward);
+                controller->SetRightInput(right);
+                controller->SetBrakeInput(brake);
+                controller->SetHandBrakeInput(handbrake);
             }
         }
 
