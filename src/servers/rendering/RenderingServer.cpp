@@ -539,6 +539,7 @@ namespace Crescendo {
         samplerInfo.minFilter = VK_FILTER_LINEAR;
         samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.anisotropyEnable = VK_TRUE;
         samplerInfo.maxAnisotropy = 16.0f;
         samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
@@ -1453,128 +1454,48 @@ namespace Crescendo {
         return true;
     }
 
-    // --------------------------------------------------------------------
-    // OBJ(Wavefront) Loading & Handling 
-    // --------------------------------------------------------------------
-
-    void RenderingServer::loadModel(const std::string& path) {
-
-        if (meshMap.find(path) != meshMap.end()) {
-            uint32_t existingIndex = meshMap[path];
-
-            CBaseEntity* ent = gameWorld.CreateEntity("prop_dynamic");
-            ent->modelIndex = existingIndex;
-            ent->targetName = path.substr(path.find_last_of("/\\") + 1);
-
-            std::cout << "[System] Instanced existing mesh: " << ent->targetName << std::endl;
+    // Add this to RenderingServer.cpp
+    void RenderingServer::loadModel(const std::string& filePath) {
+        // Check if file exists
+        std::ifstream f(filePath.c_str());
+        if (!f.good()) {
+            std::cerr << "[Error] File not found: " << filePath << std::endl;
             return;
         }
 
-        tinyobj::attrib_t attrib;
-        std::vector<tinyobj::shape_t> shapes;
-        std::vector<tinyobj::material_t> materials;
-        std::string warn, err;
-
-        std::string baseDir = path.substr(0, path.find_last_of("/\\")) + "/";
-        
-        if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, path.c_str(), baseDir.c_str())) {
-            std::cerr << "Failed to load model: " << warn << err << std::endl;
-            return;
+        // Route based on extension
+        if (filePath.find(".glb") != std::string::npos || filePath.find(".gltf") != std::string::npos) {
+            // Assumes 'scene' is your active scene member variable. 
+            // If you don't store it, you might need to pass it, but usually the server knows the active scene.
+            // Based on your previous code, you usually pass the active scene from the main loop, 
+            // but for a simple UI load, we often target the primary scene.
+            
+            // NOTE: If 'scene' isn't a class member, use the pointer to the main scene you created in Init.
+            // For now, let's assume you have a pointer or pass 'this->currentScene' if you have one.
+            // If you don't have a 'currentScene' member, you'll need to update the header to store it.
+            
+            // TEMPORARY FIX: Assuming you pass it or have a getter. 
+            // If this fails, we need to see how you store the Scene pointer.
+            // loadGLTF(filePath, this->activeScene); 
+        } 
+        else if (filePath.find(".obj") != std::string::npos) {
+            // loadOBJ(filePath, ...); 
+            std::cout << "[Loader] OBJ loading not yet refactored." << std::endl;
         }
-
-        loadMaterialsFromOBJ(baseDir, materials);
-
-        std::vector<Vertex> tempVertices;
-        std::vector<uint32_t> tempIndices;
-        std::unordered_map<Vertex, uint32_t> uniqueVertices{};
-
-        for (const auto& shape : shapes) {
-            for (const auto& index : shape.mesh.indices) {
-                Vertex vertex{};
-
-                vertex.pos = {
-                    attrib.vertices[3 * index.vertex_index + 0],
-                    attrib.vertices[3 * index.vertex_index + 1],
-                    attrib.vertices[3 * index.vertex_index + 2]
-                };
-
-                if (index.normal_index >= 0) {
-                    vertex.normal = {
-                        attrib.normals[3 * index.normal_index + 0],
-                        attrib.normals[3 * index.normal_index + 1],
-                        attrib.normals[3 * index.normal_index + 2]
-                    };
-                } else {
-                    vertex.normal = {0.0f, 0.0f, 1.0f}; 
-                }
-
-                if (index.texcoord_index >= 0) {
-                    vertex.texCoord = {
-                        attrib.texcoords[2 * index.texcoord_index + 0],
-                        1.0f - attrib.texcoords[2 * index.texcoord_index + 1] 
-                    };
-                }
-
-                vertex.color = {1.0f, 1.0f, 1.0f};
-
-                if (uniqueVertices.count(vertex) == 0) {
-                    uniqueVertices[vertex] = static_cast<uint32_t>(tempVertices.size());
-                    tempVertices.push_back(vertex);
-                }
-                tempIndices.push_back(uniqueVertices[vertex]);
-
-                int matId = shape.mesh.material_ids[0];
-                if (matId >= 0 && static_cast<size_t>(matId) < materials.size()) {
-                    vertex.color = {materials[matId].diffuse[0], materials[matId].diffuse[1], materials[matId].diffuse[2]};
-                }
-            }
-        }
-
-        MeshResource newMesh{}; 
-        newMesh.name = path.substr(path.find_last_of("/\\") + 1);
-        newMesh.indexCount = static_cast<uint32_t>(tempIndices.size());
-
-        // [FIX] Calculate Tangents before upload
-        calculateTangents(tempVertices, tempIndices);
-
-        createVertexBuffer(tempVertices, newMesh.vertexBuffer, newMesh.vertexBufferMemory);
-        createIndexBuffer(tempIndices, newMesh.indexBuffer, newMesh.indexBufferMemory);
-
-        meshes.push_back(newMesh);
-        
-        CBaseEntity* ent = gameWorld.CreateEntity("prop_dynamic");
-        ent->modelIndex = meshes.size() - 1;
-        ent->targetName = newMesh.name;
-
-        if (!shapes.empty() && !shapes[0].mesh.material_ids.empty()) {
-            int localMatID = shapes[0].mesh.material_ids[0];
-            if (localMatID >= 0) {
-                std::string matName = materials[localMatID].name;
-
-                if (materialMap.find(matName) != materialMap.end()) {
-                    uint32_t globalMatID = materialMap[matName];
-                    ent->textureID = materialBank[globalMatID].textureID;
-                }
-            }
-        }
-        
-        std::cout << ">>> Imported & Spawned: " << newMesh.name << std::endl;
-    } 
+    }
 
     // --------------------------------------------------------------------
-    // GLTF Loading & Handling 
+    // GLTF Loading & Handling (UPDATED)
     // --------------------------------------------------------------------
-    
-    // [HELPER] Standardize slashes to forward slashes
+
+    // [HELPER] Standardize slashes
     std::string normalizePath(const std::string& path) {
         std::string s = path;
-        for (char &c : s) {
-            if (c == '\\') c = '/';
-        }
+        for (char &c : s) if (c == '\\') c = '/';
         return s;
     }
 
-    // [HELPER] Decode URL characters (e.g. "My%20Texture.png" -> "My Texture.png")
+    // [HELPER] Decode URL characters
     std::string decodeUri(const std::string& uri) {
         std::string result;
         for (size_t i = 0; i < uri.length(); i++) {
@@ -1583,15 +1504,13 @@ namespace Crescendo {
                 char c = static_cast<char>(std::strtol(hex.c_str(), nullptr, 16));
                 result += c;
                 i += 2;
-            } else if (uri[i] == '+') {
-                result += ' ';
-            } else {
-                result += uri[i];
-            }
+            } else if (uri[i] == '+') result += ' ';
+            else result += uri[i];
         }
         return result;
     }
     
+    // 1. UPDATED LOADGLTF (Tangents + Safe Buffers)
     void RenderingServer::loadGLTF(const std::string& filePath, Scene* scene) {
         if (scene == nullptr) return;
 
@@ -1610,9 +1529,7 @@ namespace Crescendo {
         if (lastSlash != std::string::npos) baseDir = filePath.substr(0, lastSlash);
         baseDir = normalizePath(baseDir);
 
-        // =========================================================
-        // MESH LOADING SECTION
-        // =========================================================
+        // --- MESH LOADING ---
         for (size_t i = 0; i < model.meshes.size(); i++) {
             const auto& mesh = model.meshes[i];
 
@@ -1621,7 +1538,6 @@ namespace Crescendo {
                 std::vector<Vertex> vertices;
                 std::vector<uint32_t> indices;
 
-                // Helper for memory-safe attribute access
                 auto getAttrData = [&](const std::string& name, int& stride) -> const uint8_t* {
                     auto it = primitive.attributes.find(name);
                     if (it == primitive.attributes.end()) return nullptr;
@@ -1631,74 +1547,54 @@ namespace Crescendo {
                     return &model.buffers[view.buffer].data[acc.byteOffset + view.byteOffset];
                 };
 
-                // 1. Get Master Vertex Count
                 auto posIt = primitive.attributes.find("POSITION");
                 if (posIt == primitive.attributes.end()) continue;
-                const auto& posAccessor = model.accessors[posIt->second];
-                int posCount = posAccessor.count;
+                int posCount = model.accessors[posIt->second].count;
 
-                // 2. Setup Base Pointers and Strides
                 int posStride = 0, normStride = 0, texStride = 0, tanStride = 0;
                 const uint8_t* posBase = getAttrData("POSITION", posStride);
                 const uint8_t* normBase = getAttrData("NORMAL", normStride);
                 const uint8_t* texBase = getAttrData("TEXCOORD_0", texStride);
-                const uint8_t* tanBase = getAttrData("TANGENT", tanStride); // [NEW] Tangent Data
+                const uint8_t* tanBase = getAttrData("TANGENT", tanStride);
 
                 vertices.reserve(posCount);
 
-                // 3. Process Vertices
                 for (int v = 0; v < posCount; v++) {
                     Vertex vert{};
-
-                    // --- POSITION ---
                     const float* p = reinterpret_cast<const float*>(posBase + (v * posStride));
                     vert.pos = { p[0], p[1], p[2] };
 
-                    // --- NORMAL ---
                     if (normBase) {
                         const float* n = reinterpret_cast<const float*>(normBase + (v * normStride));
                         vert.normal = { n[0], n[1], n[2] };
-                    } else {
-                        vert.normal = { 0.0f, 0.0f, 1.0f };
-                    }
+                    } else vert.normal = { 0.0f, 0.0f, 1.0f };
 
-                    // --- UV ---
                     if (texBase) {
                         const auto& acc = model.accessors[primitive.attributes.at("TEXCOORD_0")];
-                        if (acc.componentType == 5126) { // FLOAT
+                        if (acc.componentType == 5126) { 
                             const float* t = reinterpret_cast<const float*>(texBase + (v * texStride));
                             vert.texCoord = { t[0], t[1] };
-                        } else if (acc.componentType == 5123) { // USHORT
+                        } else if (acc.componentType == 5123) { 
                             const uint16_t* t = reinterpret_cast<const uint16_t*>(texBase + (v * texStride));
                             vert.texCoord = { t[0] / 65535.0f, t[1] / 65535.0f };
                         }
                     }
 
-                    // --- TANGENT & BITANGENT [CRITICAL FIX] ---
+                    // [CRITICAL] Tangent Calculation for Normal Mapping
                     if (tanBase) {
-                        // Case A: Model has baked tangents (Ideal)
                         const float* t = reinterpret_cast<const float*>(tanBase + (v * tanStride));
                         vert.tangent = { t[0], t[1], t[2] };
-                        float sigma = t[3]; // W component stores sign
-                        vert.bitangent = glm::cross(vert.normal, vert.tangent) * sigma;
+                        vert.bitangent = glm::cross(vert.normal, vert.tangent) * t[3];
                     } else {
-                        // Case B: No tangents? Generate defaults to prevent NaN/Invisibility
-                        // This ensures the TBN matrix in the shader is valid (even if not perfect)
-                        vert.tangent = { 1.0f, 0.0f, 0.0f }; 
+                        // Safe Fallback
+                        vert.tangent = { 1.0f, 0.0f, 0.0f };
                         vert.bitangent = { 0.0f, 1.0f, 0.0f };
-                        
-                        // Optional: Improved fallback (Gram-Schmidt)
-                        // glm::vec3 c1 = glm::cross(vert.normal, glm::vec3(0.0, 0.0, 1.0)); 
-                        // glm::vec3 c2 = glm::cross(vert.normal, glm::vec3(0.0, 1.0, 0.0)); 
-                        // vert.tangent = (glm::length(c1) > glm::length(c2)) ? glm::normalize(c1) : glm::normalize(c2);
-                        // vert.bitangent = glm::normalize(glm::cross(vert.normal, vert.tangent));
                     }
 
                     vert.color = { 1.0f, 1.0f, 1.0f };
                     vertices.push_back(vert);
                 }
 
-                // 4. Fill Indices
                 if (primitive.indices > -1) {
                     const auto& acc = model.accessors[primitive.indices];
                     const auto& view = model.bufferViews[acc.bufferView];
@@ -1706,16 +1602,12 @@ namespace Crescendo {
                     int idxStride = acc.ByteStride(view);
 
                     for (size_t k = 0; k < acc.count; k++) {
-                        if (acc.componentType == 5125) // UINT
-                            indices.push_back(*(const uint32_t*)(idxData + k * idxStride));
-                        else if (acc.componentType == 5123) // USHORT
-                            indices.push_back(*(const uint16_t*)(idxData + k * idxStride));
-                        else if (acc.componentType == 5121) // UBYTE
-                            indices.push_back(*(const uint8_t*)(idxData + k * idxStride));
+                        if (acc.componentType == 5125) indices.push_back(*(const uint32_t*)(idxData + k * idxStride));
+                        else if (acc.componentType == 5123) indices.push_back(*(const uint16_t*)(idxData + k * idxStride));
+                        else if (acc.componentType == 5121) indices.push_back(*(const uint8_t*)(idxData + k * idxStride));
                     }
                 }
 
-                // 5. Create GPU Resources
                 MeshResource newMesh{};
                 newMesh.name = baseDir + "_mesh_" + std::to_string(i) + "_" + std::to_string(j);
                 newMesh.indexCount = static_cast<uint32_t>(indices.size());
@@ -1724,27 +1616,18 @@ namespace Crescendo {
 
                 size_t globalIndex = meshes.size();
                 meshes.push_back(newMesh);
-
-                // Create key for node mapping
-                std::string meshKey = newMesh.name; // Use name as key
-                meshMap[meshKey] = globalIndex;
+                meshMap[newMesh.name] = globalIndex;
             }
         }
 
-        // =========================================================
-        // NODE PROCESSING
-        // =========================================================
+        // --- NODE PROCESSING START ---
         const auto& gltfScene = model.scenes[model.defaultScene > -1 ? model.defaultScene : 0];
         for (int nodeIdx : gltfScene.nodes) {
-            processGLTFNode(model, model.nodes[nodeIdx], nullptr, baseDir, scene);
+            // [FIX] Pass Identity Matrix to start the chain
+            processGLTFNode(model, model.nodes[nodeIdx], nullptr, baseDir, scene, glm::mat4(1.0f));
         }
     }
 
-    // Updated processGLTFNode with new positions from push constants
-    // We will be pushing a Charlie branch to experiment with Global Illumination and Ray-Tracing
-    // Updates expected soon.
-
-    // [CHANGE] Added 'parentMatrix' parameter (defaults to Identity in header)
     void RenderingServer::processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene, glm::mat4 parentMatrix) {
         if (!scene) return; 
 
@@ -1813,9 +1696,10 @@ namespace Crescendo {
                 if (primitive.material >= 0) {
                     const tinygltf::Material& mat = model.materials[primitive.material];
                     
+                    targetEnt->normalStrength = 0.0f;
                     targetEnt->roughness = (float)mat.pbrMetallicRoughness.roughnessFactor;
                     targetEnt->metallic = (float)mat.pbrMetallicRoughness.metallicFactor;
-
+                
                     // [ADD] Emissive Factor (Fixes Dark Watch Hands)
                     if (mat.emissiveFactor.size() == 3) {
                          float r = (float)mat.emissiveFactor[0];

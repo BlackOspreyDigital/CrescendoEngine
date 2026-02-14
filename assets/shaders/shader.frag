@@ -78,17 +78,12 @@ void main() {
     float roughness = PushConstants.pbrParams.y;
     float metallic = PushConstants.pbrParams.z;
     float emissionStrength = PushConstants.pbrParams.w;
-    
-    // Transmission (Glass) Logic packed in camPos.w
     float transmission = PushConstants.camPos.w;
-    
-    // Normal Strength packed in sunColor.w
     float normalStrength = PushConstants.sunColor.w;
 
     // 2. Base Color / Albedo
     vec4 albedoSample = texture(texSampler[texID], fragTexCoord);
     
-    // If using transmission, we don't discard alpha usually, but for opaque leaves etc we might.
     if (transmission <= 0.0 && albedoSample.a < 0.5) discard;
 
     vec3 albedo;
@@ -96,43 +91,43 @@ void main() {
     float attDist = 1.0;
 
     if (transmission > 0.0) {
-        // GLASS MODE: Albedo comes from texture, but Tint holds Attenuation Data
+        // GLASS MODE
         albedo = albedoSample.rgb * fragColor; 
-        attColor = PushConstants.albedoTint.rgb; // Absorption Color
-        attDist = PushConstants.albedoTint.w;    // Absorption Distance
+        attColor = PushConstants.albedoTint.rgb; 
+        attDist = PushConstants.albedoTint.w;    
     } else {
-        // OPAQUE MODE: Standard Tint
+        // OPAQUE MODE
         albedo = albedoSample.rgb * PushConstants.albedoTint.rgb * fragColor;
     }
 
     // 3. Normal Mapping
-    vec3 N_geom = normalize(fragNormal);
-    vec3 T = normalize(fragTangent);
-    vec3 B = normalize(fragBitangent);
-    mat3 TBN = mat3(T, B, N_geom);
+    // [FIX] Initialize Geometry Normal FIRST so it's valid even if we skip the if-block
+    vec3 N = normalize(fragNormal);
 
-    // HACK: Assume Normal Map is always at texID + 1
-    // In a real engine, we'd pass a separate normalTexID
-    int normalTexID = texID + 1; 
-    
-    // Sample and unpack normal map
-    vec3 normalMap = texture(texSampler[normalTexID], fragTexCoord).rgb;
-    
-    vec3 N;
-    // Check if normal map exists (if it's purely blue/flat, effectively skip)
-    // A simplified check: if we want to support models without normal maps, 
-    // we should ideally use a flag. For now, we apply the strength.
-    
-    normalMap = normalMap * 2.0 - 1.0;     // Remap [0,1] -> [-1,1]
-    normalMap.xy *= normalStrength;        // Apply Slider Strength
-    normalMap = normalize(normalMap);
-    
-    // Transform to World Space
-    N = normalize(TBN * normalMap);
+    if (normalStrength > 0.0) {
+        vec3 T = normalize(fragTangent);
+        vec3 B = normalize(fragBitangent);
+        mat3 TBN = mat3(T, B, N);
+
+        int normalTexID = texID + 1; // [FIX] Typo was 'textID'
+        
+        // Sample Normal Map
+        vec3 normalMap = texture(texSampler[normalTexID], fragTexCoord).rgb;
+        
+        // Transform [0,1] -> [-1,1]
+        normalMap = normalMap * 2.0 - 1.0;     
+        normalMap.xy *= normalStrength;        
+        normalMap = normalize(normalMap);
+        
+        // Update N
+        N = normalize(TBN * normalMap);
+    }
+
+    // [FIX] DELETED ZOMBIE CODE HERE (The duplicate block causing 'undeclared identifier' errors)
 
     // 4. Lighting Vectors
     vec3 V = normalize(PushConstants.camPos.xyz - fragPos);
-    vec3 L = normalize(vec3(0.5, 1.0, 0.5)); // Default Sun
+    vec3 L = normalize(vec3(0.5, 1.0, 0.5)); 
     float sunIntensity = 1.0;
     
     if (length(PushConstants.sunDir.xyz) > 0.1) {
@@ -170,52 +165,29 @@ void main() {
 
     // 7. VOLUME / TRANSMISSION LOGIC (Glass)
     if (transmission > 0.0) {
-        
-        // 1. Get Volume Params
-        vec3 attColor = PushConstants.albedoTint.rgb;
-        float attDist = PushConstants.albedoTint.w;
-
-        // 2. Calculate Thickness (Stable)
-        // We use abs() to prevent the "Black Circle" bug you saw earlier
         float thickness = 0.5 / (abs(dot(N, V)) + 0.1); 
 
-        // ... (Beer's Law calc above) ...
         vec3 absorption = -log(max(attColor, vec3(0.001))) / max(attDist, 0.001);
         vec3 transmittance = exp(-absorption * thickness);
-        
-        // 4. Calculate Reflection & Refraction
-        float IOR = 1.5; // Glass default. You can pass this in a uniform later if you want.
-        float eta = 1.0 / IOR; // Air -> Glass ratio
-        
-        vec3 R = reflect(-V, N);           // Reflection Vector
-        vec3 T_refract = refract(-V, N, eta); // Refraction Vector (Snell's Law)
-        
-        // If Total Internal Reflection occurs, refract returns 0. Fallback to reflection.
+
+        // Refraction
+        float IOR = 1.5; 
+        float eta = 1.0 / IOR; 
+        vec3 R = reflect(-V, N); 
+        vec3 T_refract = refract(-V, N, eta); 
         if (length(T_refract) < 0.01) T_refract = R;
 
         vec3 skyReflection = GetSkyColor(R);
-        vec3 skyRefraction = GetSkyColor(T_refract); // Sample sky in the refracted direction
+        vec3 skyRefraction = GetSkyColor(T_refract);
         
-        // 5. Combine
-        // The body of the glass shows the Refracted Background tinted by Transmittance
         vec3 glassBodyColor = skyRefraction * transmittance * albedo;
-        
-        // Mix Reflection on top (Fresnel)
         vec3 glassFinalRGB = mix(glassBodyColor, skyReflection, F);
         
-        
-        // 6. Calculate Alpha for Blending
-        // - Fresnel (F.g): Reflections are opaque
-        // - Opacity: If the glass absorbs light (Darker Transmittance), it should be more opaque
-        //   (Clear glass = Low Alpha. Dark Colored Glass = High Alpha)
         float opacity = clamp(1.0 - ((transmittance.r + transmittance.g + transmittance.b) / 3.0), 0.0, 1.0);
         float alpha = clamp(F.g + opacity, 0.05, 1.0);
 
-        // Output: Tinted Glass + Reflection + Alpha Blend with Background
         outColor = vec4(glassFinalRGB, alpha);
-
     } else {
-        // Opaque Object
         outColor = vec4(finalColor, 1.0);
     }
 }
