@@ -1,5 +1,8 @@
 #pragma once
 
+#include "Jolt/Core/Core.h"
+#include <cstdint>
+#include <vulkan/vulkan_core.h>
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE 
 
 #include "servers/rendering/Vertex.hpp"
@@ -12,9 +15,9 @@
 #include <array>
 #include <glm/glm.hpp>
 #include <SDL2/SDL.h>
-#include <imgui.h>
 
-// [FIX] Direct include (Makefile handles path)
+// [FIX] INCLUDE ORDER MATTERS: ImGui FIRST, then ImGuizmo
+#include <imgui.h>
 #include "ImGuizmo.h" 
 
 #include "servers/camera/Camera.hpp"
@@ -22,10 +25,7 @@
 #include "scene/CarController.hpp"
 #include "servers/interface/EditorUI.hpp"
 
-namespace tinygltf {
-    class Model;
-    class Node;
-}
+namespace tinygltf { class Model; class Node; }
 
 namespace Crescendo {
     class DisplayServer;
@@ -52,68 +52,86 @@ namespace Crescendo {
         std::unordered_map<std::string, int32_t> meshes;
     };
 
-    // Queue Indicies
     struct QueueFamilyIndices {
         std::optional<uint32_t> graphicsFamily;
         std::optional<uint32_t> presentFamily;
-
-        bool isComplete() {
-            return graphicsFamily.has_value() && presentFamily.has_value();
-        }
+        bool isComplete() { return graphicsFamily.has_value() && presentFamily.has_value(); }
     };
 
     struct SwapChainSupportDetails {
        VkSurfaceCapabilitiesKHR capabilities;
        std::vector<VkSurfaceFormatKHR> formats;
-       std::vector<VkPresentModeKHR> presentModes; // Fix: changed < to >
+       std::vector<VkPresentModeKHR> presentModes; 
     };
     
-    // [FIX] MASTER ALIGNMENT (192 Bytes)
-    struct MeshPushConstants {
-       glm::mat4 renderMatrix; // MVP (Offset 0)
-       glm::mat4 modelMatrix;  // [NEW] World Space (Offset 64)
-       glm::vec4 camPos;       // (Offset 128)
-       glm::vec4 pbrParams;    // (Offset 144)
-       glm::vec4 sunDir;       // (Offset 160)
-       glm::vec4 sunColor;     // (Offset 176)
-       glm::vec4 albedoTint;   // (Offset 192) - Padding/Extra
+    // [SSBO] The Big Data Struct
+    struct EntityData {
+        glm::mat4 modelMatrix;      // 64 bytes
+        glm::vec4 sphereBounds;     // 16 bytes 
+        glm::vec4 albedoTint;       // 16 bytes 
+        glm::vec4 pbrParams;        // 16 bytes 
+        glm::vec4 volumeParams;     // 16 bytes 
+        glm::vec4 volumeColor;      // 16 bytes 
     };
 
+    // [GFD] accessible by all shaders auto
+    struct GlobalUniforms {
+        glm::mat4 viewProj;         // 64 bytes
+        glm::mat4 view;             // 64 bytes
+        glm::mat4 proj;             // 64 bytes
+        glm::vec4 cameraPos;        // 16 bytes
+        glm::vec4 sunDirection;     // 16 bytes
+        glm::vec4 sunColor;         // 16 bytes
+        glm::vec4 params;           // 16 bytes <--- THIS WAS MISSING
+    };
+
+    // [PUSH CONSTANT] For Main Objects (Tiny!)
+    struct PushConsts {
+        uint32_t entityIndex;   // 4 bytes
+    };
+
+    // [ADD THIS] For Skybox (Needs Matrix)
+    struct SkyboxPushConsts {
+        glm::mat4 invViewProj;  // 64 bytes
+    };
+    
     struct PostProcessPushConstants {
         float bloomIntensity;
         float exposure;
         float gamma;
-        float padding; // Align to 16 bytes
+        float padding; 
     };
 
     class RenderingServer {
     public:
-        void render(Scene* scene); 
         RenderingServer();
         bool initialize(DisplayServer* display);
         void shutdown();
+        void render(Scene* scene); 
 
-        int acquireMesh(const std::string& path, const std::string& name,
-                        const std::vector<Vertex>& vertices,
-                        const std::vector<uint32_t>& indices);
+        // Asset Management
+        int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
         int acquireTexture(const std::string& path);
         void UploadTexture(void* pixels, int width, int height, VkFormat format, VkImage& image, VkDeviceMemory& memory);
+        
         GameWorld* GetWorld() { return &gameWorld; }
 
+        // Pipeline Helpers
         VkCommandBuffer beginSingleTimeCommands();
         void endSingleTimeCommands(VkCommandBuffer commandBuffer);
-
-        void loadMaterialsFromOBJ(const std::string& baseDir, const std::vector<tinyobj::material_t>& materials);
-        const Material& getMaterial(uint32_t id) const { return materialBank[id]; }
-
         VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
 
+        // Loaders
+        void loadModel(const std::string& path);
+        void loadGLTF(const std::string& filePath, Scene* scene);
+        // [FIX] Ensure declaration matches definition
+        void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene, glm::mat4 parentMatrix = glm::mat4(1.0f));
+        void loadMaterialsFromOBJ(const std::string& baseDir, const std::vector<tinyobj::material_t>& materials);
+
+        // Public State
         bool isPlayMode = false;
         CarController* activeCar = nullptr;
-
-        void loadModel(const std::string& path);
-        void loadGLTF(const std::string& filePath, Scene* scene);  
-
+        
         struct {
             float bloomIntensity = 1.0f;
             float exposure = 1.0f;
@@ -125,31 +143,11 @@ namespace Crescendo {
         std::vector<MeshResource> meshes;
         int waterTextureID = 0;
 
+        // [FIX] Use the Console defined in EditorUI.hpp
+        Console gameConsole;
+
     private:
-        ResourceCache cache;
-        
-        private:
-            const std::vector<const char*> validationLayers = {
-                "VK_LAYER_KHRONOS_validation"
-            };
-
-        #ifdef NDEBUG
-            const bool enableValidationLayers = false;
-        #else
-            const bool enableValidationLayers = true;
-        #endif
-        
-        EditorUI editorUI;         
-        DisplayServer* display_ref;
-
-        SDL_Window* window = nullptr;
-
-        void setupUIDescriptors();
-        
-        static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
-        uint32_t currentFrame = 0;
-        static constexpr int MAX_TEXTURES = 100;
-
+        // Core Vulkan
         VkInstance instance = VK_NULL_HANDLE;
         VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
         VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -157,22 +155,68 @@ namespace Crescendo {
         VkDevice device = VK_NULL_HANDLE;
         VkQueue graphicsQueue = VK_NULL_HANDLE;
         VkQueue presentQueue = VK_NULL_HANDLE;
-        
-        int selectedObjectIndex = -1;
-
         VkSwapchainKHR swapChain = VK_NULL_HANDLE;
+        
+        // --- [SSBO] RESOURCES ---
+        static constexpr size_t MAX_ENTITIES = 10000;
+        VkBuffer entityStorageBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory entityStorageBufferMemory = VK_NULL_HANDLE;
+        void* entityStorageBufferMapped = nullptr;
+        void createStorageBuffers(); 
+
+        VkBuffer globalUniformBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory globalUniformBufferMemory = VK_NULL_HANDLE;
+        void* globalUniformBufferMapped = nullptr;
+        void createGlobalUniformBuffer();
+
+        // Swapchain Resources
         std::vector<VkImage> swapChainImages;
         VkFormat swapChainImageFormat;
         VkExtent2D swapChainExtent;
         std::vector<VkImageView> swapChainImageViews;
         std::vector<VkFramebuffer> swapChainFramebuffers;
 
+        // Command & Sync
+        VkCommandPool commandPool = VK_NULL_HANDLE;
+        std::vector<VkCommandBuffer> commandBuffers;        
+        std::vector<VkSemaphore> imageAvailableSemaphores;
+        std::vector<VkSemaphore> renderFinishedSemaphores;
+        std::vector<VkFence> inFlightFences;
+        static constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+        uint32_t currentFrame = 0;
+
+        // Descriptors
+        static constexpr int MAX_TEXTURES = 100;
+        VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
+        VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
+        VkDescriptorSet descriptorSet;
+
+        // Pipelines
+        VkRenderPass renderPass = VK_NULL_HANDLE;
+        VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+        VkPipeline graphicsPipeline = VK_NULL_HANDLE;
+        VkPipeline transparentPipeline = VK_NULL_HANDLE;
+        VkPipeline skyPipeline = VK_NULL_HANDLE;
+        VkPipeline waterPipeline = VK_NULL_HANDLE;
+        
+        // Post Process / Bloom
+        VkPipeline bloomPipeline = VK_NULL_HANDLE;
+        VkPipeline compositePipeline = VK_NULL_HANDLE;
+        VkRenderPass bloomRenderPass = VK_NULL_HANDLE;
+        VkRenderPass compositeRenderPass = VK_NULL_HANDLE;
+        VkFramebuffer bloomFramebuffer = VK_NULL_HANDLE;
+        VkFramebuffer finalFramebuffer = VK_NULL_HANDLE;
+        VkDescriptorSetLayout postProcessLayout = VK_NULL_HANDLE;
+        VkPipelineLayout compositePipelineLayout = VK_NULL_HANDLE;
+        VkDescriptorSet compositeDescriptorSet = VK_NULL_HANDLE;
+
+        // Images / Textures
         VkImage depthImage = VK_NULL_HANDLE;
         VkDeviceMemory depthImageMemory = VK_NULL_HANDLE;
         VkImageView depthImageView = VK_NULL_HANDLE;
-
+        
         VkImage skyImage = VK_NULL_HANDLE;
-        VkDeviceMemory skyImageMemory =VK_NULL_HANDLE;
+        VkDeviceMemory skyImageMemory = VK_NULL_HANDLE;
         VkImageView skyImageView = VK_NULL_HANDLE;
         VkSampler skySampler = VK_NULL_HANDLE;
 
@@ -180,29 +224,8 @@ namespace Crescendo {
         VkDeviceMemory textureImageMemory = VK_NULL_HANDLE;
         VkImageView textureImageView = VK_NULL_HANDLE;
         VkSampler textureSampler = VK_NULL_HANDLE;
-
-        VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
-        VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-        VkDescriptorSet descriptorSet;
-
-        std::vector<Material> materialBank;
-        std::map<std::string, uint32_t> materialMap; 
         std::vector<TextureResource> textureBank;
         std::unordered_map<std::string, int> textureMap;
-        std::unordered_map<std::string, uint32_t> meshMap;
-
-        VkRenderPass renderPass = VK_NULL_HANDLE;
-        VkPipeline skyPipeline = VK_NULL_HANDLE;
-        VkPipeline graphicsPipeline = VK_NULL_HANDLE;
-        VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
-        VkPipeline transparentPipeline = VK_NULL_HANDLE;
-        bool createTransparentPipeline();
-        
-        VkCommandPool commandPool = VK_NULL_HANDLE;
-        std::vector<VkCommandBuffer> commandBuffers;        
-        std::vector<VkSemaphore> imageAvailableSemaphores;
-        std::vector<VkSemaphore> renderFinishedSemaphores;
-        std::vector<VkFence> inFlightFences;
 
         VkImage viewportImage = VK_NULL_HANDLE;
         VkDeviceMemory viewportImageMemory = VK_NULL_HANDLE;
@@ -211,67 +234,46 @@ namespace Crescendo {
         VkFramebuffer viewportFramebuffer = VK_NULL_HANDLE;
         VkRenderPass viewportRenderPass = VK_NULL_HANDLE;
         VkDescriptorSet viewportDescriptorSet = VK_NULL_HANDLE;
-    
         VkImage viewportDepthImage = VK_NULL_HANDLE;
         VkDeviceMemory viewportDepthImageMemory = VK_NULL_HANDLE;
         VkImageView viewportDepthImageView = VK_NULL_HANDLE;
-
-        glm::vec3 modelPos = glm::vec3(0.0f);
-        glm::vec3 modelRot = glm::vec3(90.0f, 0.0f, 0.0f);
-        glm::vec3 modelScale = glm::vec3(1.0f);
-
+        
         VkImage bloomBrightImage = VK_NULL_HANDLE;
         VkDeviceMemory bloomBrightImageMemory = VK_NULL_HANDLE;
         VkImageView bloomBrightImageView = VK_NULL_HANDLE;
-        VkDeviceMemory bloomBrightMemory = VK_NULL_HANDLE;
-
-        VkImage bloomBlurImage = VK_NULL_HANDLE;
-        VkDeviceMemory bloomBlurImageMemory = VK_NULL_HANDLE;
-        VkImageView bloomBlurImageView = VK_NULL_HANDLE;
-
-        VkFramebuffer bloomFramebuffer = VK_NULL_HANDLE;
-        VkRenderPass bloomRenderPass = VK_NULL_HANDLE;
-        VkPipeline bloomPipeline = VK_NULL_HANDLE;
-
-        VkDescriptorSet compositeDescriptorSet = VK_NULL_HANDLE;
-        VkRenderPass postProcessRenderPass = VK_NULL_HANDLE; 
-        VkFramebuffer postProcessFramebuffer = VK_NULL_HANDLE;
-
+        
         VkImage finalImage = VK_NULL_HANDLE;
         VkDeviceMemory finalImageMemory = VK_NULL_HANDLE;
         VkImageView finalImageView = VK_NULL_HANDLE;
-        VkFramebuffer finalFramebuffer = VK_NULL_HANDLE;
-        
-        VkRenderPass compositeRenderPass = VK_NULL_HANDLE; // RenderPass for the Post-Process Stage
 
-        VkDescriptorSetLayout postProcessLayout = VK_NULL_HANDLE;
-        VkPipelineLayout compositePipelineLayout = VK_NULL_HANDLE; 
-        VkPipeline compositePipeline = VK_NULL_HANDLE;
+        // Editor / Tools
+        DisplayServer* display_ref;
+        SDL_Window* window = nullptr;
+        EditorUI editorUI;         
+        ResourceCache cache;
+        std::vector<Material> materialBank;
+        std::map<std::string, uint32_t> materialMap; 
+        std::unordered_map<std::string, uint32_t> meshMap;
         
-        VkPipeline waterPipeline = VK_NULL_HANDLE; 
-        bool createWaterPipeline();
-        void createWaterMesh();
+        // Validation
+        const std::vector<const char*> validationLayers = { "VK_LAYER_KHRONOS_validation" };
+        #ifdef NDEBUG
+            const bool enableValidationLayers = false;
+        #else
+            const bool enableValidationLayers = true;
+        #endif
 
-        bool showNodeEditor = false;
-        ImVec2 nodeGridOffset = {0.0f, 0.0f}; 
-        float nodeZoom = 1.0f;                
-        
-        glm::vec2 lastViewportSize = {1280.0f, 720.0f}; 
-
+        // Helpers
         QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
         SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device);
-            
-       void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
-                    
-        void copyBufferToImage(VkBuffer buffer, VkImage image, 
-                               uint32_t width, uint32_t height);
-
         bool isDeviceSuitable(VkPhysicalDevice device);
-                    
         VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
         VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
         VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);
-
+        uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
+        VkShaderModule createShaderModule(const std::vector<char>& code);
+        
+        // Creation Helpers
         bool createInstance();
         bool setupDebugMessenger();
         bool createSurface();
@@ -281,64 +283,46 @@ namespace Crescendo {
         bool createImageViews();
         bool createDepthResources();
         bool createRenderPass();
-        bool createDescriptorSetLayout();
-        bool createGraphicsPipeline();
         bool createFramebuffers();
-        
-        bool createTextureImageView();
-        bool createTextureImage(const std::string& path, VkImage& image, VkDeviceMemory& memory);
-        VkImageView createTextureImageView(VkImage& image); 
-        bool createTextureSampler();
-        bool createDescriptorPool();
-        bool createDescriptorSets();
-        bool createVertexBuffer(const std::vector<Vertex>& vertices, VkBuffer& buffer, VkDeviceMemory& memory);
-        bool createIndexBuffer(const std::vector<uint32_t>& indices, VkBuffer& buffer, VkDeviceMemory& memory);
         bool createCommandPool();
         bool createCommandBuffers();
         bool createSyncObjects();
-        void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
-        bool createImGuiDescriptorPool();
-        bool initImGui(SDL_Window* window);
+        
+        bool createDescriptorSetLayout();
+        bool createDescriptorPool();
+        bool createDescriptorSets();
+        
+        bool createGraphicsPipeline();
+        bool createTransparentPipeline();
+        bool createWaterPipeline();
+        void createWaterMesh();
+        
+        bool createTextureSampler();
+        void createDefaultTexture();
+        bool createTextureImage(const std::string& path, VkImage& image, VkDeviceMemory& memory);
+        // [FIX] Add declaration
+        bool createTextureImageView();
+        VkImageView createTextureImageView(VkImage& image);
+
         bool createViewportResources();
-        void updateUniformBuffer(uint32_t currentImage, Scene* scene);
-        void recreateSwapChain(SDL_Window* window);
-        void cleanupSwapChain();
         bool createBloomResources();
         bool createBloomPipeline();
         bool createCompositePipeline();
-        void updateCompositeDescriptors();
         bool createHDRImage(const std::string& path, VkImage& image, VkDeviceMemory& memory);
-        void createDefaultTexture();
-        void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene, glm::mat4 parentMatrix = glm::mat4(1.0f));
         
-
-        glm::vec3 sunDirection = glm::normalize(glm::vec3(1.0f, -3.0, -1.0));
-        glm::vec3 sunColor = glm::vec3(1.0f, 0.95f, 0.8f);
-        float sunIntensity = 1.2f;
-
-        struct Console{
-            ImGuiTextBuffer     Buf;
-            ImVector<int>       LineOffsets;
-            bool                AutoScroll;
-            bool                ScrollToBottom;
-            Console() { AutoScroll = true; ScrollToBottom = false; Clear(); }
-            void Clear() { Buf.clear(); LineOffsets.clear(); LineOffsets.push_back(0); }
-            void AddLog(const char* fmt, ...) IM_FMTARGS(2) {
-                int old_size = Buf.size();
-                va_list args;
-                va_start(args, fmt);
-                Buf.appendfv(fmt, args);
-                va_end(args);
-                for (int new_size = Buf.size(); old_size < new_size; old_size++)
-                    if (Buf[old_size] == '\n') LineOffsets.push_back(old_size + 1);
-            }
-            void Draw(const char* title, bool* p_open = NULL) { /* ... keep implementation ... */ }
-        };
-        Console gameConsole;
+        void updateCompositeDescriptors();
+        void recreateSwapChain(SDL_Window* window);
+        void cleanupSwapChain();
         
-        uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
-        VkShaderModule createShaderModule(const std::vector<char>& code);
         void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer& buffer, VkDeviceMemory& bufferMemory);
         void createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VkMemoryPropertyFlags properties, VkImage& image, VkDeviceMemory& imageMemory);
+        void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
+        void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
+        void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
+        
+        // [FIX] Add missing declarations
+        bool createVertexBuffer(const std::vector<Vertex>& vertices, VkBuffer& buffer, VkDeviceMemory& memory);
+        bool createIndexBuffer(const std::vector<uint32_t>& indices, VkBuffer& buffer, VkDeviceMemory& memory);
+        void updateUniformBuffer(uint32_t currentImage, Scene* scene);
     };
 }

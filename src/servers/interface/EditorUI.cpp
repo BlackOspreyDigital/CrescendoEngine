@@ -302,11 +302,15 @@ namespace Crescendo {
             ImGuizmo::SetOrthographic(false);
             ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
             ImGuizmo::SetRect(viewportPos.x, viewportPos.y, viewportSize.x, viewportSize.y);
-
+                
             glm::mat4 view = camera.GetViewMatrix();
             float aspect = viewportSize.x / viewportSize.y;
             glm::mat4 proj = glm::perspective(glm::radians(camera.fov), aspect, camera.nearClip, camera.farClip);
-
+                
+            // [FIX] FLIP THE Y-AXIS FOR IMGUIZMO
+            // This matches the flip you do in RenderingServer::render()
+            proj[1][1] *= -1; 
+                
             if (selectedObjectIndex >= 0 && selectedObjectIndex < (int)scene->entities.size()) {
                 CBaseEntity* ent = scene->entities[selectedObjectIndex];
                 if (ent) {

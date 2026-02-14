@@ -152,6 +152,8 @@ namespace Crescendo {
         if (!createCommandPool()) return false;
         if (!createDepthResources()) return false;
         if (!createDescriptorSetLayout()) return false;
+        createStorageBuffers(); //SSBO
+        createGlobalUniformBuffer();
         if (!createDescriptorPool()) return false;
 
         // ---------------------------------------------------------
@@ -601,15 +603,15 @@ namespace Crescendo {
         // 1. MAIN SCENE LAYOUT (Set 0)
         // =========================================================
         
-        // Binding 0: Texture Array (Material Textures)
+        // Binding 0: Textures
         VkDescriptorSetLayoutBinding samplerLayoutBinding{};
         samplerLayoutBinding.binding = 0;
-        samplerLayoutBinding.descriptorCount = 100; // MAX_TEXTURES
+        samplerLayoutBinding.descriptorCount = 100;
         samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         samplerLayoutBinding.pImmutableSamplers = nullptr;
         samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        // Binding 1: Skybox Texture
+        // Binding 1: Skybox
         VkDescriptorSetLayoutBinding skyLayoutBinding{};
         skyLayoutBinding.binding = 1;
         skyLayoutBinding.descriptorCount = 1; 
@@ -617,7 +619,29 @@ namespace Crescendo {
         skyLayoutBinding.pImmutableSamplers = nullptr;
         skyLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        std::array<VkDescriptorSetLayoutBinding, 2> bindings = { samplerLayoutBinding, skyLayoutBinding };
+        // Binding 2: SSBO (Entity Data)
+        VkDescriptorSetLayoutBinding ssboBinding{};
+        ssboBinding.binding = 2;
+        ssboBinding.descriptorCount = 1;
+        ssboBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        ssboBinding.pImmutableSamplers = nullptr;
+        ssboBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        // Binding 3: Global Uniforms
+        VkDescriptorSetLayoutBinding globalBinding{};
+        globalBinding.binding = 3;
+        globalBinding.descriptorCount = 1;
+        globalBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        globalBinding.pImmutableSamplers = nullptr;
+    
+        // [FIX] MUST BE BOTH!
+        globalBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        
+        std::array<VkDescriptorSetLayoutBinding, 4> bindings = {
+            samplerLayoutBinding, skyLayoutBinding, ssboBinding, globalBinding
+        };
+
+        // Update layoutInfo.bindingCount =4 
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -629,17 +653,15 @@ namespace Crescendo {
         }
 
         // =========================================================
-        // 2. POST-PROCESS LAYOUT (Set 1) [THIS WAS MISSING!]
+        // 2. POST-PROCESS LAYOUT (Set 1)
         // =========================================================
         
-        // Binding 0: Scene/Bright Color Input
         VkDescriptorSetLayoutBinding postBinding0{};
         postBinding0.binding = 0;
         postBinding0.descriptorCount = 1;
         postBinding0.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         postBinding0.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        // Binding 1: Bloom Blur Input
         VkDescriptorSetLayoutBinding postBinding1{};
         postBinding1.binding = 1;
         postBinding1.descriptorCount = 1;
@@ -653,7 +675,6 @@ namespace Crescendo {
         postLayoutInfo.bindingCount = static_cast<uint32_t>(postBindings.size());
         postLayoutInfo.pBindings = postBindings.data();
 
-        // [CRITICAL] This assigns the handle that was previously NULL!
         if (vkCreateDescriptorSetLayout(device, &postLayoutInfo, nullptr, &postProcessLayout) != VK_SUCCESS) {
             return false;
         }
@@ -662,16 +683,20 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createDescriptorPool() {
-       std::array<VkDescriptorPoolSize, 2> poolSizes{};
+       std::array<VkDescriptorPoolSize, 4> poolSizes{};
        
        // Pool for Uniform Buffers (if you use them)
        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
        poolSizes[0].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
 
-       // Pool for Textures
        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-       // We need 100 for the array + 1 for the sky * Frames (buffer)
        poolSizes[1].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT * 105); 
+
+       poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+       poolSizes[2].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+
+       poolSizes[3].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+       poolSizes[3].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
 
        VkDescriptorPoolCreateInfo poolInfo{};
        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -686,62 +711,107 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createDescriptorSets() {
-       // 1. Allocate Main Scene Set (Set 0)
-       VkDescriptorSetAllocateInfo allocInfo{};
-       allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-       allocInfo.descriptorPool = descriptorPool;
-       allocInfo.descriptorSetCount = 1;
-       allocInfo.pSetLayouts = &descriptorSetLayout;
+        // 1. Allocate Main Scene Set (Set 0)
+        std::vector<VkDescriptorSetLayout> layouts(1, descriptorSetLayout);
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = descriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = layouts.data();
 
-       if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) return false;
+        if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) return false;
 
-       // 2. Write Binding 0 (Texture Array)
-       std::vector<VkDescriptorImageInfo> imageInfos(MAX_TEXTURES);
-       for (int i = 0; i < MAX_TEXTURES; i++) {
-           imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-           imageInfos[i].imageView = textureBank[i].view; 
-           imageInfos[i].sampler = textureSampler;
-       }
+        // -----------------------------------------------------------
+        // PREPARE DESCRIPTOR WRITES
+        // -----------------------------------------------------------
 
-       VkWriteDescriptorSet descriptorWrite{};
-       descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-       descriptorWrite.dstSet = descriptorSet;
-       descriptorWrite.dstBinding = 0;
-       descriptorWrite.dstArrayElement = 0;
-       descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-       descriptorWrite.descriptorCount = static_cast<uint32_t>(MAX_TEXTURES);
-       descriptorWrite.pImageInfo = imageInfos.data();
+        // Binding 0: Texture Array
+        std::vector<VkDescriptorImageInfo> imageInfos(MAX_TEXTURES);
+        for (int i = 0; i < MAX_TEXTURES; i++) {
+            if (i < textureBank.size() && textureBank[i].view != VK_NULL_HANDLE) {
+                imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                imageInfos[i].imageView = textureBank[i].view;
+                imageInfos[i].sampler = textureSampler;
+            } else {
+                // Point unused slots to default texture (Index 0) to prevent validation errors
+                imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                imageInfos[i].imageView = textureBank[0].view; 
+                imageInfos[i].sampler = textureSampler;
+            }
+        }
 
-       // 3. Write Binding 1 (Sky Texture)
-       VkDescriptorImageInfo skyImageInfo{};
-       skyImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-       skyImageInfo.imageView = skyImageView;
-       skyImageInfo.sampler = skySampler;
+        VkWriteDescriptorSet descriptorWrite{};
+        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrite.dstSet = descriptorSet;
+        descriptorWrite.dstBinding = 0;
+        descriptorWrite.dstArrayElement = 0;
+        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptorWrite.descriptorCount = static_cast<uint32_t>(MAX_TEXTURES);
+        descriptorWrite.pImageInfo = imageInfos.data();
 
-       VkWriteDescriptorSet skyWrite{};
-       skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-       skyWrite.dstSet = descriptorSet;
-       skyWrite.dstBinding = 1; 
-       skyWrite.dstArrayElement = 0;
-       skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-       skyWrite.descriptorCount = 1;
-       skyWrite.pImageInfo = &skyImageInfo;
+        // Binding 1: Sky Texture
+        VkDescriptorImageInfo skyImageInfo{};
+        skyImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        skyImageInfo.imageView = skyImageView;
+        skyImageInfo.sampler = skySampler;
 
-       // Update both bindings
-       std::array<VkWriteDescriptorSet, 2> writes = {descriptorWrite, skyWrite};
-       vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        VkWriteDescriptorSet skyWrite{};
+        skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        skyWrite.dstSet = descriptorSet;
+        skyWrite.dstBinding = 1;
+        skyWrite.dstArrayElement = 0;
+        skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        skyWrite.descriptorCount = 1;
+        skyWrite.pImageInfo = &skyImageInfo;
 
-       // 4. Allocate Post-Process Set (Set 1)
-       VkDescriptorSetAllocateInfo postAlloc{};
-       postAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-       postAlloc.descriptorPool = descriptorPool;
-       postAlloc.descriptorSetCount = 1;
-       // [CRITICAL] This now points to a VALID layout created in step 1
-       postAlloc.pSetLayouts = &postProcessLayout;
+        // Binding 2: SSBO (Entity Data)
+        VkDescriptorBufferInfo ssboInfo{};
+        ssboInfo.buffer = entityStorageBuffer;
+        ssboInfo.offset = 0;
+        ssboInfo.range = sizeof(EntityData) * MAX_ENTITIES;
 
-       if (vkAllocateDescriptorSets(device, &postAlloc, &compositeDescriptorSet) != VK_SUCCESS) return false;
+        VkWriteDescriptorSet ssboWrite{};
+        ssboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        ssboWrite.dstSet = descriptorSet;
+        ssboWrite.dstBinding = 2;
+        ssboWrite.dstArrayElement = 0;
+        ssboWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        ssboWrite.descriptorCount = 1;
+        ssboWrite.pBufferInfo = &ssboInfo;
 
-       return true;
+        // Binding 3: Global Uniforms (GUB)
+        VkDescriptorBufferInfo globalInfo{};
+        globalInfo.buffer = globalUniformBuffer;
+        globalInfo.offset = 0;
+        globalInfo.range = sizeof(GlobalUniforms);
+
+        VkWriteDescriptorSet globalWrite{};
+        globalWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        globalWrite.dstSet = descriptorSet;
+        globalWrite.dstBinding = 3;
+        globalWrite.dstArrayElement = 0;
+        globalWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        globalWrite.descriptorCount = 1;
+        globalWrite.pBufferInfo = &globalInfo;
+
+        // -----------------------------------------------------------
+        // UPDATE SET 0
+        // -----------------------------------------------------------
+        std::array<VkWriteDescriptorSet, 4> writes = {descriptorWrite, skyWrite, ssboWrite, globalWrite};
+        vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+        // -----------------------------------------------------------
+        // UPDATE SET 1 (Post Process)
+        // -----------------------------------------------------------
+        VkDescriptorSetAllocateInfo postAlloc{};
+        postAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        postAlloc.descriptorPool = descriptorPool;
+        postAlloc.descriptorSetCount = 1;
+        postAlloc.pSetLayouts = &postProcessLayout;
+
+        if (vkAllocateDescriptorSets(device, &postAlloc, &compositeDescriptorSet) != VK_SUCCESS) return false;
+
+        return true;
     }
 
     int RenderingServer::acquireMesh(const std::string& path, const std::string& name, 
@@ -890,7 +960,7 @@ namespace Crescendo {
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
         rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -930,16 +1000,21 @@ namespace Crescendo {
 
         VkPushConstantRange pushConstant{};
         pushConstant.offset = 0;
-        pushConstant.size = sizeof(MeshPushConstants);
+        
+        // [FIX] Change this from sizeof(PushConsts) to 128.
+        // The Skybox uses this same layout and needs 64 bytes.
+        // If this is too small, the Skybox crashes and the Entity ID gets corrupted.
+        pushConstant.size = 128; 
+        
         pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipelineLayoutInfo.setLayoutCount = 1;
         pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout; 
         pipelineLayoutInfo.pushConstantRangeCount = 1;
         pipelineLayoutInfo.pPushConstantRanges = &pushConstant;
-
+        
         if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) return false;
 
         VkGraphicsPipelineCreateInfo pipelineInfo{};
@@ -1068,7 +1143,7 @@ namespace Crescendo {
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
         rasterizer.cullMode = VK_CULL_MODE_NONE;
-        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -1183,7 +1258,7 @@ namespace Crescendo {
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
         rasterizer.cullMode = VK_CULL_MODE_NONE; 
-        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -1216,13 +1291,13 @@ namespace Crescendo {
         pipelineLayoutInfo.setLayoutCount = 1;
         pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout; 
         
-        VkPushConstantRange pushConstant{};
-        pushConstant.offset = 0;
-        pushConstant.size = sizeof(MeshPushConstants);
-        pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkPushConstantRange pushConstantRange{};
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        pushConstantRange.offset = 0;
         
-        pipelineLayoutInfo.pushConstantRangeCount = 1;
-        pipelineLayoutInfo.pPushConstantRanges = &pushConstant;
+        // [FIX] Change from sizeof(PushConsts) to 128
+        // This covers both the tiny ID (4 bytes) and the Skybox Matrix (64 bytes)
+        pushConstantRange.size = 128;
 
         VkGraphicsPipelineCreateInfo pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -1874,17 +1949,43 @@ namespace Crescendo {
     void RenderingServer::updateUniformBuffer(uint32_t currentImage, Scene* scene) {
     }
 
+    void RenderingServer::createGlobalUniformBuffer() {
+        VkDeviceSize bufferSize = sizeof(GlobalUniforms);
+
+        // UNIFORM_BUFFER = Optimized for constant read-only DATA
+        createBuffer(bufferSize,
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            globalUniformBuffer, globalUniformBufferMemory);
+        
+        vkMapMemory(device, globalUniformBufferMemory, 0, bufferSize, 0, &globalUniformBufferMapped);
+    }
+
+    void RenderingServer::createStorageBuffers() {
+        VkDeviceSize bufferSize = sizeof(EntityData) * MAX_ENTITIES;
+
+        // Create SSBO (Storage Buffer) that is HOST_VISIBLE (CPU can write to)
+        createBuffer(bufferSize,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            entityStorageBuffer, entityStorageBufferMemory);
+
+        // Map memory persistently
+        vkMapMemory(device, entityStorageBufferMemory, 0, bufferSize, 0, &entityStorageBufferMapped);
+
+        std::cout << "[Vulkan] Allocated SSBO for " << MAX_ENTITIES << "entities (" << bufferSize / 1024 << " KB)" << std::endl;
+    }
+
     // --------------------------------------------------------------------
     // Render() / THE RENDER LOOP
     // --------------------------------------------------------------------
 
-    // [REPLACE THE ENTIRE render() FUNCTION WITH THIS]
     void RenderingServer::render(Scene* scene) {
         if (!scene) return;
-            
+        
         // 1. Sync
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-            
+        
         uint32_t imageIndex;
         VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, 
             imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
@@ -1892,31 +1993,85 @@ namespace Crescendo {
         if (result == VK_ERROR_OUT_OF_DATE_KHR) {
             recreateSwapChain(window);
             return;
+        } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+            throw std::runtime_error("failed to acquire swap chain image!");
         }
     
         editorUI.Prepare(scene, mainCamera, viewportDescriptorSet);
         
         vkResetFences(device, 1, &inFlightFences[currentFrame]);
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);  
+
+        // ---------------------------------------------------------
+        // PHASE 0: UPLOAD ENTITY DATA TO GPU (SSBO)
+        // ---------------------------------------------------------
+        EntityData* gpuData = (EntityData*)entityStorageBufferMapped;
+        int entityCount = 0;
+
+        // Map used to link an Entity Pointer to its GPU Index
+        std::map<CBaseEntity*, uint32_t> entityGPUIndices;
+
+        for (auto* ent : scene->entities) {
+            if (!ent || entityCount >= MAX_ENTITIES) continue;
+
+            // 1. Calculate Transforms
+            glm::mat4 model = glm::mat4(1.0f);
+            model = glm::translate(model, ent->origin);
+            model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1)); // Fixed 'angels' typo
+            model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0,1,0));
+            model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
+            model = glm::scale(model, ent->scale);
+
+            // 2. Pack Data
+            EntityData& data = gpuData[entityCount];
+            data.modelMatrix = model;
+
+            // Material & Volume
+            int texID = (ent->textureID > 0) ? ent->textureID : 0;
+            // [FIX] Corrected '==' to '=' 
+            if (texID == 0 && ent->modelIndex < meshes.size() && meshes[ent->modelIndex].textureID > 0) {
+                texID = meshes[ent->modelIndex].textureID;
+            }
+
+            data.albedoTint   = glm::vec4(ent->albedoColor, (float)texID);
+            data.pbrParams    = glm::vec4(ent->roughness, ent->metallic, ent->emission, ent->normalStrength);
+            data.volumeParams = glm::vec4(ent->transmission, ent->thickness, ent->attenuationDistance, ent->ior);
+            data.volumeColor  = glm::vec4(ent->attenuationColor, 0.0f);
+            
+            // Store index for the Draw Loop
+            entityGPUIndices[ent] = entityCount;
+            entityCount++;
+        }
+
         
+
+        // ---------------------------------------------------------
+        // RENDER COMMANDS
+        // ---------------------------------------------------------
+
         VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         if (vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo) != VK_SUCCESS) {
             throw std::runtime_error("failed to begin recording command buffer!");
         }
-        
+
+        // --- 1. CALCULATE MATRICES & SUN (Existing Code) ---
         float aspectRatio = 1.0f;
         glm::vec2 viewportSize = editorUI.GetViewportSize();
-        if (viewportSize.x > 0 && viewportSize.y > 0) { aspectRatio = viewportSize.x / viewportSize.y; }
+        if (viewportSize.x > 0 && viewportSize.y > 0) aspectRatio = viewportSize.x / viewportSize.y; 
+
         glm::mat4 view = mainCamera.GetViewMatrix();
         glm::mat4 proj = mainCamera.GetProjectionMatrix(aspectRatio);
-            
-        // --- SUN LOGIC ---
+        proj[1][1] *= -1; 
+        glm::mat4 vp = proj * view;
+
+        // 2. Sun Logic
         glm::vec3 sunDirection = glm::normalize(glm::vec3(0.5f, 1.0f, 0.5f)); 
         glm::vec3 sunColor = glm::vec3(1.0f, 1.0f, 1.0f);
         float sunIntensity = 1.0f;
         
         for (auto* sunEnt : scene->entities) {
             if (sunEnt && sunEnt->targetName == "Sun") {
+                // Calculate sun direction from entity rotation
                 glm::mat4 rotMat = glm::mat4(1.0f);
                 rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.x), glm::vec3(1, 0, 0));
                 rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.y), glm::vec3(0, 1, 0));
@@ -1925,7 +2080,22 @@ namespace Crescendo {
                 break; 
             }
         }
-        
+
+        // =========================================================
+        // 2. UPDATE GLOBAL UNIFORMS (GUB)
+        // =========================================================
+        GlobalUniforms globalData{};
+        globalData.viewProj = vp;
+        globalData.view = view;
+        globalData.proj = proj;
+        globalData.cameraPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
+        globalData.sunDirection = glm::vec4(sunDirection, sunIntensity);
+        globalData.sunColor = glm::vec4(sunColor, 1.0f);
+        globalData.params = glm::vec4(SDL_GetTicks() / 1000.0f, 0.0f, viewportSize.x, viewportSize.y);
+
+        // Upload to GPU (Binding 3)
+        memcpy(globalUniformBufferMapped, &globalData, sizeof(GlobalUniforms));
+
         // =========================================================
         // PASS 1: OFFSCREEN SCENE (HDR) -> viewportFramebuffer
         // =========================================================
@@ -1940,6 +2110,7 @@ namespace Crescendo {
         viewportPassInfo.clearValueCount = 2;
         viewportPassInfo.pClearValues = clearValues.data();
         
+        // Transition image for writing
         transitionImageLayout(viewportImage, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &viewportPassInfo, VK_SUBPASS_CONTENTS_INLINE);
@@ -1956,238 +2127,123 @@ namespace Crescendo {
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
                                     pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
             {
-                glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view)); 
-                MeshPushConstants skyPush{};
-                skyPush.renderMatrix = glm::inverse(proj * viewNoTrans); 
+                // [FIX] Calculate and Push Skybox Matrix
+                glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view));
+                
+                // Use the struct defined in .hpp (SkyboxPushConsts)
+                SkyboxPushConsts skyPush{}; 
+                skyPush.invViewProj = glm::inverse(proj * viewNoTrans);
+                
                 vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
-                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
-                                    0, sizeof(MeshPushConstants), &skyPush);
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
+                                   0, sizeof(SkyboxPushConsts), &skyPush);
             }
             vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
         
-            // =========================================================
-            // PHASE 1: OPAQUE OBJECTS (Draw First -> Write Depth)
-            // =========================================================
+            // -----------------------------------------------------------------
+            // DRAW ENTITIES (OPAQUE & TRANSPARENT)
+            // -----------------------------------------------------------------
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-            VkPipeline currentPipeline = graphicsPipeline;
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
                                     pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
             
-            for (auto* ent : scene->entities) {
-                if (!ent || ent->modelIndex >= meshes.size()) continue;
-                if (ent->className == "prop_water") continue; 
-                
-                // [CRITICAL FIX] Skip Glass Objects in this pass!
-                // We must draw solid internals BEFORE the glass cover.
-                if (ent->transmission > 0.0f) continue; 
+            auto DrawPass = [&](bool isTransparentPass) {
+                for (auto* ent : scene->entities) {
+                    if (!ent || ent->modelIndex >= meshes.size()) continue;
+                    if (ent->className == "prop_water") continue; 
 
-                MeshResource& mesh = meshes[ent->modelIndex];
-                if (mesh.vertexBuffer == VK_NULL_HANDLE) continue;
-                
-                // --- Pipeline Switching ---
-                VkPipeline targetPipeline = graphicsPipeline;       
-                if (currentPipeline != targetPipeline) {
-                    vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, targetPipeline);
-                    currentPipeline = targetPipeline;
+                    bool entIsTransparent = (ent->transmission > 0.0f);
+                    if (entIsTransparent != isTransparentPass) continue;
+
+                    MeshResource& mesh = meshes[ent->modelIndex];
+                    if (mesh.vertexBuffer == VK_NULL_HANDLE) continue;
+                    
+                    VkBuffer vBuffers[] = { mesh.vertexBuffer };
+                    VkDeviceSize offsets[] = { 0 };
+                    vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
+                    vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                    
+                    PushConsts push{};
+                    push.entityIndex = entityGPUIndices[ent]; // Just the ID!
+
+                    vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
+                                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
+                                        0, sizeof(PushConsts), &push);
+                    
+                    vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
                 }
-                
-                // --- Binding ---
-                VkBuffer vBuffers[] = { mesh.vertexBuffer };
-                VkDeviceSize offsets[] = { 0 };
-                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-                
-                // --- Transform ---
-                glm::mat4 model = glm::mat4(1.0f);
-                model = glm::translate(model, ent->origin);
-                model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1));
-                model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0,1,0));
-                model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
-                model = glm::scale(model, ent->scale);
-                
-                // --- Push Constants ---
-                MeshPushConstants push{};
-                push.renderMatrix = proj * view * model; 
-                push.modelMatrix  = model;               
-                
-                // [FIX] Force Opaque Mode (0.0) for this pass
-                push.camPos = glm::vec4(mainCamera.GetPosition(), 0.0f);
+            };
 
-                int selectedTexID = (ent->textureID > 0) ? ent->textureID : mesh.textureID;
-                int safeTextureID = (selectedTexID < 0) ? 0 : selectedTexID;
-            
-                push.pbrParams = glm::vec4((float)safeTextureID, ent->roughness, ent->metallic, ent->emission);
-                push.sunDir = glm::vec4(sunDirection, sunIntensity);
-                push.sunColor = glm::vec4(sunColor, ent->normalStrength);
-                
-                // [FIX] Standard Color Tint
-                push.albedoTint = glm::vec4(ent->albedoColor, 1.0f);
-                
-                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
-                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
-                                    0, sizeof(MeshPushConstants), &push);
-                
-                vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
-            }
+            // Phase 1: Opaque
+            DrawPass(false);
 
-            // =========================================================
-            // PHASE 2: GLASS / TRANSMISSION OBJECTS (Draw Second)
-            // =========================================================
-            // These objects have (ent->transmission > 0.0f)
-            
-            for (auto* ent : scene->entities) {
-                if (!ent || ent->modelIndex >= meshes.size()) continue;
-                
-                // [CRITICAL] ONLY process Glass here (Skip Opaque & Water)
-                if (ent->transmission <= 0.0f) continue; 
-                if (ent->className == "prop_water") continue;
+            // Phase 2: Transparent
+            DrawPass(true);
 
-                MeshResource& mesh = meshes[ent->modelIndex];
-                if (mesh.vertexBuffer == VK_NULL_HANDLE) continue;
-
-                // Use the same graphics pipeline, just different constants
-                VkPipeline targetPipeline = graphicsPipeline;       
-                if (currentPipeline != targetPipeline) {
-                    vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, targetPipeline);
-                    currentPipeline = targetPipeline;
-                }
-            
-                VkBuffer vBuffers[] = { mesh.vertexBuffer };
-                VkDeviceSize offsets[] = { 0 };
-                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-            
-                glm::mat4 model = glm::mat4(1.0f);
-                model = glm::translate(model, ent->origin);
-                model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1));
-                model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0,1,0));
-                model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
-                model = glm::scale(model, ent->scale);
-            
-                MeshPushConstants push{};
-                push.renderMatrix = proj * view * model; 
-                push.modelMatrix  = model;               
-
-                // [FIX] Send Transmission Factor (camPos.w)
-                push.camPos = glm::vec4(mainCamera.GetPosition(), ent->transmission);
-
-                int selectedTexID = (ent->textureID > 0) ? ent->textureID : mesh.textureID;
-                int safeTextureID = (selectedTexID < 0) ? 0 : selectedTexID;
-
-                push.pbrParams = glm::vec4((float)safeTextureID, ent->roughness, ent->metallic, ent->emission);
-                push.sunDir = glm::vec4(sunDirection, sunIntensity);
-                push.sunColor = glm::vec4(sunColor, ent->normalStrength);
-
-                // [FIX] Pack Attenuation Data into AlbedoTint
-                // RGB = Attenuation Color, W = Attenuation Distance
-                push.albedoTint = glm::vec4(ent->attenuationColor, ent->attenuationDistance);
-            
-                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
-                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
-                                    0, sizeof(MeshPushConstants), &push);
-                
-                vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
-            }
-        
             // =========================================================
             // PHASE 3: WATER OBJECTS
             // =========================================================
+            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipeline);
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                                    pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+
             for (auto* ent : scene->entities) {
-                if (!ent || ent->modelIndex >= meshes.size()) continue;
-                if (ent->className != "prop_water") continue; 
-            
-                VkPipeline targetPipeline = waterPipeline;
-                if (currentPipeline != targetPipeline) {
-                    vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, targetPipeline);
-                    currentPipeline = targetPipeline;
-                }
-            
+                if (!ent || ent->className != "prop_water") continue;
+                if (ent->modelIndex >= meshes.size()) continue;
+
                 MeshResource& mesh = meshes[ent->modelIndex];
+                if (mesh.vertexBuffer == VK_NULL_HANDLE) continue;
+
                 VkBuffer vBuffers[] = { mesh.vertexBuffer };
                 VkDeviceSize offsets[] = { 0 };
                 vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-            
-                glm::mat4 model = glm::mat4(1.0f);
-                model = glm::translate(model, ent->origin);
-                model = glm::scale(model, ent->scale);
-            
-                MeshPushConstants push{};
-                push.renderMatrix = proj * view * model; 
-                push.modelMatrix  = model;               
-                
-                // Water uses standard opaque mode for now, handled by its own shader logic
-                push.camPos = glm::vec4(mainCamera.GetPosition(), 0.0f);
 
-                int selectedTexID = (ent->textureID > 0) ? ent->textureID : mesh.textureID;
-                int safeTextureID = (selectedTexID < 0) ? 0 : selectedTexID;
-                push.pbrParams = glm::vec4((float)safeTextureID, ent->roughness, ent->metallic, ent->emission);
-            
-                if (safeTextureID == 0 && this->waterTextureID > 0) {
-                    push.pbrParams.x = (float)this->waterTextureID;
-                }
-                float time = (SDL_GetTicks() / 1000.0f) * 0.5f; 
-                push.pbrParams.w = time; 
-                
-                push.sunDir = glm::vec4(sunDirection, sunIntensity);
-                push.sunColor = glm::vec4(sunColor, ent->normalStrength);
-                push.albedoTint = glm::vec4(ent->albedoColor, 1.0f);
-            
+                PushConsts push{};
+                push.entityIndex = entityGPUIndices[ent];
+
                 vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
                                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
-                                    0, sizeof(MeshPushConstants), &push);
+                                    0, sizeof(PushConsts), &push);
                 
                 vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
             }
         
-            vkCmdEndRenderPass(commandBuffers[currentFrame]);
-        
+        vkCmdEndRenderPass(commandBuffers[currentFrame]);
+
         // ---------------------------------------------------------
         // TRANSITION: Scene Image -> Readable by Bloom
         // ---------------------------------------------------------
         transitionImageLayout(viewportImage, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         transitionImageLayout(bloomBrightImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         
-        // =========================================================
-        // PASS 1.5: BLOOM EXTRACTION
-        // =========================================================
+        // [BLOOM EXTRACT]
         {
             VkRenderPassBeginInfo bloomPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
             bloomPassInfo.renderPass = bloomRenderPass;
             bloomPassInfo.framebuffer = bloomFramebuffer;
             bloomPassInfo.renderArea.extent.width = swapChainExtent.width / 4;
             bloomPassInfo.renderArea.extent.height = swapChainExtent.height / 4;
-
             VkClearValue bloomClear = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
             bloomPassInfo.clearValueCount = 1;
             bloomPassInfo.pClearValues = &bloomClear;
-        
             vkCmdBeginRenderPass(commandBuffers[currentFrame], &bloomPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-
             VkViewport bloomViewport{0.0f, 0.0f, (float)swapChainExtent.width / 4.0f, (float)swapChainExtent.height / 4.0f, 0.0f, 1.0f};
             vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &bloomViewport);
-
             VkRect2D bloomScissor{{0, 0}, {swapChainExtent.width / 4, swapChainExtent.height / 4}};
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &bloomScissor);
-        
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bloomPipeline);
-        
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     compositePipelineLayout, 0, 1, &compositeDescriptorSet, 0, nullptr);
-            
             vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
-            
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
         }
     
         // ---------------------------------------------------------
-        // TRANSITION: Bloom Image -> Readable by Composite
+        // POST-PROCESSING
         // ---------------------------------------------------------
         transitionImageLayout(bloomBrightImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     
-        // =========================================================
-        // PASS 2: POST-PROCESSING (Composite) -> finalFramebuffer
-        // =========================================================
         VkRenderPassBeginInfo compositePassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         compositePassInfo.renderPass = compositeRenderPass;  
         compositePassInfo.framebuffer = finalFramebuffer;    
@@ -2196,26 +2252,20 @@ namespace Crescendo {
         compositePassInfo.pClearValues = &clearValues[0]; 
     
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &compositePassInfo, VK_SUBPASS_CONTENTS_INLINE);
-    
             VkViewport compositeViewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
             vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &compositeViewport);
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
-    
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipeline);
-    
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     compositePipelineLayout, 0, 1, &compositeDescriptorSet, 0, nullptr);
-            
             vkCmdPushConstants(commandBuffers[currentFrame], compositePipelineLayout,
                                 VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PostProcessPushConstants), &postProcessSettings);
-            
             vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
-            
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
             
-        // =========================================================
-        // PASS 3: UI & SWAPCHAIN -> Screen
-        // =========================================================
+        // ---------------------------------------------------------
+        // UI & SWAPCHAIN
+        // ---------------------------------------------------------
         VkRenderPassBeginInfo swapChainPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         swapChainPassInfo.renderPass = renderPass; 
         swapChainPassInfo.framebuffer = swapChainFramebuffers[imageIndex]; 
@@ -2224,9 +2274,7 @@ namespace Crescendo {
         swapChainPassInfo.pClearValues = clearValues.data();
             
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &swapChainPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-            
             editorUI.Render(commandBuffers[currentFrame]);
-            
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
             
         if (vkEndCommandBuffer(commandBuffers[currentFrame]) != VK_SUCCESS) {
@@ -2261,7 +2309,6 @@ namespace Crescendo {
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
             recreateSwapChain(window);
         }
-    
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
@@ -3067,91 +3114,100 @@ namespace Crescendo {
     }
 
     void RenderingServer::shutdown() {
-       if (device != VK_NULL_HANDLE) {
-           vkDeviceWaitIdle(device);
+        if (device != VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(device);
           
-           editorUI.Shutdown(device);
-
-           // 2. Destroy Pipelines
-           if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, skyPipeline, nullptr);
-           if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, graphicsPipeline, nullptr);
+            editorUI.Shutdown(device);
+ 
+            // 2. Destroy Pipelines
+            if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, skyPipeline, nullptr);
+            if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, graphicsPipeline, nullptr);
+            
+            if (transparentPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, transparentPipeline, nullptr);
+            if (waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, waterPipeline, nullptr);
+            if (bloomPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bloomPipeline, nullptr);
+            if (compositePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, compositePipeline, nullptr);
+ 
+            // 3. Destroy Layouts
+            if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+            if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
+            if (postProcessLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, postProcessLayout, nullptr);
+            
+            // 4. Destroy Main RenderPass
+            // [NOTE] viewportRenderPass and bloomRenderPass are handled in cleanupSwapChain()!
+            // if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
+            
+            // 5. Cleanup Meshes
+            for (auto& mesh : meshes) {
+                if (mesh.vertexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, mesh.vertexBuffer, nullptr); mesh.vertexBuffer = VK_NULL_HANDLE; }
+                if (mesh.vertexBufferMemory != VK_NULL_HANDLE) { vkFreeMemory(device, mesh.vertexBufferMemory, nullptr); mesh.vertexBufferMemory = VK_NULL_HANDLE; }
+                if (mesh.indexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, mesh.indexBuffer, nullptr); mesh.indexBuffer = VK_NULL_HANDLE; }
+                if (mesh.indexBufferMemory != VK_NULL_HANDLE) { vkFreeMemory(device, mesh.indexBufferMemory, nullptr); mesh.indexBufferMemory = VK_NULL_HANDLE; }
+            }
+            meshes.clear(); 
+            gameWorld.Clear(); 
+         
+            // 6. Cleanup Textures
+            for (const auto& tex : textureBank) {
+                if (tex.image != VK_NULL_HANDLE && tex.image != textureImage) {
+                    vkDestroyImageView(device, tex.view, nullptr);
+                    vkDestroyImage(device, tex.image, nullptr);
+                    vkFreeMemory(device, tex.memory, nullptr);
+                }
+            }
+            textureBank.clear();
+            textureMap.clear();
+         
+            // 7. Cleanup Default Texture
+            if (textureImageView != VK_NULL_HANDLE) vkDestroyImageView(device, textureImageView, nullptr);
+            if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(device, textureSampler, nullptr);
+            if (textureImage != VK_NULL_HANDLE) vkDestroyImage(device, textureImage, nullptr);
+            if (textureImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, textureImageMemory, nullptr);
+         
+            // 8. Cleanup Descriptors
+            if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
            
-           if (transparentPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, transparentPipeline, nullptr);
-           if (waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, waterPipeline, nullptr);
-           if (bloomPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bloomPipeline, nullptr);
-           if (compositePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, compositePipeline, nullptr);
+            if (entityStorageBuffer != VK_NULL_HANDLE) {
+                vkDestroyBuffer(device, entityStorageBuffer, nullptr);
+                vkFreeMemory(device, entityStorageBufferMemory, nullptr);
+            }
 
-           // 3. Destroy Layouts
-           if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-           if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
-           if (postProcessLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, postProcessLayout, nullptr);
+            if (globalUniformBuffer != VK_NULL_HANDLE) {
+                vkDestroyBuffer(device, globalUniformBuffer, nullptr);
+                vkFreeMemory(device, globalUniformBufferMemory, nullptr);
+            }
            
-           // 4. Destroy Main RenderPass
-           // [NOTE] viewportRenderPass and bloomRenderPass are handled in cleanupSwapChain()!
-           // if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
-           
-           // 5. Cleanup Meshes
-           for (auto& mesh : meshes) {
-               if (mesh.vertexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, mesh.vertexBuffer, nullptr); mesh.vertexBuffer = VK_NULL_HANDLE; }
-               if (mesh.vertexBufferMemory != VK_NULL_HANDLE) { vkFreeMemory(device, mesh.vertexBufferMemory, nullptr); mesh.vertexBufferMemory = VK_NULL_HANDLE; }
-               if (mesh.indexBuffer != VK_NULL_HANDLE) { vkDestroyBuffer(device, mesh.indexBuffer, nullptr); mesh.indexBuffer = VK_NULL_HANDLE; }
-               if (mesh.indexBufferMemory != VK_NULL_HANDLE) { vkFreeMemory(device, mesh.indexBufferMemory, nullptr); mesh.indexBufferMemory = VK_NULL_HANDLE; }
-           }
-           meshes.clear(); 
-           gameWorld.Clear(); 
-        
-           // 6. Cleanup Textures
-           for (const auto& tex : textureBank) {
-               if (tex.image != VK_NULL_HANDLE && tex.image != textureImage) {
-                   vkDestroyImageView(device, tex.view, nullptr);
-                   vkDestroyImage(device, tex.image, nullptr);
-                   vkFreeMemory(device, tex.memory, nullptr);
-               }
-           }
-           textureBank.clear();
-           textureMap.clear();
-        
-           // 7. Cleanup Default Texture
-           if (textureImageView != VK_NULL_HANDLE) vkDestroyImageView(device, textureImageView, nullptr);
-           if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(device, textureSampler, nullptr);
-           if (textureImage != VK_NULL_HANDLE) vkDestroyImage(device, textureImage, nullptr);
-           if (textureImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, textureImageMemory, nullptr);
-        
-           // 8. Cleanup Descriptors
-           if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-           
-           
-           
-           if (descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+            if (descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+ 
+            // Cleanup Sky Resources
+            if (skySampler != VK_NULL_HANDLE) vkDestroySampler(device, skySampler, nullptr);
+            if (skyImageView != VK_NULL_HANDLE) vkDestroyImageView(device, skyImageView, nullptr);
+            if (skyImage != VK_NULL_HANDLE) vkDestroyImage(device, skyImage, nullptr);
+            if (skyImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, skyImageMemory, nullptr);
+ 
+            // 9. Cleanup Swapchain
+            cleanupSwapChain();
+            
+ 
+            // 10. Cleanup Sync Objects
+ 
+            if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
+ 
+            for (size_t i = 0; i < imageAvailableSemaphores.size(); i++) { 
+                vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
+                vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
+            }
+            for (size_t i = 0; i < inFlightFences.size(); i++) {
+                vkDestroyFence(device, inFlightFences[i], nullptr);
+            }
+         
+            if (commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, commandPool, nullptr);
+         
+            vkDestroyDevice(device, nullptr);
+            device = VK_NULL_HANDLE;
+        }
 
-           // Cleanup Sky Resources
-           if (skySampler != VK_NULL_HANDLE) vkDestroySampler(device, skySampler, nullptr);
-           if (skyImageView != VK_NULL_HANDLE) vkDestroyImageView(device, skyImageView, nullptr);
-           if (skyImage != VK_NULL_HANDLE) vkDestroyImage(device, skyImage, nullptr);
-           if (skyImageMemory != VK_NULL_HANDLE) vkFreeMemory(device, skyImageMemory, nullptr);
-
-           // 9. Cleanup Swapchain
-           cleanupSwapChain();
-
-           // 10. Cleanup Sync Objects
-
-           if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
-
-           for (size_t i = 0; i < imageAvailableSemaphores.size(); i++) { 
-               vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
-               vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
-           }
-           for (size_t i = 0; i < inFlightFences.size(); i++) {
-               vkDestroyFence(device, inFlightFences[i], nullptr);
-           }
-        
-           if (commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, commandPool, nullptr);
-        
-           vkDestroyDevice(device, nullptr);
-           device = VK_NULL_HANDLE;
-       }
-
-       if (surface != VK_NULL_HANDLE) vkDestroySurfaceKHR(instance, surface, nullptr);
-       if (instance != VK_NULL_HANDLE) vkDestroyInstance(instance, nullptr);
+        if (surface != VK_NULL_HANDLE) vkDestroySurfaceKHR(instance, surface, nullptr);
+        if (instance != VK_NULL_HANDLE) vkDestroyInstance(instance, nullptr);
     }
 }

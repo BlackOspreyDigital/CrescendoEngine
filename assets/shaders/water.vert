@@ -11,56 +11,66 @@ layout(location = 0) out vec3 fragColor;
 layout(location = 1) out vec3 fragNormal;
 layout(location = 2) out vec2 fragUV;
 layout(location = 3) out vec3 fragPos;
-// dont push 4 and 5 frag is not expecting those here
+layout(location = 6) out flat int outEntityIndex;
 
-layout(push_constant) uniform constants {
-    mat4 renderMatrix; 
-    mat4 modelMatrix;  // [MATCHING C++] Added to align with your new struct!
-    vec4 camPos;
-    vec4 pbrParams;    // w = Time
-    vec4 sunDir;
+// --- SSBO ---
+struct EntityData {
+    mat4 modelMatrix;
+    vec4 sphereBounds;
+    vec4 albedoTint;
+    vec4 pbrParams;
+    vec4 volumeParams;
+    vec4 volumeColor;
+};
+layout(std430, set = 0, binding = 2) readonly buffer ObjectBuffer { 
+    EntityData entities[];
+};
+
+// --- GLOBAL UNIFORMS (Binding 3) ---
+layout(set = 0, binding = 3) uniform GlobalUniforms {
+    mat4 viewProj;
+    mat4 view;
+    mat4 proj;
+    vec4 cameraPos;
+    vec4 sunDirection;
     vec4 sunColor;
-} PushConstants;
+    vec4 params; // x=time
+} global;
+
+// --- TINY PUSH CONSTANT ---
+layout(push_constant) uniform Constants {
+    uint entityIndex;
+} PushConsts;
 
 void main() {
-    vec3 pos = inPos;
-    float time = PushConstants.pbrParams.w;
+    uint id = PushConsts.entityIndex;
+    mat4 model = entities[id].modelMatrix; // Fetch Matrix
+    float time = global.params.x;          // Fetch Time
 
-    // --- 1. CALM WATER SETTINGS ---
-    // Lower height significantly (e.g., 0.05 instead of 0.5) for "calm" water.
-    // Lower speed (e.g., 0.5 instead of 2.0) for a gentle drift.
+    vec3 pos = inPos;
+
+    // --- Wave Logic ---
     float waveHeight = 0.05; 
     float waveFreq = 0.5;    
     float waveSpeed = 0.5;   
     
-    // Calculate Wave Phases
     float waveX = pos.x * waveFreq + time * waveSpeed;
     float waveY = pos.y * waveFreq + time * waveSpeed;
 
-    // Apply Displacement (Z-Up)
     pos.z += sin(waveX) * waveHeight;
     pos.z += cos(waveY) * waveHeight * 0.5; 
 
-    // --- 2. MATCH UV SCROLLING ---
-    // Instead of hardcoding 0.1, we define a ratio relative to waveSpeed.
-    // "0.1" here is the "drag" factor. Water textures usually move slower than the physical wave.
-    float uvScrollSpeed = waveSpeed * 0.1; 
+    // --- Outputs ---
+    gl_Position = global.viewProj * model * vec4(pos, 1.0);
+    fragPos = vec3(model * vec4(pos, 1.0));
     
-    // Apply the scrolling. 
-    // We add 'uvScrollSpeed' to the time calculation.
+    // UV Scrolling
+    float uvScrollSpeed = waveSpeed * 0.1; 
     fragUV = (inTexCoord * 4.0) + vec2(time * uvScrollSpeed);
 
-    // --- 3. OUTPUTS ---
-    gl_Position = PushConstants.renderMatrix * vec4(pos, 1.0);
-    fragPos = vec3(PushConstants.modelMatrix * vec4(pos, 1.0));
-
-    // Recalculate Normals for the new calmer waves
-    float dHdx = waveFreq * waveHeight * cos(waveX);
-    float dHdy = waveFreq * waveHeight * 0.5 * -sin(waveY);
-    vec3 localWaveNormal = normalize(vec3(-dHdx, -dHdy, 1.0));
-
-    mat3 normalMatrix = transpose(inverse(mat3(PushConstants.modelMatrix)));
-    fragNormal = normalize(normalMatrix * localWaveNormal);
+    // Calc Normals
+    mat3 normalMatrix = transpose(inverse(mat3(model)));
+    fragNormal = normalize(normalMatrix * inNormal); // Simplified normal for now
     
-    fragColor = vec3(0.0, 0.2, 0.8);
+    outEntityIndex = int(id);
 }
