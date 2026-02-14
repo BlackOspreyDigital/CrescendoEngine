@@ -27,8 +27,8 @@ namespace Crescendo {
         
         // Perspective State
         float fov = 80.0f; 
-        float nearClip = 0.1f;
-        float farClip = 2000.0f;
+        float nearClip = 1.0f;
+        float farClip = 10000.0f;
 
         // Constructor
         Camera(glm::vec3 position = glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f), float yaw = -90.0f, float pitch = 0.0f) 

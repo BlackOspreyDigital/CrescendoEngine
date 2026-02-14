@@ -309,7 +309,7 @@ namespace Crescendo {
         void updateCompositeDescriptors();
         bool createHDRImage(const std::string& path, VkImage& image, VkDeviceMemory& memory);
         void createDefaultTexture();
-        void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene);
+        void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene, glm::mat4 parentMatrix = glm::mat4(1.0f));
         
 
         glm::vec3 sunDirection = glm::normalize(glm::vec3(1.0f, -3.0, -1.0));

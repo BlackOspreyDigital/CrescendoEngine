@@ -1,11 +1,12 @@
 // 1. Implementation Defines
+#include <vulkan/vulkan_core.h>
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
-// [NOTE] GLM_ENABLE_EXPERIMENTAL is in Makefile/Compile Flags now, 
-// but keeping it here doesn't hurt.
-#define GLM_ENABLE_EXPERIMENTAL 
+#ifndef GLM_ENABLE_EXPERIMENTAL
+#define GLM_ENABLE_EXPERIMENTAL
+#endif
 
 // 2. Standard Library
 #include <algorithm>
@@ -32,8 +33,6 @@
 #include "imgui.h"
 #include "backends/imgui_impl_sdl2.h"
 #include "backends/imgui_impl_vulkan.h"
-
-// [FIX] Direct Includes (Matches Makefile -I flags)
 #include "ImGuizmo.h"     
 #include "json.hpp"       
 #include "tiny_gltf.h"    
@@ -51,6 +50,61 @@ namespace Crescendo {
     // --------------------------------------------------------------------
     // LOGIC BEGIN
     // --------------------------------------------------------------------
+
+    static void calculateTangents(std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices) {
+        // 1. Initialize to zero (glm vectors don't always default to 0)
+        for (auto& v : vertices) {
+            v.tangent = glm::vec3(0.0f);
+            v.bitangent = glm::vec3(0.0f);
+        }
+
+        // 2. Accumulate Tangents
+        for (size_t i = 0; i < indices.size(); i += 3) {
+            Vertex& v0 = vertices[indices[i]];
+            Vertex& v1 = vertices[indices[i + 1]];
+            Vertex& v2 = vertices[indices[i + 2]];
+
+            glm::vec3 edge1 = v1.pos - v0.pos;
+            glm::vec3 edge2 = v2.pos - v0.pos;
+            glm::vec2 deltaUV1 = v1.texCoord - v0.texCoord;
+            glm::vec2 deltaUV2 = v2.texCoord - v0.texCoord;
+
+            float f = 1.0f / (deltaUV1.x * deltaUV2.y - deltaUV2.x * deltaUV1.y);
+
+            // Safety for degenerate UVs
+            if (std::isinf(f) || std::isnan(f)) f = 0.0f;
+
+            glm::vec3 tangent, bitangent;
+
+            tangent.x = f * (deltaUV2.y * edge1.x - deltaUV1.y * edge2.x);
+            tangent.y = f * (deltaUV2.y * edge1.y - deltaUV1.y * edge2.y);
+            tangent.z = f * (deltaUV2.y * edge1.z - deltaUV1.y * edge2.z);
+
+            bitangent.x = f * (-deltaUV2.x * edge1.x + deltaUV1.x * edge2.x);
+            bitangent.y = f * (-deltaUV2.x * edge1.y + deltaUV1.x * edge2.y);
+            bitangent.z = f * (-deltaUV2.x * edge1.z + deltaUV1.x * edge2.z);
+
+            v0.tangent += tangent; v1.tangent += tangent; v2.tangent += tangent;
+            v0.bitangent += bitangent; v1.bitangent += bitangent; v2.bitangent += bitangent;
+        }
+
+        // 3. Orthogonalize & Normalize (Gram-Schmidt)
+        for (auto& v : vertices) {
+            if (glm::length(v.tangent) > 0.0001f) {
+                // Re-orthogonalize tangent with respect to normal
+                v.tangent = glm::normalize(v.tangent - v.normal * glm::dot(v.normal, v.tangent));
+            } else {
+                 // Fallback for missing/bad UVs
+                 v.tangent = glm::vec3(1.0f, 0.0f, 0.0f);
+            }
+
+            if (glm::length(v.bitangent) > 0.0001f) {
+                 v.bitangent = glm::normalize(v.bitangent);
+            } else {
+                 v.bitangent = glm::cross(v.normal, v.tangent);
+            }
+        }
+    }
     
     static std::vector<char> readFile(const std::string& filename) {
         std::ifstream file(filename, std::ios::ate | std::ios::binary);
@@ -210,6 +264,7 @@ namespace Crescendo {
         float startX = -(width * spacing) / 2.0f;
         float startY = -(depth * spacing) / 2.0f;
 
+        // 1. Generate Vertices
         for (int z = 0; z <= depth; z++) {
             for (int x = 0; x <= width; x++) {
                 Vertex v{};
@@ -217,10 +272,16 @@ namespace Crescendo {
                 v.normal = glm::vec3(0.0f, 0.0f, 1.0f);
                 v.color = glm::vec3(1.0f);
                 v.texCoord = glm::vec2((float)x / width, (float)z / depth);
+                
+                // Manually set tangents for the flat plane
+                v.tangent = glm::vec3(1.0f, 0.0f, 0.0f);
+                v.bitangent = glm::vec3(0.0f, 1.0f, 0.0f);
+                
                 vertices.push_back(v);
             }
         }
 
+        // 2. Generate Indices (This was likely missing!)
         for (int z = 0; z < depth; z++) {
             for (int x = 0; x < width; x++) {
                 int topLeft = (z * (width + 1)) + x;
@@ -241,8 +302,11 @@ namespace Crescendo {
         MeshResource waterMesh{};
         waterMesh.name = "Internal_Water";
         waterMesh.indexCount = indices.size();
+        
+        // This will no longer crash because indices.size() > 0
         createVertexBuffer(vertices, waterMesh.vertexBuffer, waterMesh.vertexBufferMemory);
         createIndexBuffer(indices, waterMesh.indexBuffer, waterMesh.indexBufferMemory);
+        
         meshes.push_back(waterMesh);
         
         CBaseEntity* water = gameWorld.CreateEntity("prop_water");
@@ -765,8 +829,8 @@ namespace Crescendo {
     //===============================================
 
     bool RenderingServer::createGraphicsPipeline() {
-        auto vertShaderCode = readFile("assets/shaders/vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/frag.spv");
+        auto vertShaderCode = readFile("assets/shaders/shader.vert.spv");
+        auto fragShaderCode = readFile("assets/shaders/shader.frag.spv");
 
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -824,7 +888,7 @@ namespace Crescendo {
         rasterizer.rasterizerDiscardEnable = VK_FALSE;
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_NONE; // Changed for viewport test
+        rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
         rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{};
@@ -840,7 +904,7 @@ namespace Crescendo {
 
         VkPipelineColorBlendAttachmentState colorBlendAttachment{};
         colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        colorBlendAttachment.blendEnable = VK_FALSE;
+        colorBlendAttachment.blendEnable = VK_TRUE;
         colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
@@ -895,8 +959,8 @@ namespace Crescendo {
 
         if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) return false;
 
-        auto skyVertCode = readFile("assets/shaders/sky_vert.spv");
-        auto skyFragCode = readFile("assets/shaders/sky_frag.spv");
+        auto skyVertCode = readFile("assets/shaders/sky.vert.spv");
+        auto skyFragCode = readFile("assets/shaders/sky.frag.spv");
         VkShaderModule skyVertShaderModule = createShaderModule(skyVertCode);
         VkShaderModule skyFragShaderModule = createShaderModule(skyFragCode);
         
@@ -915,7 +979,7 @@ namespace Crescendo {
         VkPipelineShaderStageCreateInfo skyShaderStages[] = {skyVertStageInfo, skyFragStageInfo};
 
         rasterizer.cullMode = VK_CULL_MODE_NONE;
-        depthStencil.depthWriteEnable = VK_FALSE;
+        depthStencil.depthWriteEnable = VK_TRUE;
         depthStencil.depthTestEnable = VK_FALSE; 
         VkPipelineVertexInputStateCreateInfo emptyInputState{};
         emptyInputState.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -939,13 +1003,15 @@ namespace Crescendo {
         return true;
     }
 
+    // [CLEANUP] Remove unused 'pipelineLayoutInfo' to fix warnings
     bool RenderingServer::createTransparentPipeline() {
-        auto vertShaderCode = readFile("assets/shaders/vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/frag.spv");
+        auto vertShaderCode = readFile("assets/shaders/shader.vert.spv");
+        auto fragShaderCode = readFile("assets/shaders/shader.frag.spv");
 
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
 
+        // ... (Shader Stages Setup remains the same) ...
         VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
         vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -960,6 +1026,7 @@ namespace Crescendo {
 
         VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
 
+        // ... (Vertex Input Setup) ...
         auto bindingDescription = Vertex::getBindingDescription();
         auto attributeDescriptions = Vertex::getAttributeDescriptions();
 
@@ -970,6 +1037,7 @@ namespace Crescendo {
         vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
         vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
+        // ... (Input Assembly, Viewport, Rasterizer, Multisample, DepthStencil, ColorBlend - KEEP THESE) ...
         VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
         inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
         inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -998,7 +1066,7 @@ namespace Crescendo {
         rasterizer.rasterizerDiscardEnable = VK_FALSE;
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_NONE; 
+        rasterizer.cullMode = VK_CULL_MODE_NONE;
         rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{};
@@ -1008,13 +1076,13 @@ namespace Crescendo {
 
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        depthStencil.depthTestEnable = VK_TRUE;  
-        depthStencil.depthWriteEnable = VK_FALSE; 
+        depthStencil.depthTestEnable = VK_TRUE;
+        depthStencil.depthWriteEnable = VK_FALSE;
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
         VkPipelineColorBlendAttachmentState colorBlendAttachment{};
         colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        colorBlendAttachment.blendEnable = VK_TRUE; 
+        colorBlendAttachment.blendEnable = VK_TRUE;
         colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
@@ -1027,18 +1095,8 @@ namespace Crescendo {
         colorBlending.attachmentCount = 1;
         colorBlending.pAttachments = &colorBlendAttachment;
 
-        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutInfo.setLayoutCount = 1;
-        pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout; 
-        
-        VkPushConstantRange pushConstant{};
-        pushConstant.offset = 0;
-        pushConstant.size = sizeof(MeshPushConstants);
-        pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        pipelineLayoutInfo.pushConstantRangeCount = 1;
-        pipelineLayoutInfo.pPushConstantRanges = &pushConstant;
+        // [FIX] Removed unused 'VkPipelineLayoutCreateInfo pipelineLayoutInfo'
+        // We reuse the 'pipelineLayout' created in createGraphicsPipeline
 
         VkGraphicsPipelineCreateInfo pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -1051,7 +1109,7 @@ namespace Crescendo {
         pipelineInfo.pMultisampleState = &multisampling;
         pipelineInfo.pDepthStencilState = &depthStencil;
         pipelineInfo.pColorBlendState = &colorBlending;
-        pipelineInfo.layout = pipelineLayout;
+        pipelineInfo.layout = pipelineLayout; // Uses the main layout
         pipelineInfo.renderPass = viewportRenderPass;
         pipelineInfo.subpass = 0;
 
@@ -1066,8 +1124,8 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createWaterPipeline() {
-        auto vertShaderCode = readFile("assets/shaders/water_vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/water_frag.spv");
+        auto vertShaderCode = readFile("assets/shaders/water.vert.spv");
+        auto fragShaderCode = readFile("assets/shaders/water.frag.spv");
 
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -1191,8 +1249,8 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createCompositePipeline() {
-        auto vertShaderCode = readFile("assets/shaders/fullscreen_vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/bloom_composite.spv");
+        auto vertShaderCode = readFile("assets/shaders/fullscreen_vert.vert.spv");
+        auto fragShaderCode = readFile("assets/shaders/bloom_composite.frag.spv");
         
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -1476,6 +1534,9 @@ namespace Crescendo {
         newMesh.name = path.substr(path.find_last_of("/\\") + 1);
         newMesh.indexCount = static_cast<uint32_t>(tempIndices.size());
 
+        // [FIX] Calculate Tangents before upload
+        calculateTangents(tempVertices, tempIndices);
+
         createVertexBuffer(tempVertices, newMesh.vertexBuffer, newMesh.vertexBufferMemory);
         createIndexBuffer(tempIndices, newMesh.indexBuffer, newMesh.indexBufferMemory);
 
@@ -1539,8 +1600,8 @@ namespace Crescendo {
         std::string err, warn;
 
         bool ret = (filePath.find(".glb") != std::string::npos) ? 
-                  loader.LoadBinaryFromFile(&model, &err, &warn, filePath) : 
-                  loader.LoadASCIIFromFile(&model, &err, &warn, filePath);
+                   loader.LoadBinaryFromFile(&model, &err, &warn, filePath) : 
+                   loader.LoadASCIIFromFile(&model, &err, &warn, filePath);
 
         if (!ret) { std::cerr << "[GLTF Error] " << err << std::endl; return; }
 
@@ -1555,7 +1616,6 @@ namespace Crescendo {
         for (size_t i = 0; i < model.meshes.size(); i++) {
             const auto& mesh = model.meshes[i];
 
-            // --- START PRIMITIVE LOOP ---
             for (size_t j = 0; j < mesh.primitives.size(); j++) {
                 const auto& primitive = mesh.primitives[j];
                 std::vector<Vertex> vertices;
@@ -1571,17 +1631,18 @@ namespace Crescendo {
                     return &model.buffers[view.buffer].data[acc.byteOffset + view.byteOffset];
                 };
 
-                // 1. Get Master Vertex Count from POSITION
+                // 1. Get Master Vertex Count
                 auto posIt = primitive.attributes.find("POSITION");
                 if (posIt == primitive.attributes.end()) continue;
                 const auto& posAccessor = model.accessors[posIt->second];
                 int posCount = posAccessor.count;
 
                 // 2. Setup Base Pointers and Strides
-                int posStride = 0, normStride = 0, texStride = 0;
+                int posStride = 0, normStride = 0, texStride = 0, tanStride = 0;
                 const uint8_t* posBase = getAttrData("POSITION", posStride);
                 const uint8_t* normBase = getAttrData("NORMAL", normStride);
                 const uint8_t* texBase = getAttrData("TEXCOORD_0", texStride);
+                const uint8_t* tanBase = getAttrData("TANGENT", tanStride); // [NEW] Tangent Data
 
                 vertices.reserve(posCount);
 
@@ -1589,11 +1650,11 @@ namespace Crescendo {
                 for (int v = 0; v < posCount; v++) {
                     Vertex vert{};
 
-                    // POSITION (Strict Float3)
+                    // --- POSITION ---
                     const float* p = reinterpret_cast<const float*>(posBase + (v * posStride));
                     vert.pos = { p[0], p[1], p[2] };
 
-                    // NORMAL (Optional Float3)
+                    // --- NORMAL ---
                     if (normBase) {
                         const float* n = reinterpret_cast<const float*>(normBase + (v * normStride));
                         vert.normal = { n[0], n[1], n[2] };
@@ -1601,19 +1662,36 @@ namespace Crescendo {
                         vert.normal = { 0.0f, 0.0f, 1.0f };
                     }
 
-                    // TEXCOORD (Type-Safe: Handles Float and Optimized Shorts)
+                    // --- UV ---
                     if (texBase) {
                         const auto& acc = model.accessors[primitive.attributes.at("TEXCOORD_0")];
-                        // Handle Standard Floats
-                        if (acc.componentType == 5126) { // TINYGLTF_COMPONENT_TYPE_FLOAT
+                        if (acc.componentType == 5126) { // FLOAT
                             const float* t = reinterpret_cast<const float*>(texBase + (v * texStride));
                             vert.texCoord = { t[0], t[1] };
-                        } 
-                        // Handle Optimized Shorts (Normalized)
-                        else if (acc.componentType == 5123) { // TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT
+                        } else if (acc.componentType == 5123) { // USHORT
                             const uint16_t* t = reinterpret_cast<const uint16_t*>(texBase + (v * texStride));
                             vert.texCoord = { t[0] / 65535.0f, t[1] / 65535.0f };
                         }
+                    }
+
+                    // --- TANGENT & BITANGENT [CRITICAL FIX] ---
+                    if (tanBase) {
+                        // Case A: Model has baked tangents (Ideal)
+                        const float* t = reinterpret_cast<const float*>(tanBase + (v * tanStride));
+                        vert.tangent = { t[0], t[1], t[2] };
+                        float sigma = t[3]; // W component stores sign
+                        vert.bitangent = glm::cross(vert.normal, vert.tangent) * sigma;
+                    } else {
+                        // Case B: No tangents? Generate defaults to prevent NaN/Invisibility
+                        // This ensures the TBN matrix in the shader is valid (even if not perfect)
+                        vert.tangent = { 1.0f, 0.0f, 0.0f }; 
+                        vert.bitangent = { 0.0f, 1.0f, 0.0f };
+                        
+                        // Optional: Improved fallback (Gram-Schmidt)
+                        // glm::vec3 c1 = glm::cross(vert.normal, glm::vec3(0.0, 0.0, 1.0)); 
+                        // glm::vec3 c2 = glm::cross(vert.normal, glm::vec3(0.0, 1.0, 0.0)); 
+                        // vert.tangent = (glm::length(c1) > glm::length(c2)) ? glm::normalize(c1) : glm::normalize(c2);
+                        // vert.bitangent = glm::normalize(glm::cross(vert.normal, vert.tangent));
                     }
 
                     vert.color = { 1.0f, 1.0f, 1.0f };
@@ -1628,15 +1706,18 @@ namespace Crescendo {
                     int idxStride = acc.ByteStride(view);
 
                     for (size_t k = 0; k < acc.count; k++) {
-                        if (acc.componentType == 5125) // UNSIGNED_INT
+                        if (acc.componentType == 5125) // UINT
                             indices.push_back(*(const uint32_t*)(idxData + k * idxStride));
-                        else if (acc.componentType == 5123) // UNSIGNED_SHORT
+                        else if (acc.componentType == 5123) // USHORT
                             indices.push_back(*(const uint16_t*)(idxData + k * idxStride));
+                        else if (acc.componentType == 5121) // UBYTE
+                            indices.push_back(*(const uint8_t*)(idxData + k * idxStride));
                     }
                 }
 
                 // 5. Create GPU Resources
                 MeshResource newMesh{};
+                newMesh.name = baseDir + "_mesh_" + std::to_string(i) + "_" + std::to_string(j);
                 newMesh.indexCount = static_cast<uint32_t>(indices.size());
                 createVertexBuffer(vertices, newMesh.vertexBuffer, newMesh.vertexBufferMemory);
                 createIndexBuffer(indices, newMesh.indexBuffer, newMesh.indexBufferMemory);
@@ -1645,14 +1726,13 @@ namespace Crescendo {
                 meshes.push_back(newMesh);
 
                 // Create key for node mapping
-                std::string meshKey = baseDir + "_mesh_" + std::to_string(i) + "_" + std::to_string(j);
+                std::string meshKey = newMesh.name; // Use name as key
                 meshMap[meshKey] = globalIndex;
             }
-            // --- END PRIMITIVE LOOP ---
         }
 
         // =========================================================
-        // NODE PROCESSING (SCENE HIERARCHY)
+        // NODE PROCESSING
         // =========================================================
         const auto& gltfScene = model.scenes[model.defaultScene > -1 ? model.defaultScene : 0];
         for (int nodeIdx : gltfScene.nodes) {
@@ -1660,9 +1740,12 @@ namespace Crescendo {
         }
     }
 
-    // Updated processGLTFNode with Material Color Support
+    // Updated processGLTFNode with new positions from push constants
+    // We will be pushing a Charlie branch to experiment with Global Illumination and Ray-Tracing
+    // Updates expected soon.
 
-    void RenderingServer::processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene) {
+    // [CHANGE] Added 'parentMatrix' parameter (defaults to Identity in header)
+    void RenderingServer::processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene, glm::mat4 parentMatrix) {
         if (!scene) return; 
 
         CBaseEntity* newEnt = scene->CreateEntity("prop_static"); 
@@ -1672,28 +1755,43 @@ namespace Crescendo {
         if (parent) {
             newEnt->moveParent = parent;
             parent->children.push_back(newEnt);
-            newEnt->origin = parent->origin; 
         }
 
-        // --- Transform Logic ---
-        glm::vec3 translation(0.0f);
-        glm::quat rotation = glm::identity<glm::quat>();
-        glm::vec3 scale(1.0f);
+        // 1. Calculate LOCAL Matrix (T * R * S)
+        glm::vec3 localTranslation(0.0f);
+        glm::quat localRotation = glm::identity<glm::quat>();
+        glm::vec3 localScale(1.0f);
+        glm::mat4 localMat(1.0f);
 
         if (node.matrix.size() == 16) {
-            glm::mat4 mat = glm::make_mat4(node.matrix.data());
-            glm::vec3 skew;
-            glm::vec4 perspective;
-            glm::decompose(mat, scale, rotation, translation, skew, perspective);
+            localMat = glm::make_mat4(node.matrix.data());
         } else {
-            if (node.translation.size() == 3) translation = glm::vec3(node.translation[0], node.translation[1], node.translation[2]);
-            if (node.rotation.size() == 4) rotation = glm::quat((float)node.rotation[3], (float)node.rotation[0], (float)node.rotation[1], (float)node.rotation[2]);
-            if (node.scale.size() == 3) scale = glm::vec3(node.scale[0], node.scale[1], node.scale[2]);
+            if (node.translation.size() == 3) 
+                localTranslation = glm::vec3(node.translation[0], node.translation[1], node.translation[2]);
+            if (node.rotation.size() == 4) 
+                localRotation = glm::quat((float)node.rotation[3], (float)node.rotation[0], (float)node.rotation[1], (float)node.rotation[2]);
+            if (node.scale.size() == 3) 
+                localScale = glm::vec3(node.scale[0], node.scale[1], node.scale[2]);
+
+            localMat = glm::translate(glm::mat4(1.0f), localTranslation) * glm::mat4(localRotation) * glm::scale(glm::mat4(1.0f), localScale);
         }
 
-        newEnt->origin += translation;
-        newEnt->scale = scale;
-        newEnt->angles = glm::degrees(glm::eulerAngles(rotation)); 
+        // 2. Calculate GLOBAL Matrix (Parent * Local)
+        // [CRITICAL] This applies the accumulated transform from the root down to this node.
+        glm::mat4 globalMat = parentMatrix * localMat;
+
+        // 3. Decompose Global Matrix to get World Transform
+        glm::vec3 skew; 
+        glm::vec4 perspective;
+        glm::vec3 worldPos;
+        glm::quat worldRot;
+        glm::vec3 worldScale;
+
+        glm::decompose(globalMat, worldScale, worldRot, worldPos, skew, perspective);
+
+        newEnt->origin = worldPos;
+        newEnt->scale  = worldScale;
+        newEnt->angles = glm::degrees(glm::eulerAngles(worldRot));
 
         if (node.mesh > -1) {
             const tinygltf::Mesh& mesh = model.meshes[node.mesh];
@@ -1705,9 +1803,10 @@ namespace Crescendo {
                 if (i > 0) {
                     targetEnt->moveParent = newEnt;
                     newEnt->children.push_back(targetEnt);
+                    // Submeshes inherit the node's resolved world transform directly
                     targetEnt->origin = newEnt->origin; 
                     targetEnt->angles = newEnt->angles;
-                    targetEnt->scale = newEnt->scale;
+                    targetEnt->scale  = newEnt->scale;
                 }
 
                 // --- Material Logic ---
@@ -1716,6 +1815,31 @@ namespace Crescendo {
                     
                     targetEnt->roughness = (float)mat.pbrMetallicRoughness.roughnessFactor;
                     targetEnt->metallic = (float)mat.pbrMetallicRoughness.metallicFactor;
+
+                    // [ADD] Emissive Factor (Fixes Dark Watch Hands)
+                    if (mat.emissiveFactor.size() == 3) {
+                         float r = (float)mat.emissiveFactor[0];
+                         float g = (float)mat.emissiveFactor[1];
+                         float b = (float)mat.emissiveFactor[2];
+                         float maxEmit = std::max(r, std::max(g, b));
+                         if (maxEmit > 0.0f) targetEnt->emission = maxEmit * 5.0f;
+                    }
+
+                    // [ADD] Parse Extensions (Glass/Transmission)
+                    if (mat.extensions.find("KHR_materials_transmission") != mat.extensions.end()) {
+                        const auto& ext = mat.extensions.at("KHR_materials_transmission");
+                        if (ext.Has("transmissionFactor")) targetEnt->transmission = (float)ext.Get("transmissionFactor").Get<double>();
+                    }
+
+                    if (mat.extensions.find("KHR_materials_volume") != mat.extensions.end()) {
+                        const auto& ext = mat.extensions.at("KHR_materials_volume");
+                        if (ext.Has("thicknessFactor")) targetEnt->thickness = (float)ext.Get("thicknessFactor").Get<double>();
+                        if (ext.Has("attenuationDistance")) targetEnt->attenuationDistance = (float)ext.Get("attenuationDistance").Get<double>();
+                        if (ext.Has("attenuationColor")) {
+                            auto c = ext.Get("attenuationColor");
+                            targetEnt->attenuationColor = glm::vec3(c.Get(0).Get<double>(), c.Get(1).Get<double>(), c.Get(2).Get<double>());
+                        }
+                    }
 
                     if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
                         targetEnt->albedoColor = glm::vec3(
@@ -1730,34 +1854,28 @@ namespace Crescendo {
                         const tinygltf::Texture& tex = model.textures[texIndex];
                         const tinygltf::Image& img = model.images[tex.source];
                         
-                        // Handle Embedded vs External Textures
                         std::string texKey;
                         if (!img.uri.empty()) {
                             texKey = baseDir + "/" + decodeUri(img.uri);
                         } else {
-                            // Generate unique key for embedded texture
                             texKey = "EMBEDDED_" + std::to_string(tex.source) + "_" + node.name;
                         }
                         
-                        // Check Cache
                         if (textureMap.find(texKey) != textureMap.end()) {
                             targetEnt->textureID = textureMap[texKey];
                         } else {
-                            // Load New Texture
                             int newID = static_cast<int>(textureMap.size()) + 1;
                             
                             if (newID < MAX_TEXTURES) {
                                 TextureResource newTex;
                                 bool success = false;
-                                VkFormat format = VK_FORMAT_R8G8B8A8_UNORM; // Match engine format
+                                VkFormat format = VK_FORMAT_R8G8B8A8_UNORM; 
 
-                                // Option A: Memory (Embedded in GLB/GLTF)
                                 if (!img.image.empty()) {
                                     UploadTexture((void*)img.image.data(), img.width, img.height, format, newTex.image, newTex.memory);
                                     newTex.view = createImageView(newTex.image, format, VK_IMAGE_ASPECT_COLOR_BIT);
                                     success = true;
                                 } 
-                                // Option B: File (External reference)
                                 else if (!img.uri.empty()) {
                                     if (createTextureImage(texKey, newTex.image, newTex.memory)) {
                                          newTex.view = createImageView(newTex.image, format, VK_IMAGE_ASPECT_COLOR_BIT);
@@ -1768,10 +1886,9 @@ namespace Crescendo {
                                 if (success) {
                                     textureBank[newID] = newTex;
                                     textureMap[texKey] = newID;
-                                    cache.textures[texKey] = newID; // Sync with main cache
+                                    cache.textures[texKey] = newID; 
                                     targetEnt->textureID = newID;
 
-                                    // Update Descriptor Set Immediately
                                     VkDescriptorImageInfo imageInfo{};
                                     imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                                     imageInfo.imageView = newTex.view; 
@@ -1793,11 +1910,10 @@ namespace Crescendo {
                             }
                         }
                     } else {
-                        targetEnt->textureID = 0; // Use default
+                        targetEnt->textureID = 0; 
                     }
                 }
                 
-                // Assign Mesh Index
                  std::string meshKey = normalizePath(baseDir) + "_mesh_" + std::to_string(node.mesh) + "_" + std::to_string(i); 
                  if (meshMap.find(meshKey) != meshMap.end()) {
                      targetEnt->modelIndex = meshMap[meshKey];
@@ -1805,8 +1921,9 @@ namespace Crescendo {
             }
         }
 
+        // [CHANGE] Recursion: Pass the NEW Global Matrix to children
         for (int childId : node.children) {
-            processGLTFNode(model, model.nodes[childId], newEnt, baseDir, scene);
+            processGLTFNode(model, model.nodes[childId], newEnt, baseDir, scene, globalMat);
         }
     }
     
@@ -1877,6 +1994,7 @@ namespace Crescendo {
     // Render() / THE RENDER LOOP
     // --------------------------------------------------------------------
 
+    // [REPLACE THE ENTIRE render() FUNCTION WITH THIS]
     void RenderingServer::render(Scene* scene) {
         if (!scene) return;
             
@@ -1963,9 +2081,9 @@ namespace Crescendo {
             }
             vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
         
-            // -----------------------------------------------------------------
-            // PHASE 1: OPAQUE OBJECTS
-            // -----------------------------------------------------------------
+            // =========================================================
+            // PHASE 1: OPAQUE OBJECTS (Draw First -> Write Depth)
+            // =========================================================
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
             VkPipeline currentPipeline = graphicsPipeline;
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
@@ -1973,22 +2091,29 @@ namespace Crescendo {
             
             for (auto* ent : scene->entities) {
                 if (!ent || ent->modelIndex >= meshes.size()) continue;
-                if (ent->className == "prop_water") continue; // SKIP WATER
+                if (ent->className == "prop_water") continue; 
                 
-                // [FIX] Define targetPipeline!
-                VkPipeline targetPipeline = graphicsPipeline; 
-                            
+                // [CRITICAL FIX] Skip Glass Objects in this pass!
+                // We must draw solid internals BEFORE the glass cover.
+                if (ent->transmission > 0.0f) continue; 
+
+                MeshResource& mesh = meshes[ent->modelIndex];
+                if (mesh.vertexBuffer == VK_NULL_HANDLE) continue;
+                
+                // --- Pipeline Switching ---
+                VkPipeline targetPipeline = graphicsPipeline;       
                 if (currentPipeline != targetPipeline) {
                     vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, targetPipeline);
                     currentPipeline = targetPipeline;
                 }
                 
-                MeshResource& mesh = meshes[ent->modelIndex];
+                // --- Binding ---
                 VkBuffer vBuffers[] = { mesh.vertexBuffer };
                 VkDeviceSize offsets[] = { 0 };
                 vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
                 
+                // --- Transform ---
                 glm::mat4 model = glm::mat4(1.0f);
                 model = glm::translate(model, ent->origin);
                 model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1));
@@ -1996,17 +2121,22 @@ namespace Crescendo {
                 model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
                 model = glm::scale(model, ent->scale);
                 
+                // --- Push Constants ---
                 MeshPushConstants push{};
                 push.renderMatrix = proj * view * model; 
                 push.modelMatrix  = model;               
-                push.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
-            
+                
+                // [FIX] Force Opaque Mode (0.0) for this pass
+                push.camPos = glm::vec4(mainCamera.GetPosition(), 0.0f);
+
                 int selectedTexID = (ent->textureID > 0) ? ent->textureID : mesh.textureID;
                 int safeTextureID = (selectedTexID < 0) ? 0 : selectedTexID;
             
                 push.pbrParams = glm::vec4((float)safeTextureID, ent->roughness, ent->metallic, ent->emission);
                 push.sunDir = glm::vec4(sunDirection, sunIntensity);
-                push.sunColor = glm::vec4(sunColor, 1.0f);
+                push.sunColor = glm::vec4(sunColor, ent->normalStrength);
+                
+                // [FIX] Standard Color Tint
                 push.albedoTint = glm::vec4(ent->albedoColor, 1.0f);
                 
                 vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
@@ -2015,13 +2145,72 @@ namespace Crescendo {
                 
                 vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
             }
-        
-            // -----------------------------------------------------------------
-            // PHASE 2: TRANSPARENT OBJECTS (Water)
-            // -----------------------------------------------------------------
+
+            // =========================================================
+            // PHASE 2: GLASS / TRANSMISSION OBJECTS (Draw Second)
+            // =========================================================
+            // These objects have (ent->transmission > 0.0f)
+            
             for (auto* ent : scene->entities) {
                 if (!ent || ent->modelIndex >= meshes.size()) continue;
-                if (ent->className != "prop_water") continue; // ONLY WATER
+                
+                // [CRITICAL] ONLY process Glass here (Skip Opaque & Water)
+                if (ent->transmission <= 0.0f) continue; 
+                if (ent->className == "prop_water") continue;
+
+                MeshResource& mesh = meshes[ent->modelIndex];
+                if (mesh.vertexBuffer == VK_NULL_HANDLE) continue;
+
+                // Use the same graphics pipeline, just different constants
+                VkPipeline targetPipeline = graphicsPipeline;       
+                if (currentPipeline != targetPipeline) {
+                    vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, targetPipeline);
+                    currentPipeline = targetPipeline;
+                }
+            
+                VkBuffer vBuffers[] = { mesh.vertexBuffer };
+                VkDeviceSize offsets[] = { 0 };
+                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
+                vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+            
+                glm::mat4 model = glm::mat4(1.0f);
+                model = glm::translate(model, ent->origin);
+                model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1));
+                model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0,1,0));
+                model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
+                model = glm::scale(model, ent->scale);
+            
+                MeshPushConstants push{};
+                push.renderMatrix = proj * view * model; 
+                push.modelMatrix  = model;               
+
+                // [FIX] Send Transmission Factor (camPos.w)
+                push.camPos = glm::vec4(mainCamera.GetPosition(), ent->transmission);
+
+                int selectedTexID = (ent->textureID > 0) ? ent->textureID : mesh.textureID;
+                int safeTextureID = (selectedTexID < 0) ? 0 : selectedTexID;
+
+                push.pbrParams = glm::vec4((float)safeTextureID, ent->roughness, ent->metallic, ent->emission);
+                push.sunDir = glm::vec4(sunDirection, sunIntensity);
+                push.sunColor = glm::vec4(sunColor, ent->normalStrength);
+
+                // [FIX] Pack Attenuation Data into AlbedoTint
+                // RGB = Attenuation Color, W = Attenuation Distance
+                push.albedoTint = glm::vec4(ent->attenuationColor, ent->attenuationDistance);
+            
+                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
+                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
+                                    0, sizeof(MeshPushConstants), &push);
+                
+                vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
+            }
+        
+            // =========================================================
+            // PHASE 3: WATER OBJECTS
+            // =========================================================
+            for (auto* ent : scene->entities) {
+                if (!ent || ent->modelIndex >= meshes.size()) continue;
+                if (ent->className != "prop_water") continue; 
             
                 VkPipeline targetPipeline = waterPipeline;
                 if (currentPipeline != targetPipeline) {
@@ -2037,16 +2226,15 @@ namespace Crescendo {
             
                 glm::mat4 model = glm::mat4(1.0f);
                 model = glm::translate(model, ent->origin);
-                // model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1));
-                // model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0,1,0));
-                // model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
                 model = glm::scale(model, ent->scale);
             
                 MeshPushConstants push{};
                 push.renderMatrix = proj * view * model; 
                 push.modelMatrix  = model;               
-                push.camPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
-            
+                
+                // Water uses standard opaque mode for now, handled by its own shader logic
+                push.camPos = glm::vec4(mainCamera.GetPosition(), 0.0f);
+
                 int selectedTexID = (ent->textureID > 0) ? ent->textureID : mesh.textureID;
                 int safeTextureID = (selectedTexID < 0) ? 0 : selectedTexID;
                 push.pbrParams = glm::vec4((float)safeTextureID, ent->roughness, ent->metallic, ent->emission);
@@ -2058,7 +2246,7 @@ namespace Crescendo {
                 push.pbrParams.w = time; 
                 
                 push.sunDir = glm::vec4(sunDirection, sunIntensity);
-                push.sunColor = glm::vec4(sunColor, 1.0f);
+                push.sunColor = glm::vec4(sunColor, ent->normalStrength);
                 push.albedoTint = glm::vec4(ent->albedoColor, 1.0f);
             
                 vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
@@ -2067,15 +2255,13 @@ namespace Crescendo {
                 
                 vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
             }
-            
-        vkCmdEndRenderPass(commandBuffers[currentFrame]);
+        
+            vkCmdEndRenderPass(commandBuffers[currentFrame]);
         
         // ---------------------------------------------------------
         // TRANSITION: Scene Image -> Readable by Bloom
         // ---------------------------------------------------------
         transitionImageLayout(viewportImage, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        
-        // This was missing [New transit]
         transitionImageLayout(bloomBrightImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         
         // =========================================================
@@ -2085,8 +2271,6 @@ namespace Crescendo {
             VkRenderPassBeginInfo bloomPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
             bloomPassInfo.renderPass = bloomRenderPass;
             bloomPassInfo.framebuffer = bloomFramebuffer;
-
-            // [FIX] Render Area MUST match Framebuffer size (1/4th)
             bloomPassInfo.renderArea.extent.width = swapChainExtent.width / 4;
             bloomPassInfo.renderArea.extent.height = swapChainExtent.height / 4;
 
@@ -2096,7 +2280,6 @@ namespace Crescendo {
         
             vkCmdBeginRenderPass(commandBuffers[currentFrame], &bloomPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-            // [FIX] Viewport & Scissor must also be 1/4th
             VkViewport bloomViewport{0.0f, 0.0f, (float)swapChainExtent.width / 4.0f, (float)swapChainExtent.height / 4.0f, 0.0f, 1.0f};
             vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &bloomViewport);
 
@@ -2105,7 +2288,6 @@ namespace Crescendo {
         
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bloomPipeline);
         
-            // Reuse Composite Descriptor (Binding 0 is the Scene Image!)
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     compositePipelineLayout, 0, 1, &compositeDescriptorSet, 0, nullptr);
             
@@ -2131,7 +2313,6 @@ namespace Crescendo {
     
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &compositePassInfo, VK_SUBPASS_CONTENTS_INLINE);
     
-            // RESET VIEWPORT to Full Screen for Composite
             VkViewport compositeViewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
             vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &compositeViewport);
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
@@ -2484,6 +2665,8 @@ namespace Crescendo {
 
         VkPhysicalDeviceFeatures deviceFeatures{};
         deviceFeatures.samplerAnisotropy = VK_TRUE;
+        deviceFeatures.shaderSampledImageArrayDynamicIndexing = VK_TRUE;
+        deviceFeatures.depthClamp = VK_TRUE;
         
         // [CRITICAL] Enable this so shaders can use "texSampler[textureID]"
         deviceFeatures.shaderSampledImageArrayDynamicIndexing = VK_TRUE; 
@@ -2764,8 +2947,8 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createBloomPipeline() {
-        auto vertShaderCode = readFile("assets/shaders/fullscreen_vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/bloom_bright.spv");
+        auto vertShaderCode = readFile("assets/shaders/fullscreen_vert.vert.spv");
+        auto fragShaderCode = readFile("assets/shaders/bloom_bright.frag.spv");
 
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -3053,7 +3236,7 @@ namespace Crescendo {
            // 8. Cleanup Descriptors
            if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
            
-           if (postProcessLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, postProcessLayout, nullptr);
+           
            
            if (descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool, nullptr);
 

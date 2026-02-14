@@ -1,4 +1,5 @@
 #include "EditorUI.hpp"
+#include "imgui.h"
 #include "servers/rendering/RenderingServer.hpp"
 #include "scene/Scene.hpp"
 #include "servers/camera/Camera.hpp"
@@ -222,23 +223,17 @@ namespace Crescendo {
         }
     }
 
-    // --- PREPARE (Fixed Gizmo logic and Camera handling) ---
+    
     void EditorUI::Prepare(Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor) {
         
-        // [FIX 1] START THE IMGUI FRAME
-        // You MUST call these three functions before doing any UI work
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
         
-        // [FIX 2] START GIZMO FRAME
-        // ImGuizmo must be initialized AFTER ImGui::NewFrame()
         ImGuizmo::BeginFrame();
 
         ImGuiIO& io = ImGui::GetIO();
 
-        // 1. INPUT HANDLING (Free-Fly Camera)
-        // ... (Keep your existing Input Handling code here) ...
         if (!io.WantCaptureKeyboard || ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
              if (io.MouseWheel != 0.0f) {
                  camera.Zoom -= io.MouseWheel; 
@@ -302,7 +297,7 @@ namespace Crescendo {
         }
 
         // --- GIZMOS ---
-        // ... (Keep your existing Gizmo code here) ...
+        
         if (viewportSize.x > 0 && viewportSize.y > 0 && scene) {
             ImGuizmo::SetOrthographic(false);
             ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
@@ -315,7 +310,7 @@ namespace Crescendo {
             if (selectedObjectIndex >= 0 && selectedObjectIndex < (int)scene->entities.size()) {
                 CBaseEntity* ent = scene->entities[selectedObjectIndex];
                 if (ent) {
-                    // [FIX] Ensure matrix construction is correct
+                    
                     glm::mat4 model = glm::mat4(1.0f);
                     model = glm::translate(model, ent->origin);
                     model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0, 0, 1));
@@ -342,7 +337,6 @@ namespace Crescendo {
 
         // 4. HIERARCHY & INSPECTOR
         
-        // [FIX] Push Black Background for Hierarchy Window Only
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
         ImGui::Begin("Scene Hierarchy");
         ImGui::PopStyleColor(); // Must pop immediately after Begin so it doesn't affect child windows
@@ -362,7 +356,7 @@ namespace Crescendo {
         ImGui::End();
 
         ImGui::Begin("Inspector");
-        // ... (Keep your existing Inspector code here) ...
+        
         if (selectedObjectIndex >= 0 && scene && selectedObjectIndex < (int)scene->entities.size()) {
             CBaseEntity* ent = scene->entities[selectedObjectIndex];
             if (ent) {
@@ -377,6 +371,25 @@ namespace Crescendo {
                 ImGui::SliderFloat("Roughness", &ent->roughness, 0.0f, 1.0f);
                 ImGui::SliderFloat("Metallic", &ent->metallic, 0.0f, 1.0f);
                 ImGui::SliderFloat("Emission", &ent->emission, 0.0f, 10.0f);
+    
+                if (ent->transmission > 0.0f) {
+                    ImGui::Separator();
+                    ImGui::Text("Glass / Volume");
+
+                    // This lets you override the glTF's color
+                    ImGui::ColorEdit3("Volume Tint", glm::value_ptr(ent->attenuationColor));
+
+                    // This is the "Density" slider. 
+                    // Small Value = Dark/Thick (Red). Large Value = Clear/Thin (Yellow).
+                    ImGui::DragFloat("Density (Dist)", &ent->attenuationDistance, 0.01f, 0.001f, 10.0f);
+
+                    ImGui::SliderFloat("Refraction (IOR)", &ent->ior, 1.0f, 2.5f); // Optional: We can hook this up next
+                }
+            
+                ImGui::Separator();
+                ImGui::Text("Normal Maps");
+                // 0.0 = Flat, 1.0 = Default, >1.0 = Deep/Exaggerated
+                ImGui::SliderFloat("Strength", &ent->normalStrength, 0.0f, 5.0f);
             }
         }
         
@@ -393,7 +406,7 @@ namespace Crescendo {
         ImGui::Separator();
         ImGui::Text("Post Processing");
 
-        // [FIX] Use 'rendererRef' (not renderRef)
+        
         ImGui::DragFloat("Bloom Intensity", &rendererRef->postProcessSettings.bloomIntensity, 0.01f, 0.0f, 5.0f);
         ImGui::DragFloat("Exposure", &rendererRef->postProcessSettings.exposure, 0.01f, 0.1f, 5.0f);
         ImGui::DragFloat("Gamma", &rendererRef->postProcessSettings.gamma, 0.01f, 0.1f, 3.0f);
@@ -403,9 +416,7 @@ namespace Crescendo {
         bool showConsole = true;
         gameConsole.Draw("Console", &showConsole);
 
-        // [FIX 3] FINALIZE THE FRAME
-        // You MUST call Render() here. It calculates vertex buffers from the UI logic above.
-        // It does NOT draw to the screen yet (that happens in EditorUI::Render).
+        
         ImGui::Render(); 
     }
     

@@ -12,6 +12,8 @@ CompileFlags:
     "-I./deps/imgui",
     "-I./deps/imgui/backends",
     "-I./JoltPhysics",
+    "-I/usr/include/SDL2",
+    "-D_REENTRANT",
     "-DJPH_PROFILE_ENABLED",
     "-DGLM_ENABLE_EXPERIMENTAL" 
   ]

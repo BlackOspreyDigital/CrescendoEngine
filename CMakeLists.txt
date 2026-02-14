@@ -42,7 +42,7 @@ set(SHADER_FILES
     assets/shaders/water.frag
     assets/shaders/bloom_bright.frag
     assets/shaders/bloom_composite.frag
-    # assets/shaders/fullscreen.vert <--- REMOVED or RENAME if missing
+    assets/shaders/fullscreen_vert.vert
 )
 
 foreach(SHADER ${SHADER_FILES})
