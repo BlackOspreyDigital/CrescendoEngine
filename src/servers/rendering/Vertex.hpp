@@ -16,12 +16,17 @@ struct Vertex {
     glm::vec3 color;
     glm::vec3 normal;
     glm::vec2 texCoord;
+    glm::vec2 texCoord1; // Second UV Channel
     glm::vec3 tangent;
     glm::vec3 bitangent;
 
     // 1. Equality Operator (Needed for deduplication) 
-    bool operator==(const Vertex& other) const {
-        return pos == other.pos && color == other.color && normal == other.normal && texCoord == other.texCoord;
+    bool operator ==(const Vertex& other) const {
+        return pos == other.pos &&
+        color == other.color &&
+        normal == other.normal &&
+        texCoord == other.texCoord &&
+        texCoord1 == other.texCoord1; // do this for the other channel that require separate uvs
     }
 
     static VkVertexInputBindingDescription getBindingDescription() {
@@ -32,9 +37,9 @@ struct Vertex {
         return bindingDescription;
     }
 
-    static std::array<VkVertexInputAttributeDescription, 6> getAttributeDescriptions() {
+    static std::array<VkVertexInputAttributeDescription, 7> getAttributeDescriptions() {
         // Check your Vertex.hpp getAttributeDescriptions() implementation:
-    std::array<VkVertexInputAttributeDescription, 6> attributeDescriptions{};
+    std::array<VkVertexInputAttributeDescription, 7> attributeDescriptions{};
         
         // Position (Location 0)
         attributeDescriptions[0].binding = 0;
@@ -71,6 +76,12 @@ struct Vertex {
         attributeDescriptions[5].location = 5;
         attributeDescriptions[5].format = VK_FORMAT_R32G32B32_SFLOAT;
         attributeDescriptions[5].offset = offsetof(Vertex, bitangent);
+
+        // UV1 (Location 6)
+        attributeDescriptions[6].binding = 0;
+        attributeDescriptions[6].location = 6;
+        attributeDescriptions[6].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[6].offset = offsetof(Vertex, texCoord1);
         
         return attributeDescriptions;
         }
@@ -84,8 +95,9 @@ namespace std {
                    (hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
                    (hash<glm::vec3>()(vertex.normal) << 1) ^
                    (hash<glm::vec2>()(vertex.texCoord) << 1) ^
-                   (hash<glm::vec3>()(vertex.tangent) << 1) ^    // [NEW]
-                   (hash<glm::vec3>()(vertex.bitangent) << 1);   // [NEW]
+                   (hash<glm::vec2>()(vertex.texCoord1) << 1) ^
+                   (hash<glm::vec3>()(vertex.tangent) << 1) ^    
+                   (hash<glm::vec3>()(vertex.bitangent) << 1); 
         }
     };
 }

@@ -7,26 +7,26 @@ layout(location = 3) in vec3 fragPos;
 layout(location = 4) in vec3 fragTangent;
 layout(location = 5) in vec3 fragBitangent;
 layout(location = 6) in flat int inEntityIndex;
+layout(location = 7) in vec2 fragTexCoord1; 
 
 layout(location = 0) out vec4 outColor;
 
 layout(binding = 0) uniform sampler2D texSampler[100];
 layout(binding = 1) uniform sampler2D skyTexture;
 
-// --- SSBO (Material Data) ---
 struct EntityData {
     mat4 modelMatrix;
     vec4 sphereBounds;
     vec4 albedoTint;
-    vec4 pbrParams;
-    vec4 volumeParams;
+    vec4 pbrParams;    // x=Roughness, y=Metallic, z=Emission, w=NormalStrength
+    vec4 volumeParams; // x=Transmission, y=Thickness, z=AttDist, w=IOR
     vec4 volumeColor;
 };
+
 layout(std430, set = 0, binding = 2) readonly buffer ObjectBuffer { 
     EntityData entities[];
 };
 
-// --- GLOBAL UNIFORMS (Binding 3) ---
 layout(set = 0, binding = 3) uniform GlobalUniforms {
     mat4 viewProj;
     mat4 view;
@@ -34,73 +34,115 @@ layout(set = 0, binding = 3) uniform GlobalUniforms {
     vec4 cameraPos;
     vec4 sunDirection;
     vec4 sunColor;
-    vec4 params; // x=time
+    vec4 params;
 } global;
 
-// --- TINY PUSH CONSTANT ---
-layout(push_constant) uniform Constants {
-    uint entityIndex;
-} PushConsts;
+vec2 EquirectangularUV(vec3 v) {
+    vec2 uv = vec2(atan(v.z, v.x), asin(v.y));
+    uv *= vec2(0.1591, 0.3183); 
+    uv += 0.5;
+    return uv;
+}
 
 void main() {
-    // 1. Fetch Material (Same as before)
     EntityData ent = entities[inEntityIndex];
     int texID = int(ent.albedoTint.w);
     vec3 baseColor = ent.albedoTint.rgb;
     
-    // 2. Texture Sampling (Same as before)
+    // 1. Base Albedo
     vec4 albedoSample = texture(texSampler[texID], fragTexCoord);
     vec3 albedo = albedoSample.rgb * baseColor * fragColor;
 
-    // 3. Normal Mapping (Same as before)
+    // 2. NORMAL MAPPING [RESTORED]
     vec3 N = normalize(fragNormal);
-    float normalStr = ent.pbrParams.w;
+    float normalStr = ent.pbrParams.w; // The "Normal Strength" Slider
+    
+    // Only calculate TBN if we have a normal map strength > 0
     if (normalStr > 0.0) {
-        // ... (Normal map code) ...
+        // Assume Normal Map is always at texID + 1 (Your engine convention)
+        int normalTexID = texID + 1;
+        
+        // Sample Normal Map
+        vec3 mapNormal = texture(texSampler[normalTexID], fragTexCoord).rgb;
+        
+        // Transform from [0,1] to [-1,1]
+        mapNormal = mapNormal * 2.0 - 1.0;
+        
+        // Apply Slider Strength (Scale X and Y, leave Z alone)
+        mapNormal.xy *= normalStr;
+        mapNormal = normalize(mapNormal);
+
+        // Build TBN Matrix (Tangent Space -> World Space)
+        vec3 T = normalize(fragTangent);
+        vec3 B = normalize(fragBitangent);
+        
+        // Gram-Schmidt re-orthogonalization to ensure clean angles
+        T = normalize(T - dot(T, N) * N);
+        
+        mat3 TBN = mat3(T, B, N);
+        
+        // Transform Normal
+        N = normalize(TBN * mapNormal);
     }
 
-    // 4. Lighting & PBR
+    // 3. Lighting Vectors
     vec3 V = normalize(global.cameraPos.xyz - fragPos);
     vec3 L = normalize(vec3(0.5, 1.0, 0.5));
-    float sunIntensity = 1.0;
-    
-    if (length(global.sunDirection.xyz) > 0.01) {
-        L = normalize(global.sunDirection.xyz);
-        sunIntensity = global.sunDirection.w;
-    }
-    vec3 H = normalize(V + L); // Half vector for specular
+    if (length(global.sunDirection.xyz) > 0.01) L = normalize(global.sunDirection.xyz);
+    vec3 H = normalize(V + L);
 
-    // [FIX] READ PBR PARAMS FROM SSBO
-    // pbrParams: x=Roughness, y=Metallic, z=Emission
     float roughness = ent.pbrParams.x;
     float metallic  = ent.pbrParams.y;
     float emission  = ent.pbrParams.z;
-
-    // Diffuse Calculation
-    float NdotL = max(dot(N, L), 0.0);
     
-    // Specular Calculation (Blinn-Phong approximation for now)
-    // Higher roughness = Lower shininess
-    float shininess = (1.0 - roughness) * 64.0; 
+    // 4. PBR Lighting
+    float NdotL = max(dot(N, L), 0.0);
+    float shininess = (1.0 - roughness) * 64.0;
     float NdotH = max(dot(N, H), 0.0);
     float spec = pow(NdotH, max(shininess, 1.0));
-    
-    // Simple Metallic logic: 
-    // Metals have dark diffuse and colored specular. 
-    // Non-metals have colored diffuse and white specular.
-    vec3 kS = vec3(spec); // Specular intensity
-    vec3 kD = vec3(1.0) - kS; // Conservation of energy
-    kD *= 1.0 - metallic; // Metals have no diffuse
 
-    // Combine Light
-    vec3 directLight = (kD * albedo / 3.14159 + kS) * sunIntensity * NdotL * global.sunColor.rgb;
+    vec3 kS = vec3(spec);
+    vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
+    
+    vec3 directLight = (kD * albedo / 3.14159 + kS) * 1.0 * NdotL * global.sunColor.rgb;
     vec3 ambient = albedo * 0.03;
-    vec3 emissive = albedo * emission; // Use albedo as emission color for now
+    vec3 emissive = albedo * emission;
 
-    // Final Color
-    // [FIX] Glass Logic from previous step
-    float transmission = ent.volumeParams.x; 
-    float alpha = 1.0 - transmission;
-    
-    outColor = vec4(directLight + ambient + emissive, alpha);
+    vec3 finalColor = directLight + ambient + emissive;
+
+    // 5. VOLUME / GLASS LOGIC (Maintained from previous fix)
+    float transmission = ent.volumeParams.x;
+    float thickness    = ent.volumeParams.y;
+    float attDist      = ent.volumeParams.z; 
+    vec3  attColor     = ent.volumeColor.rgb;
+    float volumeOpacity = 0.0;
+
+    if (transmission > 0.0) {
+        vec3 safeAttColor = (length(attColor) < 0.01) ? vec3(1.0) : attColor;
+
+        if (attDist > 0.001) {
+            vec3 absorption = -log(max(safeAttColor, vec3(0.0001))) / attDist;
+            vec3 transmittance = exp(-absorption * thickness);
+            finalColor *= transmittance;
+            float avgTrans = dot(transmittance, vec3(0.333));
+            volumeOpacity = 1.0 - avgTrans;
+        } else {
+            finalColor *= safeAttColor;
+            volumeOpacity = 1.0; 
+        }
+    }
+
+    // 6. Skybox Reflection (Fresnel)
+    float fresnel = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+    vec3 R = reflect(-V, N);
+    vec3 skyRefl = texture(skyTexture, EquirectangularUV(normalize(R))).rgb;
+    skyRefl *= (1.0 - roughness);
+    vec3 finalReflection = skyRefl * (kS + fresnel) * transmission;
+
+    // 7. Final Alpha
+    float baseAlpha = 1.0 - transmission;
+    float finalAlpha = baseAlpha + (volumeOpacity * transmission) + length(finalReflection);
+    finalAlpha = clamp(finalAlpha, 0.0, 1.0);
+
+    outColor = vec4(finalColor + finalReflection, finalAlpha);
 }
