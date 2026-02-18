@@ -1,4 +1,4 @@
-#include <vulkan/vulkan_core.h>
+
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -6,26 +6,18 @@
 #ifndef GLM_ENABLE_EXPERIMENTAL
 #define GLM_ENABLE_EXPERIMENTAL
 #endif
-
-// [FIX] Force VMA to use dynamic function loading
 #define VMA_STATIC_VULKAN_FUNCTIONS 0
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
 #define VMA_IMPLEMENTATION
 #include "deps/vk_mem_alloc.h"
-
-// 2. Standard Library
-#include <algorithm>
 #include <array>
-#include <chrono>
+#include <set>
+#include "scene/Scene.hpp"
 #include <cstring>
 #include <fstream>
 #include <iostream>
-#include <set>
 #include <string>
-#include <unordered_map>
 #include <vector>
-
-// 3. Third Party Libraries
 #include <SDL2/SDL_vulkan.h>
 #include <SDL2/SDL_image.h>
 #include <glm/common.hpp>
@@ -34,27 +26,14 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/intersect.hpp>       
 #include <glm/gtx/matrix_decompose.hpp> 
-
-#include "imgui.h"
-#include "backends/imgui_impl_sdl2.h"
 #include "backends/imgui_impl_vulkan.h"
-#include "ImGuizmo.h"     
-#include "json.hpp"       
-#include "tiny_gltf.h"    
-
-// 4. Engine Headers 
-#include "IO/Serializer.hpp"
-#include "portable-file-dialogs.h" 
-#include "scene/Scene.hpp"
+#include "tiny_gltf.h"  
+#include <vulkan/vulkan_core.h>  
 #include "servers/display/DisplayServer.hpp"
 #include "servers/rendering/RenderingServer.hpp"
 #include "Vertex.hpp"
 
 namespace Crescendo {
-    
-    // --------------------------------------------------------------------
-    // LOGIC BEGIN
-    // --------------------------------------------------------------------
     
     static std::vector<char> readFile(const std::string& filename) {
         std::ifstream file(filename, std::ios::ate | std::ios::binary);
@@ -67,52 +46,8 @@ namespace Crescendo {
         return buffer;
     }
 
-    RenderingServer::RenderingServer() : 
-        isPlayMode(false),
-        activeCar(nullptr),
-        waterTextureID(0),
-        instance(VK_NULL_HANDLE),
-        debugMessenger(VK_NULL_HANDLE),
-        surface(VK_NULL_HANDLE),
-        physicalDevice(VK_NULL_HANDLE),
-        device(VK_NULL_HANDLE),
-        graphicsQueue(VK_NULL_HANDLE),
-        presentQueue(VK_NULL_HANDLE),
-        swapChain(VK_NULL_HANDLE),
-        swapChainImageFormat(VK_FORMAT_UNDEFINED),
-        swapChainExtent({0,0}),
-        commandPool(VK_NULL_HANDLE),
-        currentFrame(0),
-        descriptorSetLayout(VK_NULL_HANDLE),
-        descriptorSet(VK_NULL_HANDLE),
-        descriptorPool(VK_NULL_HANDLE),
-        renderPass(VK_NULL_HANDLE),
-        pipelineLayout(VK_NULL_HANDLE),
-        graphicsPipeline(VK_NULL_HANDLE),
-        transparentPipeline(VK_NULL_HANDLE),
-        skyPipeline(VK_NULL_HANDLE),
-        waterPipeline(VK_NULL_HANDLE),
-        bloomPipeline(VK_NULL_HANDLE),
-        compositePipeline(VK_NULL_HANDLE),
-        bloomRenderPass(VK_NULL_HANDLE),
-        compositeRenderPass(VK_NULL_HANDLE),
-        bloomFramebuffer(VK_NULL_HANDLE),
-        finalFramebuffer(VK_NULL_HANDLE),
-        postProcessLayout(VK_NULL_HANDLE),
-        compositePipelineLayout(VK_NULL_HANDLE),
-        compositeDescriptorSet(VK_NULL_HANDLE),
-        refractionSampler(VK_NULL_HANDLE),
-        refractionMipLevels(1),
-        skySampler(VK_NULL_HANDLE),
-        textureSampler(VK_NULL_HANDLE),
-        viewportSampler(VK_NULL_HANDLE),
-        viewportFramebuffer(VK_NULL_HANDLE),
-        viewportRenderPass(VK_NULL_HANDLE),
-        viewportDescriptorSet(VK_NULL_HANDLE),
-        
-        display_ref(nullptr),
-        window(nullptr)
-    {
+    RenderingServer::RenderingServer() {
+        // Empty! 
     }
 
     bool RenderingServer::initialize(DisplayServer* display) {
@@ -172,8 +107,9 @@ namespace Crescendo {
         std::cout << "[Check 3] Creating Resources..." << std::endl;
         if (!createDepthResources()) return false;
         if (!createShadowResources()) return false;
+        if (!createTextureImage()) return false;
         
-        createDefaultTexture(); // Uses VMA + CommandPool
+        
 
         // --- CHECK 4: SAMPLERS ---
         std::cout << "[Check 4] Creating Samplers..." << std::endl;
@@ -181,27 +117,19 @@ namespace Crescendo {
             std::cerr << "!! Failed to create Texture Sampler" << std::endl;
             return false;
         }
-        
-        // Skybox Setup (Corrected)
-        VkSamplerCreateInfo skySamplerInfo{};
-        skySamplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        skySamplerInfo.magFilter = VK_FILTER_LINEAR;
-        skySamplerInfo.minFilter = VK_FILTER_LINEAR;
-        skySamplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-        skySamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        skySamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        skySamplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        skySamplerInfo.maxAnisotropy = 16.0f;
-        skySamplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-        vkCreateSampler(device, &skySamplerInfo, nullptr, &skySampler);
+
+        // [FIX] ADD THIS BLOCK HERE! ----------------------------------
+        // This creates the default texture AND resizes the bank to MAX_TEXTURES
+        if (!createTextureImage()) {
+            std::cerr << "Failed to create default texture resources!" << std::endl;
+            return false;
+        }
 
         // Load Skybox Image
-        if (createHDRImage("assets/hdr/sky_cloudy.hdr", skyImage, skyImageAllocation)) {
-            // [FIX] Use SFLOAT View for SFLOAT Image (Fixes Validation Error)
-            skyImageView = createImageView(skyImage, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT);
+        if (createHDRImage("assets/hdr/sky_cloudy.hdr", skyImage)) {
+            // RAII wrapper automatically creates skyImage.view
         } else {
-            std::cout << "[Warning] Skybox HDR not found, using default." << std::endl;
-            skyImageView = textureImageView; 
+            std::cout << "[Warning] Skybox HDR not found." << std::endl;
         }
 
         createWaterMesh();
@@ -215,7 +143,6 @@ namespace Crescendo {
         createGlobalUniformBuffer();
         
         if (!createDescriptorPool()) return false;
-        
         if (!createDescriptorSets()) { 
             std::cout << "!! Failed to create Global Descriptor Set" << std::endl; 
             return false; 
@@ -229,15 +156,11 @@ namespace Crescendo {
 
         if (!createViewportResources()) return false;
         if (!createBloomResources()) return false;
-
-        viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(viewportSampler, finalImageView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
         if (!createGraphicsPipeline()) return false;
         if (!createWaterPipeline()) return false;        
         if (!createTransparentPipeline()) return false;
         if (!createBloomPipeline()) return false;
         if (!createCompositePipeline()) return false;
-
         if (!createFramebuffers()) return false;
 
         // --- CHECK 7: SYNC ---
@@ -246,6 +169,10 @@ namespace Crescendo {
         if (!createCommandBuffers()) return false;
 
         updateCompositeDescriptors();
+
+        // [ADD THIS] Set a default camera position to see the water
+        mainCamera.SetPosition(glm::vec3(0.0f, -10.0f, 5.0f)); // Back 10, Up 5
+        mainCamera.SetRotation(glm::vec3(25.0f, 0.0f, 0.0f));  // Look down 25 degrees
 
         std::cout << ">>> ENGINE READY! <<<" << std::endl;
         return true;
@@ -303,7 +230,8 @@ namespace Crescendo {
         
         
         
-        meshes.push_back(waterMesh);
+        // meshes.push_back(waterMesh);  <-- BAD
+        meshes.push_back(std::move(waterMesh)); // <-- GOOD
         
         CBaseEntity* water = gameWorld.CreateEntity("prop_water");
         water->modelIndex = meshes.size() - 1;
@@ -558,20 +486,22 @@ namespace Crescendo {
         subpass.pDepthStencilAttachment = &depthRef;
 
         // Synchronization Dependencies
-        std::array<VkSubpassDependency, 2> dependencies;
+        // [FIX] Zero-initialize the array to prevent garbage flags
+        std::array<VkSubpassDependency, 2> dependencies = {};
+
         dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
         dependencies[0].dstSubpass = 0;
         dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        dependencies[0].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+        dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         dependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        dependencies[0].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
         dependencies[1].srcSubpass = 0;
         dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-        dependencies[1].srcStageMask = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        dependencies[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
@@ -629,43 +559,99 @@ namespace Crescendo {
 
         return newImage; // Transfers ownership to caller
     }
-
-    void RenderingServer::createDefaultTexture() {
-       // 1. Create the single Fallback Texture (Member Variable)
-       unsigned char pixels[4] = { 128, 128, 128, 255 };
-       
-       // Use the RAII helper directly on the member variable 'textureImage'
-       textureImage = UploadTexture(pixels, 1, 1, VK_FORMAT_R8G8B8A8_UNORM);
-       
-       // Note: 'textureImageView' member is now unused/redundant because 
-       // textureImage.view holds the view. You can remove the textureImageView member.
-
-       // 2. Prepare the Bank
-       // We resize it, but we do NOT fill it with copies. 
-       // The default constructor of TextureResource creates "Empty" RAII objects (VK_NULL_HANDLE).
-       textureBank.resize(MAX_TEXTURES); 
-       
-       // REMOVE THE LOOP THAT COPIES defaultTex INTO THE BANK!
-       // The fallback logic is now handled in createDescriptorSets.
-    }
-
-    // [UPDATED] Signature: Takes VulkanImage& instead of raw VkImage/Allocation
-    bool RenderingServer::createTextureImage(const std::string& path, VulkanImage& outImage) {
-        int texWidth, texHeight, texChannels;
-        stbi_uc* pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-        if (!pixels) return false;
     
-        // UploadTexture returns a VulkanImage, so we just assign it.
-        // The move assignment operator handles the old resource cleanup automatically.
-        outImage = UploadTexture(pixels, texWidth, texHeight, VK_FORMAT_R8G8B8A8_UNORM);
-        
-        stbi_image_free(pixels); 
+    bool RenderingServer::createTextureImage() {
+        int texWidth, texHeight, texChannels;
+        // Load the default texture
+        stbi_uc* pixels = stbi_load("assets/textures/vikingemerald_default.png", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+        VkDeviceSize imageSize = texWidth * texHeight * 4;
+
+        // Fallback if file missing
+        unsigned char fallback[4] = { 255, 0, 255, 255 }; // Magenta
+        if (!pixels) {
+            std::cout << "[Warning] Default texture missing. Using fallback." << std::endl;
+            texWidth = 1; texHeight = 1; imageSize = 4;
+            pixels = (stbi_uc*)fallback;
+        }
+
+        // 1. Staging Buffer (RAII)
+        VulkanBuffer stagingBuffer(
+            allocator,
+            imageSize,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT
+        );
+
+        // 2. Map & Copy
+        void* data;
+        if (vmaMapMemory(allocator, stagingBuffer.allocation, &data) != VK_SUCCESS) return false;
+        memcpy(data, pixels, static_cast<size_t>(imageSize));
+        vmaUnmapMemory(allocator, stagingBuffer.allocation);
+
+        if (pixels != fallback) stbi_image_free(pixels);
+
+        // 3. Create Image
+        textureImage = VulkanImage(allocator, device, texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, 
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
+            VK_IMAGE_ASPECT_COLOR_BIT);
+
+        // 4. Transition & Copy
+        transitionImageLayout(textureImage.handle, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        copyBufferToImage(stagingBuffer.handle, textureImage.handle, texWidth, texHeight);
+        transitionImageLayout(textureImage.handle, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        // 5. [CRITICAL] Resize the Bank!
+        // This prevents the "Assertion failed" crash when loading other textures
+        if (textureBank.size() < MAX_TEXTURES) {
+            textureBank.resize(MAX_TEXTURES);
+        }
+
         return true;
     }
 
-    bool RenderingServer::createTextureImageView() {
-        textureImageView = createImageView(textureImage, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
-        return (textureImageView != VK_NULL_HANDLE);
+    // Add this implementation to fix the Linker Error
+    bool RenderingServer::createTextureImage(const std::string& path, VulkanImage& outImage) {
+        int texWidth, texHeight, texChannels;
+        stbi_uc* pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+
+        if (!pixels) {
+            std::cerr << "Failed to load texture file: " << path << std::endl;
+            return false;
+        }
+
+        VkDeviceSize imageSize = texWidth * texHeight * 4;
+
+        // 1. Staging Buffer (RAII)
+        VulkanBuffer stagingBuffer(
+            allocator,
+            imageSize,
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT
+        );
+
+        // 2. Map & Copy
+        void* data;
+        if (vmaMapMemory(allocator, stagingBuffer.allocation, &data) != VK_SUCCESS) {
+            stbi_image_free(pixels);
+            return false;
+        }
+        memcpy(data, pixels, static_cast<size_t>(imageSize));
+        vmaUnmapMemory(allocator, stagingBuffer.allocation);
+
+        stbi_image_free(pixels);
+
+        // 3. Create Image (RAII Move Assignment)
+        // Note: We use UNORM for standard textures, unlike the SFLOAT used in HDR
+        outImage = VulkanImage(allocator, device, texWidth, texHeight, VK_FORMAT_R8G8B8A8_UNORM, 
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
+            VK_IMAGE_ASPECT_COLOR_BIT);
+
+        // 4. Transition & Copy
+        transitionImageLayout(outImage.handle, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        copyBufferToImage(stagingBuffer.handle, outImage.handle, texWidth, texHeight);
+        transitionImageLayout(outImage.handle, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        return true;
     }
 
     // [FIX] Update signature to take VulkanImage&
@@ -709,25 +695,39 @@ namespace Crescendo {
         samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         samplerInfo.anisotropyEnable = VK_TRUE;
-        samplerInfo.maxAnisotropy = 16.0f;
+        
+        // Check limits
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(physicalDevice, &properties);
+        samplerInfo.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+        
         samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
         samplerInfo.unnormalizedCoordinates = VK_FALSE;
         samplerInfo.compareEnable = VK_FALSE;
+        samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
         samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        samplerInfo.mipLodBias = 0.0f;
+        samplerInfo.minLod = 0.0f;
+        samplerInfo.maxLod = 0.0f;
 
-        return vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler) == VK_SUCCESS;
+        if (vkCreateSampler(device, &samplerInfo, nullptr, &textureSampler) != VK_SUCCESS) {
+            return false;
+        }
+
+        // Also create the Sky Sampler while we are here (it's often the same)
+        return vkCreateSampler(device, &samplerInfo, nullptr, &skySampler) == VK_SUCCESS;
     }
 
-    void RenderingServer::loadMaterialsFromOBJ(const std::string& baseDir, const std::vector<tinyobj::material_t>& materials)
+    void RenderingServer::loadMaterialsFromOBJ(const std::string& baseDir, const std::vector<tinyobj::material_t>& materials) {
         for (const auto& mat : materials) {
             if (materialMap.find(mat.name) != materialMap.end()) {
                 continue;
             }
- 
+
             Material newMat;
             newMat.name = mat.name;
             newMat.albedoColor = glm::vec3(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2]);
-            
+
             if (mat.shininess > 0.0f) {
                 newMat.roughness = 1.0f - std::clamp(mat.shininess / 1000.0f, 0.0f, 1.0f);
             } else {
@@ -735,9 +735,11 @@ namespace Crescendo {
             }
             newMat.metallic = 0.0f; 
 
+            // [FIXED] Single, clean texture loading block
             if (!mat.diffuse_texname.empty()) {
                 std::string texturePath;
 
+                // Check paths in order of likelihood
                 if (std::ifstream(mat.diffuse_texname).good()) {
                     texturePath = mat.diffuse_texname;
                 }
@@ -748,31 +750,18 @@ namespace Crescendo {
                     texturePath = "assets/textures/" + mat.diffuse_texname;
                 }
 
-                if (!mat.diffuse_texname.empty()) {
-                std::string texturePath;
-
-                // [Path Finding Logic - Keep this]
-                if (std::ifstream(mat.diffuse_texname).good()) texturePath = mat.diffuse_texname;
-                else if (std::ifstream(baseDir + "/" + mat.diffuse_texname).good()) texturePath = baseDir + "/" + mat.diffuse_texname;
-                else if (std::ifstream("assets/textures/" + mat.diffuse_texname).good()) texturePath = "assets/textures/" + mat.diffuse_texname;
-
-                // [FIX] Use acquireTexture
                 if (!texturePath.empty()) {
                     newMat.textureID = acquireTexture(texturePath);
                 } else {
-                    newMat.textureID = 0;
+                    newMat.textureID = 0; // Default texture
                 }
             } else {
                 newMat.textureID = 0;
             } 
-            
+
             materialMap[mat.name] = static_cast<uint32_t>(materialBank.size());
             materialBank.push_back(newMat);
         }
-    }
-
-    VkImageView RenderingServer::createTextureImageView(VkImage& image) {
-        return createImageView(image, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT);
     }
 
     bool RenderingServer::createDescriptorSetLayout() {
@@ -910,6 +899,7 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createDescriptorSets() {
+
         // 1. Allocate Main Scene Set (Set 0)
         std::vector<VkDescriptorSetLayout> layouts(1, descriptorSetLayout);
         VkDescriptorSetAllocateInfo allocInfo{};
@@ -960,7 +950,8 @@ namespace Crescendo {
         // Binding 1: Sky Texture
         VkDescriptorImageInfo skyImageInfo{};
         skyImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        skyImageInfo.imageView = skyImageView;
+        // [FIX] Use skyImage.view instead of skyImageView
+        skyImageInfo.imageView = skyImage.view; 
         skyImageInfo.sampler = skySampler;
 
         VkWriteDescriptorSet skyWrite{};
@@ -974,7 +965,7 @@ namespace Crescendo {
 
         // Binding 2: SSBO (Entity Data)
         VkDescriptorBufferInfo ssboInfo{};
-        ssboInfo.buffer = entityStorageBuffer;
+        ssboInfo.buffer = entityStorageBuffer.handle;
         ssboInfo.offset = 0;
         ssboInfo.range = sizeof(EntityData) * MAX_ENTITIES;
 
@@ -989,7 +980,7 @@ namespace Crescendo {
 
         // Binding 3: Global Uniforms (GUB)
         VkDescriptorBufferInfo globalInfo{};
-        globalInfo.buffer = globalUniformBuffer;
+        globalInfo.buffer = globalUniformBuffer.handle;
         globalInfo.offset = 0;
         globalInfo.range = sizeof(GlobalUniforms);
 
@@ -1073,12 +1064,12 @@ namespace Crescendo {
            return 0;
        }
 
-       // [FIX] Create RAII Resource
+       // Create RAII Resource
        TextureResource newTex;
        newTex.image = UploadTexture(pixels, texWidth, texHeight, VK_FORMAT_R8G8B8A8_UNORM);
        stbi_image_free(pixels);
 
-       // [FIX 1] Use std::move() because RAII objects cannot be copied
+       // Use std::move() because RAII objects cannot be copied
        if (newID < textureBank.size()) {
            textureBank[newID] = std::move(newTex); 
        }
@@ -1086,25 +1077,25 @@ namespace Crescendo {
        cache.textures[path] = newID;
        textureMap[path] = newID;
 
-       // [FIX 2] Update the descriptor using the new access pattern
-       VkDescriptorImageInfo imageInfo{};
-       imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-       
-       // OLD: imageInfo.imageView = textureBank[newID].view;
-       // NEW: Access view inside the wrapper
-       imageInfo.imageView = textureBank[newID].image.view; 
-       
-       imageInfo.sampler = VK_NULL_HANDLE; // Immutable samplers are used in layout
+       // [CRITICAL FIX] Only update descriptor if the set exists!
+       // During initialization, this is VK_NULL_HANDLE, so we skip it.
+       // createDescriptorSets() will handle the binding later.
+       if (descriptorSet != VK_NULL_HANDLE) {
+           VkDescriptorImageInfo imageInfo{};
+           imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+           imageInfo.imageView = textureBank[newID].image.view;
+           imageInfo.sampler = VK_NULL_HANDLE;
 
-       VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-       descriptorWrite.dstSet = descriptorSet;
-       descriptorWrite.dstBinding = 0;
-       descriptorWrite.dstArrayElement = newID;
-       descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-       descriptorWrite.descriptorCount = 1;
-       descriptorWrite.pImageInfo = &imageInfo;
+           VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+           descriptorWrite.dstSet = descriptorSet;
+           descriptorWrite.dstBinding = 0;
+           descriptorWrite.dstArrayElement = newID;
+           descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+           descriptorWrite.descriptorCount = 1;
+           descriptorWrite.pImageInfo = &imageInfo;
 
-       vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+           vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+       }
 
        return newID;
     }
@@ -1780,7 +1771,7 @@ namespace Crescendo {
         for (size_t i = 0; i < swapChainImageViews.size(); i++) {
             std::array<VkImageView, 2> attachments = {
                 swapChainImageViews[i],
-                depthImageView
+                depthImage.view
             };
 
             VkFramebufferCreateInfo framebufferInfo{};
@@ -1905,7 +1896,8 @@ namespace Crescendo {
         return result;
     }
     
-    // 1. UPDATED LOADGLTF (Tangents + Safe Buffers)
+    // 1. UPDATED LOADGLTF (Tangents + Safe Buffers) Added missing Texture function at bottom
+
     void RenderingServer::loadGLTF(const std::string& filePath, Scene* scene) {
         if (scene == nullptr) return;
 
@@ -2022,10 +2014,10 @@ namespace Crescendo {
                 newMesh.name = baseDir + "_mesh_" + std::to_string(i) + "_" + std::to_string(j);
                 newMesh.indexCount = static_cast<uint32_t>(indices.size());
                 newMesh.vertexBuffer = createVertexBuffer(vertices);
-                newMesh.indicesBuffer = createIndexBuffer(indices);
+                newMesh.indexBuffer = createIndexBuffer(indices);
 
                 size_t globalIndex = meshes.size();
-                meshes.push_back(newMesh);
+                meshes.push_back(std::move(newMesh));
                 meshMap[newMesh.name] = globalIndex;
             }
         }
@@ -2195,7 +2187,7 @@ namespace Crescendo {
                                     VkDescriptorImageInfo imageInfo{};
                                     imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                                     // [FIX] Access view via .image.view
-                                    imageInfo.imageView = textureBank[newID].image.view; 
+                                    imageInfo.imageView = textureBank[newID].image.view;
                                     imageInfo.sampler = textureSampler;
 
                                     VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -2230,6 +2222,10 @@ namespace Crescendo {
             processGLTFNode(model, model.nodes[childId], newEnt, baseDir, scene, globalMat);
         }
     }
+
+    
+
+    // ---------------------------------------------------------------------------------------------
     
     void RenderingServer::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
         VkCommandBuffer commandBuffer = beginSingleTimeCommands();
@@ -2285,18 +2281,35 @@ namespace Crescendo {
     }
 
     void RenderingServer::createGlobalUniformBuffer() {
-        globalUniformBuffer = VulkanBuffer(allocator, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
-            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
-        vmaMapMemory(allocator, globalUniformBuffer.allocation, &globalUniformBufferMapped);
+        VkDeviceSize bufferSize = sizeof(GlobalUniforms);
+
+        // [FIX] REMOVED "VMA_ALLOCATION_CREATE_MAPPED_BIT" to prevent double-mapping
+        globalUniformBuffer = VulkanBuffer(
+            allocator, 
+            bufferSize, 
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
+            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT 
+        );
+
+        if (vmaMapMemory(allocator, globalUniformBuffer.allocation, &globalUniformBufferMapped) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to map Global Uniform Buffer memory!");
+        }
     }
 
     void RenderingServer::createStorageBuffers() {
         VkDeviceSize bufferSize = sizeof(EntityData) * MAX_ENTITIES;
-        createBuffer(bufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
-            entityStorageBuffer, entityStorageBufferAllocation); // FIXED
-
-        vmaMapMemory(allocator, entityStorageBufferAllocation, &entityStorageBufferMapped); // FIXED
+        
+        // [FIX] REMOVED "VMA_ALLOCATION_CREATE_MAPPED_BIT" to prevent double-mapping
+        entityStorageBuffer = VulkanBuffer(
+            allocator, 
+            bufferSize, 
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
+            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT 
+        );
+    
+        if (vmaMapMemory(allocator, entityStorageBuffer.allocation, &entityStorageBufferMapped) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to map Entity Storage Buffer memory!");
+        }
     }
 
     // --------------------------------------------------------------------
@@ -2432,7 +2445,7 @@ namespace Crescendo {
         viewportPassInfo.pClearValues = clearValues.data();
         
         // Transition image for writing
-        transitionImageLayout(viewportImage, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        //transitionImageLayout(viewportImage.handle, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &viewportPassInfo, VK_SUBPASS_CONTENTS_INLINE);
             
@@ -2444,22 +2457,22 @@ namespace Crescendo {
             // -----------------------------------------------------------------
             // DRAW SKYBOX
             // -----------------------------------------------------------------
-            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
-            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                                    pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+            // vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
+            // vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
+                //                    pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
             {
                 // [FIX] Calculate and Push Skybox Matrix
-                glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view));
+                //glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view));
                 
                 // Use the struct defined in .hpp (SkyboxPushConsts)
-                SkyboxPushConsts skyPush{}; 
-                skyPush.invViewProj = glm::inverse(proj * viewNoTrans);
+                //SkyboxPushConsts skyPush{}; 
+                //skyPush.invViewProj = glm::inverse(proj * viewNoTrans);
                 
-                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
-                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
-                                   0, sizeof(SkyboxPushConsts), &skyPush);
+                //vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
+                //                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
+                //                   0, sizeof(SkyboxPushConsts), &skyPush);
             }
-            vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
+            // vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
         
             // -----------------------------------------------------------------
             // DRAW ENTITIES (OPAQUE & TRANSPARENT)
@@ -2477,14 +2490,14 @@ namespace Crescendo {
                     if (entIsTransparent != isTransparentPass) continue;
 
                     MeshResource& mesh = meshes[ent->modelIndex];
-                    if (mesh.vertexBuffer == VK_NULL_HANDLE) continue;
-                    
-                    // [FIX] Access the raw handle via .handle
-                    VkBuffer vBuffers[] = { mesh.vertexBuffer.handle }; 
-                    vkCmdBindVertexBuffers(..., vBuffers, ...);
-                    vkCmdBindIndexBuffer(..., mesh.indexBuffer.handle, ...);
-                    vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-                    
+                    if (mesh.vertexBuffer.handle == VK_NULL_HANDLE) continue; // [FIX] Add .handle
+
+                    VkBuffer vBuffers[] = { mesh.vertexBuffer.handle }; // [FIX] Define this!
+                    VkDeviceSize offsets[] = {0};
+
+                    vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
+                    vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
+                                        
                     PushConsts push{};
                     push.entityIndex = entityGPUIndices[ent]; // Just the ID!
 
@@ -2514,12 +2527,12 @@ namespace Crescendo {
                 if (ent->modelIndex >= meshes.size()) continue;
 
                 MeshResource& mesh = meshes[ent->modelIndex];
-                if (mesh.vertexBuffer == VK_NULL_HANDLE) continue;
+                if (mesh.vertexBuffer.handle == VK_NULL_HANDLE) continue;
 
-                VkBuffer vBuffers[] = { mesh.vertexBuffer };
+                VkBuffer vBuffers[] = { mesh.vertexBuffer.handle };
                 VkDeviceSize offsets[] = { 0 };
                 vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+                vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
 
                 PushConsts push{};
                 push.entityIndex = entityGPUIndices[ent];
@@ -2533,21 +2546,10 @@ namespace Crescendo {
 
         // [FIX 1] END the Viewport Render Pass here!
         // This closes the main 3D rendering so we can transition images safely.
-        vkCmdEndRenderPass(commandBuffers[currentFrame]); 
-
-        // [FIX 2] Now perform transitions (Safe because render pass is closed)
-        cmdTransitionImageLayout(commandBuffers[currentFrame], viewportImage, VK_FORMAT_R16G16B16A16_SFLOAT, 
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        
-        cmdTransitionImageLayout(commandBuffers[currentFrame], bloomBrightImage, VK_FORMAT_R8G8B8A8_SRGB, 
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        
-        // [FIX 3] DELETE THE STRAY 'vkCmdEndRenderPass' THAT WAS HERE!
-        // (The one that was causing the crash)
-
+        vkCmdEndRenderPass(commandBuffers[currentFrame]);
         // [FIX 4] Transition Bloom Result for reading
-        cmdTransitionImageLayout(commandBuffers[currentFrame], bloomBrightImage, VK_FORMAT_R8G8B8A8_SRGB, 
-        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        //cmdTransitionImageLayout(commandBuffers[currentFrame], bloomBrightImage.handle, VK_FORMAT_R8G8B8A8_SRGB, 
+        //VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         
         // [BLOOM EXTRACT]
         {
@@ -2559,6 +2561,7 @@ namespace Crescendo {
             VkClearValue bloomClear = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
             bloomPassInfo.clearValueCount = 1;
             bloomPassInfo.pClearValues = &bloomClear;
+
             vkCmdBeginRenderPass(commandBuffers[currentFrame], &bloomPassInfo, VK_SUBPASS_CONTENTS_INLINE);
             VkViewport bloomViewport{0.0f, 0.0f, (float)swapChainExtent.width / 4.0f, (float)swapChainExtent.height / 4.0f, 0.0f, 1.0f};
             vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &bloomViewport);
@@ -2574,7 +2577,6 @@ namespace Crescendo {
         // ---------------------------------------------------------
         // POST-PROCESSING
         // ---------------------------------------------------------
-        transitionImageLayout(bloomBrightImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     
         VkRenderPassBeginInfo compositePassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         compositePassInfo.renderPass = compositeRenderPass;  
@@ -2642,47 +2644,6 @@ namespace Crescendo {
             recreateSwapChain(window);
         }
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
-    }
-
-    void RenderingServer::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VmaAllocationCreateFlags flags, VkBuffer& buffer, VmaAllocation& allocation) {
-        VkBufferCreateInfo bufferInfo{};
-        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = size;
-        bufferInfo.usage = usage;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        VmaAllocationCreateInfo allocInfo = {};
-        allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-        allocInfo.flags = flags;
-
-        if (vmaCreateBuffer(allocator, &bufferInfo, &allocInfo, &buffer, &allocation, nullptr) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create buffer!");
-        }
-    }
-
-    void RenderingServer::createImage(uint32_t width, uint32_t height, VkFormat format, VkImageTiling tiling, VkImageUsageFlags usage, VmaAllocationCreateFlags flags, VkImage& image, VmaAllocation& allocation) {
-        VkImageCreateInfo imageInfo{};
-        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        imageInfo.imageType = VK_IMAGE_TYPE_2D;
-        imageInfo.extent.width = width;
-        imageInfo.extent.height = height;
-        imageInfo.extent.depth = 1;
-        imageInfo.mipLevels = 1;
-        imageInfo.arrayLayers = 1;
-        imageInfo.format = format;
-        imageInfo.tiling = tiling;
-        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        imageInfo.usage = usage;
-        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;  
-
-        VmaAllocationCreateInfo allocInfo = {};
-        allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-        allocInfo.flags = flags;    
-
-        if (vmaCreateImage(allocator, &imageInfo, &allocInfo, &image, &allocation, nullptr) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create image!");
-        }
     }
 
     VkCommandBuffer RenderingServer::beginSingleTimeCommands() {
@@ -2985,14 +2946,130 @@ namespace Crescendo {
         uint32_t height = swapChainExtent.height;
         refractionMipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1;
 
-        // ---------------------------------------------------------
-        // 1. SCENE IMAGE (HDR) - VMA
-        // ---------------------------------------------------------
-        createImage(width, height, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_TILING_OPTIMAL, 
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 
-            0, viewportImage, viewportImageAllocation); 
+        // =========================================================
+        // 1. CREATE MISSING RENDER PASSES
+        // =========================================================
+        
+        // Cleanup if they already exist (safe for resize)
+        if (viewportRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, viewportRenderPass, nullptr);
+        if (compositeRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, compositeRenderPass, nullptr);
 
-        // 2. REFRACTION IMAGE - VMA (Manual logic for mip levels)
+        // --- Viewport Render Pass (HDR Scene + Depth) ---
+        {
+            VkAttachmentDescription colorAttachment{};
+            colorAttachment.format = VK_FORMAT_R16G16B16A16_SFLOAT; // HDR Format
+            colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+            colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // Ready for sampling
+
+            VkAttachmentDescription depthAttachment{};
+            depthAttachment.format = VK_FORMAT_D32_SFLOAT;
+            depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+            depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+            VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+            VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+            VkSubpassDescription subpass{};
+            subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+            subpass.colorAttachmentCount = 1;
+            subpass.pColorAttachments = &colorRef;
+            subpass.pDepthStencilAttachment = &depthRef;
+
+            // Dependencies for sync
+            // [FIX] Zero-initialize the array to prevent garbage flags!
+            std::array<VkSubpassDependency, 2> dependencies = {};
+
+            dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+            dependencies[0].dstSubpass = 0;
+            dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            dependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+            dependencies[1].srcSubpass = 0;
+            dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+            dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+            std::array<VkAttachmentDescription, 2> attachments = {colorAttachment, depthAttachment};
+            VkRenderPassCreateInfo rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+            rpInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+            rpInfo.pAttachments = attachments.data();
+            rpInfo.subpassCount = 1;
+            rpInfo.pSubpasses = &subpass;
+            rpInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
+            rpInfo.pDependencies = dependencies.data();
+
+            if (vkCreateRenderPass(device, &rpInfo, nullptr, &viewportRenderPass) != VK_SUCCESS) {
+                std::cerr << "Failed to create Viewport RenderPass!" << std::endl;
+                return false;
+            }
+        }
+
+        // --- Composite Render Pass (Final Output LDR) ---
+        {
+            VkAttachmentDescription colorAttachment{};
+            colorAttachment.format = VK_FORMAT_R8G8B8A8_SRGB; // Final LDR Format
+            colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+            colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+            VkSubpassDescription subpass{};
+            subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+            subpass.colorAttachmentCount = 1;
+            subpass.pColorAttachments = &colorRef;
+
+            VkSubpassDependency dependency{};
+            dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+            dependency.dstSubpass = 0;
+            dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            dependency.srcAccessMask = 0;
+            dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+            VkRenderPassCreateInfo rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+            rpInfo.attachmentCount = 1;
+            rpInfo.pAttachments = &colorAttachment;
+            rpInfo.subpassCount = 1;
+            rpInfo.pSubpasses = &subpass;
+            rpInfo.dependencyCount = 1;
+            rpInfo.pDependencies = &dependency;
+
+            if (vkCreateRenderPass(device, &rpInfo, nullptr, &compositeRenderPass) != VK_SUCCESS) {
+                std::cerr << "Failed to create Composite RenderPass!" << std::endl;
+                return false;
+            }
+        }
+
+        // =========================================================
+        // 2. CREATE IMAGES (Existing Code)
+        // =========================================================
+
+        // 1. SCENE IMAGE (HDR)
+        viewportImage = VulkanImage(allocator, device, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, 
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 
+            VK_IMAGE_ASPECT_COLOR_BIT);
+
+        // 2. REFRACTION (Custom Mips)
         {
             VkImageCreateInfo refInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
             refInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -3010,16 +3087,14 @@ namespace Crescendo {
 
             VmaAllocationCreateInfo allocInfo = {};
             allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-            
-            if (vmaCreateImage(allocator, &refInfo, &allocInfo, &refractionImage, &refractionImageAllocation, nullptr) != VK_SUCCESS) return false;
+
+            refractionImage.allocator = allocator;
+            refractionImage.device = device;
+            if (vmaCreateImage(allocator, &refInfo, &allocInfo, &refractionImage.handle, &refractionImage.allocation, nullptr) != VK_SUCCESS) return false;
         }
 
-        // Create Views
-        viewportImageView = createImageView(viewportImage, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_ASPECT_COLOR_BIT);
-        
-        // Refraction View
         VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-        viewInfo.image = refractionImage;
+        viewInfo.image = refractionImage.handle;
         viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
         viewInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
         viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -3029,7 +3104,6 @@ namespace Crescendo {
         viewInfo.subresourceRange.layerCount = 1;
         if (vkCreateImageView(device, &viewInfo, nullptr, &refractionImageView) != VK_SUCCESS) return false;
 
-        // Refraction Sampler
         VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         samplerInfo.magFilter = VK_FILTER_LINEAR;
         samplerInfo.minFilter = VK_FILTER_LINEAR;
@@ -3040,78 +3114,23 @@ namespace Crescendo {
         samplerInfo.maxLod = (float)refractionMipLevels;
         vkCreateSampler(device, &samplerInfo, nullptr, &refractionSampler);
 
-        // ---------------------------------------------------------
-        // 3. FINAL IMAGE (LDR) - VMA
-        // ---------------------------------------------------------
-        createImage(width, height, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, 
+        // 3. FINAL IMAGE (LDR)
+        finalImage = VulkanImage(allocator, device, width, height, VK_FORMAT_R8G8B8A8_SRGB, 
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
-            0, finalImage, finalImageAllocation); 
+            VK_IMAGE_ASPECT_COLOR_BIT);
         
-        // Transition to General/ShaderRead so ImGui doesn't crash on first frame
-        transitionImageLayout(finalImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        
-        finalImageView = createImageView(finalImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
+        transitionImageLayout(finalImage.handle, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        // 4. DEPTH IMAGE - VMA
-        createImage(width, height, VK_FORMAT_D32_SFLOAT, VK_IMAGE_TILING_OPTIMAL,
+        // 4. DEPTH IMAGE
+        viewportDepthImage = VulkanImage(allocator, device, width, height, VK_FORMAT_D32_SFLOAT,
             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-            0, viewportDepthImage, viewportDepthImageAllocation); 
-        viewportDepthImageView = createImageView(viewportDepthImage, VK_FORMAT_D32_SFLOAT, VK_IMAGE_ASPECT_DEPTH_BIT);
+            VK_IMAGE_ASPECT_DEPTH_BIT);
 
-        // ---------------------------------------------------------
-        // 5. VIEWPORT RENDER PASS (Scene -> HDR)
-        // ---------------------------------------------------------
-        VkAttachmentDescription attachments[2] = {};
-        // Color
-        attachments[0].format = VK_FORMAT_R16G16B16A16_SFLOAT;
-        attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
-        attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        
-        // Depth
-        attachments[1].format = VK_FORMAT_D32_SFLOAT;
-        attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-        attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-        VkAttachmentReference colorRef = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
-        VkAttachmentReference depthRef = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
-
-        VkSubpassDescription subpass{};
-        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount = 1;
-        subpass.pColorAttachments = &colorRef;
-        subpass.pDepthStencilAttachment = &depthRef;
-
-        VkSubpassDependency dependency{};
-        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-        dependency.dstSubpass = 0;
-        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-
-        VkRenderPassCreateInfo renderPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-        renderPassInfo.attachmentCount = 2;
-        renderPassInfo.pAttachments = attachments;
-        renderPassInfo.subpassCount = 1;
-        renderPassInfo.pSubpasses = &subpass;
-        renderPassInfo.dependencyCount = 1;
-        renderPassInfo.pDependencies = &dependency;
-
-        if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &viewportRenderPass) != VK_SUCCESS) return false;
-
-        // Viewport Framebuffer
-        std::array<VkImageView, 2> fbAttachments = { viewportImageView, viewportDepthImageView };
+        // 5. FRAMEBUFFERS
+        // NOTE: viewportRenderPass is now valid!
+        std::array<VkImageView, 2> fbAttachments = { viewportImage.view, viewportDepthImage.view };
         VkFramebufferCreateInfo fbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-        fbInfo.renderPass = viewportRenderPass;
+        fbInfo.renderPass = viewportRenderPass; 
         fbInfo.attachmentCount = 2;
         fbInfo.pAttachments = fbAttachments.data();
         fbInfo.width = width;
@@ -3120,47 +3139,17 @@ namespace Crescendo {
 
         if (vkCreateFramebuffer(device, &fbInfo, nullptr, &viewportFramebuffer) != VK_SUCCESS) return false;
 
-        // ---------------------------------------------------------
-        // 6. COMPOSITE RENDER PASS (Bloom+Tonemap -> Final LDR)
-        // ---------------------------------------------------------
-        
-        VkAttachmentDescription compositeAttachment{};
-        compositeAttachment.format = VK_FORMAT_R8G8B8A8_SRGB;
-        compositeAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-        compositeAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        compositeAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        compositeAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        compositeAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        compositeAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        compositeAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkAttachmentReference compositeRef = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
-
-        VkSubpassDescription compositeSubpass{};
-        compositeSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        compositeSubpass.colorAttachmentCount = 1;
-        compositeSubpass.pColorAttachments = &compositeRef;
-        
-        VkRenderPassCreateInfo compositePassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-        compositePassInfo.attachmentCount = 1;
-        compositePassInfo.pAttachments = &compositeAttachment;
-        compositePassInfo.subpassCount = 1;
-        compositePassInfo.pSubpasses = &compositeSubpass;
-
-        if (vkCreateRenderPass(device, &compositePassInfo, nullptr, &compositeRenderPass) != VK_SUCCESS) return false;
-
-        // Composite Framebuffer
+        // NOTE: compositeRenderPass is now valid!
         VkFramebufferCreateInfo compositeFbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
         compositeFbInfo.renderPass = compositeRenderPass;
         compositeFbInfo.attachmentCount = 1;
-        compositeFbInfo.pAttachments = &finalImageView;
+        compositeFbInfo.pAttachments = &finalImage.view;
         compositeFbInfo.width = width;
         compositeFbInfo.height = height;
         compositeFbInfo.layers = 1;
 
         if (vkCreateFramebuffer(device, &compositeFbInfo, nullptr, &finalFramebuffer) != VK_SUCCESS) return false;
 
-        // Viewport Sampler (Used for sampling the HDR image in composite pass)
         VkSamplerCreateInfo vSamplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         vSamplerInfo.magFilter = VK_FILTER_LINEAR; 
         vSamplerInfo.minFilter = VK_FILTER_LINEAR;
@@ -3177,17 +3166,17 @@ namespace Crescendo {
 
     void RenderingServer::updateCompositeDescriptors() {
        // Only update if resources exist
-       if (viewportImageView == VK_NULL_HANDLE || bloomBrightImageView == VK_NULL_HANDLE) return;
+       if (viewportImage.view == VK_NULL_HANDLE || bloomBrightImage.view == VK_NULL_HANDLE) return;
 
        VkDescriptorImageInfo compositeInfos[2] = {};
        // Binding 0: The 3D Scene
        compositeInfos[0].sampler = viewportSampler;
-       compositeInfos[0].imageView = viewportImageView;
+       compositeInfos[0].imageView = viewportImage.view;
        compositeInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
        // Binding 1: The Bloom Brightness Buffer
        compositeInfos[1].sampler = viewportSampler;
-       compositeInfos[1].imageView = bloomBrightImageView;
+       compositeInfos[1].imageView = bloomBrightImage.view;
        compositeInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
        VkWriteDescriptorSet postWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -3245,20 +3234,20 @@ namespace Crescendo {
         // [FIX] Ensure Layout has Push Constants (even if unused by Bloom)
         // This makes it compatible with the Composite Pass which DOES use them.
         if (compositePipelineLayout == VK_NULL_HANDLE) {
-             VkPushConstantRange pushConstantRange{};
-             pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-             pushConstantRange.offset = 0;
-             pushConstantRange.size = sizeof(PostProcessPushConstants);
+            VkPushConstantRange pushConstantRange{};
+            pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            pushConstantRange.offset = 0;
+            pushConstantRange.size = sizeof(PostProcessPushConstants);
 
-             VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-             layoutInfo.setLayoutCount = 1;
-             layoutInfo.pSetLayouts = &postProcessLayout;
-             layoutInfo.pushConstantRangeCount = 1; 
-             layoutInfo.pPushConstantRanges = &pushConstantRange;
+            VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+            layoutInfo.setLayoutCount = 1;
+            layoutInfo.pSetLayouts = &postProcessLayout;
+            layoutInfo.pushConstantRangeCount = 1; 
+            layoutInfo.pPushConstantRanges = &pushConstantRange;
 
-             if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &compositePipelineLayout) != VK_SUCCESS) {
-                 return false;
-             }
+            if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &compositePipelineLayout) != VK_SUCCESS) {
+                return false;
+            }
         }
 
         VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -3287,20 +3276,16 @@ namespace Crescendo {
     bool RenderingServer::createBloomResources() {
        uint32_t width = swapChainExtent.width / 4;
        uint32_t height = swapChainExtent.height / 4;
-
-       // 1. Create the Bright Image (Target for bloom extraction)
-       createImage(width, height, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_OPTIMAL,
+        
+       // 1. Create the Bright Image
+       // [FIX] Use RAII Constructor
+       bloomBrightImage = VulkanImage(allocator, device, width, height, VK_FORMAT_R8G8B8A8_SRGB,
            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-           0, bloomBrightImage, bloomBrightImageAllocation); // FIXED
-       
-       // ------------------------------------------------------------------
-       // Transition the bloom image to READ_ONLY so the Composite Pass doesn't crash
-       // when it tries to sample it (even if it's empty/black for now).
-       transitionImageLayout(bloomBrightImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-       // ------------------------------------------------------------------
-
-       bloomBrightImageView = createImageView(bloomBrightImage, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
-
+           VK_IMAGE_ASPECT_COLOR_BIT);
+        
+       // Transition to READ_ONLY
+       transitionImageLayout(bloomBrightImage.handle, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        
        // 2. Create Bloom Render Pass
        VkAttachmentDescription colorAttachment{};
        colorAttachment.format = VK_FORMAT_R8G8B8A8_SRGB;
@@ -3309,27 +3294,28 @@ namespace Crescendo {
        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
+        
        VkAttachmentReference colorAttachmentRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
        VkSubpassDescription subpass{0, VK_PIPELINE_BIND_POINT_GRAPHICS, 0, nullptr, 1, &colorAttachmentRef};
-
+        
        VkRenderPassCreateInfo renderPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
        renderPassInfo.attachmentCount = 1;
        renderPassInfo.pAttachments = &colorAttachment;
        renderPassInfo.subpassCount = 1;
        renderPassInfo.pSubpasses = &subpass;
-
+        
        if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &bloomRenderPass) != VK_SUCCESS) return false;
-
+        
        // 3. Create Framebuffer
        VkFramebufferCreateInfo fbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
        fbInfo.renderPass = bloomRenderPass;
        fbInfo.attachmentCount = 1;
-       fbInfo.pAttachments = &bloomBrightImageView;
+       // [FIX] Use the RAII view
+       fbInfo.pAttachments = &bloomBrightImage.view;
        fbInfo.width = width;
        fbInfo.height = height;
        fbInfo.layers = 1;
-
+        
        return vkCreateFramebuffer(device, &fbInfo, nullptr, &bloomFramebuffer) == VK_SUCCESS;
     }
 
@@ -3364,10 +3350,10 @@ namespace Crescendo {
         // 5. Update ImGui Descriptor
         // Since we destroyed the 'finalImageView', the old descriptor set is invalid.
         // We  must create a new one pointing to the NEW finalImageView.
-        if (finalImageView != VK_NULL_HANDLE) {
+        if (finalImage.view != VK_NULL_HANDLE) {
             viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(
                 viewportSampler, 
-                finalImageView, 
+                finalImage.view, 
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
             );
         }
@@ -3378,175 +3364,127 @@ namespace Crescendo {
         if (viewportFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, viewportFramebuffer, nullptr);
         if (bloomFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, bloomFramebuffer, nullptr);
         if (finalFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, finalFramebuffer, nullptr);
+        for (auto framebuffer : swapChainFramebuffers) vkDestroyFramebuffer(device, framebuffer, nullptr);
 
-        for (auto framebuffer : swapChainFramebuffers) {
-            vkDestroyFramebuffer(device, framebuffer, nullptr);
-        }
+        // 2. Destroy Images
+        depthImage.destroy();
+        refractionImage.destroy();
+        viewportImage.destroy();
+        viewportDepthImage.destroy();
+        bloomBrightImage.destroy();
+        finalImage.destroy();
 
-        if (compositeDescriptorSet != VK_NULL_HANDLE) {
-             // Descriptor sets are freed automatically when the pool is destroyed, 
-             // but if you are just resizing, you might want to keep the pool.
-             // For now, assume pool handling is done elsewhere or sets are reset.
-        }
+        // 3. Destroy Manual Views & SAMPLERS [FIX]
+        if (refractionImageView != VK_NULL_HANDLE) { vkDestroyImageView(device, refractionImageView, nullptr); refractionImageView = VK_NULL_HANDLE; }
+        if (refractionSampler != VK_NULL_HANDLE) { vkDestroySampler(device, refractionSampler, nullptr); refractionSampler = VK_NULL_HANDLE; }
+        if (viewportSampler != VK_NULL_HANDLE) { vkDestroySampler(device, viewportSampler, nullptr); viewportSampler = VK_NULL_HANDLE; }
 
-        // 2. Destroy Images using VMA (NOT vkDestroyImage/vkFreeMemory)
-        
-        // Depth
-        if (depthImage != VK_NULL_HANDLE) {
-            vmaDestroyImage(allocator, depthImage, depthImageAllocation);
-            depthImage = VK_NULL_HANDLE;
-        }
-
-        // Refraction
-        if (refractionImage != VK_NULL_HANDLE) {
-            vmaDestroyImage(allocator, refractionImage, refractionImageAllocation);
-            refractionImage = VK_NULL_HANDLE;
-        }
-        if (refractionImageView != VK_NULL_HANDLE) vkDestroyImageView(device, refractionImageView, nullptr);
-
-        // Viewport
-        if (viewportImage != VK_NULL_HANDLE) {
-            vmaDestroyImage(allocator, viewportImage, viewportImageAllocation);
-            viewportImage = VK_NULL_HANDLE;
-        }
-        if (viewportImageView != VK_NULL_HANDLE) vkDestroyImageView(device, viewportImageView, nullptr);
-
-        // Viewport Depth
-        if (viewportDepthImage != VK_NULL_HANDLE) {
-            vmaDestroyImage(allocator, viewportDepthImage, viewportDepthImageAllocation);
-            viewportDepthImage = VK_NULL_HANDLE;
-        }
-        if (viewportDepthImageView != VK_NULL_HANDLE) vkDestroyImageView(device, viewportDepthImageView, nullptr);
-
-        // Bloom
-        if (bloomBrightImage != VK_NULL_HANDLE) {
-            vmaDestroyImage(allocator, bloomBrightImage, bloomBrightImageAllocation);
-            bloomBrightImage = VK_NULL_HANDLE;
-        }
-        if (bloomBrightImageView != VK_NULL_HANDLE) vkDestroyImageView(device, bloomBrightImageView, nullptr);
-
-        // Final Composite
-        if (finalImage != VK_NULL_HANDLE) {
-            vmaDestroyImage(allocator, finalImage, finalImageAllocation);
-            finalImage = VK_NULL_HANDLE;
-        }
-        if (finalImageView != VK_NULL_HANDLE) vkDestroyImageView(device, finalImageView, nullptr);
-
-        // 3. Destroy Swapchain Views & Handle
-        for (auto imageView : swapChainImageViews) {
-            vkDestroyImageView(device, imageView, nullptr);
-        }
+        // 4. Swapchain
+        for (auto imageView : swapChainImageViews) vkDestroyImageView(device, imageView, nullptr);
         if (swapChain != VK_NULL_HANDLE) {
             vkDestroySwapchainKHR(device, swapChain, nullptr);
             swapChain = VK_NULL_HANDLE;
         }
+        
+        // 5. Destroy Offscreen Render Passes
+        if (viewportRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, viewportRenderPass, nullptr); viewportRenderPass = VK_NULL_HANDLE; }
+        if (compositeRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, compositeRenderPass, nullptr); compositeRenderPass = VK_NULL_HANDLE; }
+        // [FIX] Destroy Bloom Render Pass
+        if (bloomRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, bloomRenderPass, nullptr); bloomRenderPass = VK_NULL_HANDLE; }
     }
 
     void RenderingServer::shutdown() {
-    if (device != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(device);
-        editorUI.Shutdown(device);
-    
-        // 1. Destroy Pipelines & Layouts (Standard Vulkan objects)
-        if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, skyPipeline, nullptr);
-        if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, graphicsPipeline, nullptr);
-        if (transparentPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, transparentPipeline, nullptr);
-        if (waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, waterPipeline, nullptr);
-        if (bloomPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bloomPipeline, nullptr);
-        if (compositePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, compositePipeline, nullptr);
-        if (shadowPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, shadowPipeline, nullptr);
+        if (device != VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(device);
+            editorUI.Shutdown(device);
+        
+            // 1. Destroy Pipelines & Layouts
+            if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, skyPipeline, nullptr);
+            if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, graphicsPipeline, nullptr);
+            if (transparentPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, transparentPipeline, nullptr);
+            if (waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, waterPipeline, nullptr);
+            if (bloomPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bloomPipeline, nullptr);
+            if (compositePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, compositePipeline, nullptr);
+            if (shadowPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, shadowPipeline, nullptr);
 
-        if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
-        if (shadowPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
-        if (postProcessLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, postProcessLayout, nullptr);
-        
-        // 2. Destroy RenderPasses
-        if (shadowRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, shadowRenderPass, nullptr);
-        if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
-
-        // 3. Cleanup Shadow Resources (Manual Views, RAII Image)
-        for (auto fb : shadowFramebuffers) vkDestroyFramebuffer(device, fb, nullptr);
-        shadowFramebuffers.clear();
-
-        for (auto view : shadowCascadeViews) vkDestroyImageView(device, view, nullptr);
-        shadowCascadeViews.clear();
-        
-        if (shadowImageView != VK_NULL_HANDLE) vkDestroyImageView(device, shadowImageView, nullptr);
-        if (shadowSampler != VK_NULL_HANDLE) vkDestroySampler(device, shadowSampler, nullptr);
-        
-        // [RAII CLEANUP] Shadows
-        // Manually destroy if you haven't fully switched this member to the wrapper yet,
-        // otherwise shadowImage.destroy() or letting it go out of scope works.
-        if (shadowImage != VK_NULL_HANDLE) {
-             vmaDestroyImage(allocator, shadowImage, shadowImageAllocation);
-             shadowImage = VK_NULL_HANDLE;
-        }
-        
-        // 4. Cleanup Meshes (RAII)
-        // Clearing the vector automatically calls destructors on all VulkanBuffer objects inside!
-        meshes.clear(); 
-        gameWorld.Clear();
-        
-        // 5. Cleanup Textures (RAII)
-        for (const auto& tex : textureBank) {
-            // Views are not yet RAII wrapped in your struct, so destroy them manually
-            if (tex.view != VK_NULL_HANDLE) vkDestroyImageView(device, tex.view, nullptr);
-            // The image inside 'tex' (if wrapped) cleans itself up. 
-            // If strictly using the RAII wrapper 'VulkanImage', you don't need vmaDestroyImage here.
-            // If 'TextureResource' still has raw handles, you need the manual cleanup.
-            // Assuming strict RAII for 'tex.image':
-        }
-        textureBank.clear();
-        textureMap.clear();
-        
-        // 6. Cleanup Default & Sky Textures
-        if (textureImageView != VK_NULL_HANDLE) vkDestroyImageView(device, textureImageView, nullptr);
-        if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(device, textureSampler, nullptr);
-        // textureImage.destroy(); // RAII wrapper handles this
-
-        if (skySampler != VK_NULL_HANDLE) vkDestroySampler(device, skySampler, nullptr);
-        if (skyImageView != VK_NULL_HANDLE) vkDestroyImageView(device, skyImageView, nullptr);
-        // skyImage.destroy(); // RAII wrapper handles this
-        
-        // 7. Cleanup Descriptors
-        if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-        
-        // 8. Cleanup SSBO & UBO (RAII)
-        // Wrappers handle unmapping and destruction automatically.
-        // entityStorageBuffer.destroy();
-        // globalUniformBuffer.destroy(); 
+            if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+            if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
+            if (shadowPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
+            if (postProcessLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, postProcessLayout, nullptr);
             
-        // 9. Cleanup Swapchain
-        cleanupSwapChain();
-    
-        // 10. Cleanup Sync Objects
-        for (size_t i = 0; i < imageAvailableSemaphores.size(); i++) { 
-            vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
-            vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
+            // 2. Destroy RenderPasses
+            if (shadowRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, shadowRenderPass, nullptr);
+            if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
+
+            // 3. Cleanup Shadow Resources
+            for (auto fb : shadowFramebuffers) vkDestroyFramebuffer(device, fb, nullptr);
+            shadowFramebuffers.clear();
+            for (auto view : shadowCascadeViews) vkDestroyImageView(device, view, nullptr);
+            shadowCascadeViews.clear();
+            if (shadowImageView != VK_NULL_HANDLE) vkDestroyImageView(device, shadowImageView, nullptr);
+            if (shadowSampler != VK_NULL_HANDLE) vkDestroySampler(device, shadowSampler, nullptr);
+            shadowImage.destroy();
+            
+            // 4. Cleanup RAII Images
+            skyImage.destroy();
+            textureImage.destroy();
+            
+            // 5. Cleanup Meshes & Textures
+            meshes.clear(); 
+            gameWorld.Clear();
+            textureBank.clear();
+            textureMap.clear();
+            
+            // 6. Cleanup Samplers
+            if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(device, textureSampler, nullptr);
+            if (skySampler != VK_NULL_HANDLE) vkDestroySampler(device, skySampler, nullptr);
+            
+            // 7. Cleanup Descriptors & Pools [FIX]
+            if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+            if (descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool, nullptr); // <-- THIS WAS MISSING
+            
+            // 8. Cleanup SSBO & UBO
+            if (entityStorageBufferMapped) {
+                vmaUnmapMemory(allocator, entityStorageBuffer.allocation);
+                entityStorageBufferMapped = nullptr;
+            }
+            if (globalUniformBufferMapped) {
+                vmaUnmapMemory(allocator, globalUniformBuffer.allocation);
+                globalUniformBufferMapped = nullptr;
+            }
+            entityStorageBuffer.destroy();
+            globalUniformBuffer.destroy(); 
+                
+            // 9. Cleanup Swapchain
+            cleanupSwapChain();
+        
+            // 10. Cleanup Sync Objects
+            for (size_t i = 0; i < imageAvailableSemaphores.size(); i++) { 
+                vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
+                vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
+            }
+            for (size_t i = 0; i < inFlightFences.size(); i++) {
+                vkDestroyFence(device, inFlightFences[i], nullptr);
+            }
+            
+            if (commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, commandPool, nullptr);
+
+            // 11. Destroy Allocator
+            if (allocator != nullptr) {
+                vmaDestroyAllocator(allocator);
+                allocator = nullptr;
+            }
+        
+            vkDestroyDevice(device, nullptr);
+            device = VK_NULL_HANDLE;
         }
-        for (size_t i = 0; i < inFlightFences.size(); i++) {
-            vkDestroyFence(device, inFlightFences[i], nullptr);
+
+        if (surface != VK_NULL_HANDLE) vkDestroySurfaceKHR(instance, surface, nullptr);
+        if (debugMessenger != VK_NULL_HANDLE) {
+            auto func = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+            if (func != nullptr) func(instance, debugMessenger, nullptr);
         }
         
-        if (commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, commandPool, nullptr);
-
-        // 11. Destroy Allocator (MUST BE LAST)
-        if (allocator != nullptr) {
-            vmaDestroyAllocator(allocator);
-            allocator = nullptr;
-        }
-    
-        vkDestroyDevice(device, nullptr);
-        device = VK_NULL_HANDLE;
+        if (instance != VK_NULL_HANDLE) vkDestroyInstance(instance, nullptr);    
     }
-
-    if (surface != VK_NULL_HANDLE) vkDestroySurfaceKHR(instance, surface, nullptr);
-    if (debugMessenger != VK_NULL_HANDLE) {
-        auto func = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
-        if (func != nullptr) func(instance, debugMessenger, nullptr);
-    }
-    
-    if (instance != VK_NULL_HANDLE) vkDestroyInstance(instance, nullptr);
-}
 }

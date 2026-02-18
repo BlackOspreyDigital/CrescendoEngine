@@ -114,7 +114,7 @@ namespace Crescendo {
                 throw std::runtime_error("Failed to create RAII Image!");
             }
 
-            // B. Create View (Optional, but super convenient)
+            // B. Create View
             VkImageViewCreateInfo viewInfo{};
             viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
             viewInfo.image = handle;
@@ -127,7 +127,9 @@ namespace Crescendo {
             viewInfo.subresourceRange.layerCount = 1;
 
             if (vkCreateImageView(device, &viewInfo, nullptr, &view) != VK_SUCCESS) {
-                throw std::runtime_error("Failed to create RAII Image View!");
+            // CATCH THE LEAK: Manually destroy the image before throwing
+            vmaDestroyImage(allocator, handle, allocation); 
+            throw std::runtime_error("Failed to create RAII Image View!");
             }
         }
 

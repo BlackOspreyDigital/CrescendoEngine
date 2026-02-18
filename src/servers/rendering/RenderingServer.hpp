@@ -1,31 +1,25 @@
 #pragma once
 
-#include "Jolt/Core/Core.h"
 #include <cstdint>
-#include <vulkan/vulkan_core.h>
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE 
 
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE 
 #include "servers/rendering/Vertex.hpp"
 #include "Material.hpp"
 #include "tiny_obj_loader.h"
 #include <map>
 #include <vulkan/vulkan.h>
+#include <vulkan/vulkan_core.h>
+#include "VulkanResources.hpp"
 #include <vector>
 #include <optional>
-#include <array>
 #include <glm/glm.hpp>
 #include <SDL2/SDL.h>
-
 #include <imgui.h>
-#include "ImGuizmo.h" 
-
 #include "servers/camera/Camera.hpp"
 #include "scene/GameWorld.hpp"
 #include "scene/CarController.hpp"
 #include "servers/interface/EditorUI.hpp"
 
-// [RAII Headers]
-#include "VulkanResources.hpp"
 
 // [VMA Forward Declarations]
 struct VmaAllocator_T;
@@ -40,20 +34,29 @@ namespace Crescendo {
     class DisplayServer;
     class Scene;
     
-    // [RAII] Texture Resource
-    // Owns the Image, Memory, and ImageView automatically
-    struct TextureResource {
-        VulkanImage image; 
-    };
-
-    // [RAII] Mesh Resource
-    // Owns the Vertex and Index buffers automatically
     struct MeshResource {
         std::string name;
         VulkanBuffer vertexBuffer;
         VulkanBuffer indexBuffer;
-        uint32_t indexCount = 0;
-        int textureID = -1;
+        uint32_t indexCount;
+        uint32_t textureID; // 0 default
+
+        // Default Constructor
+        MeshResource() = default;
+        MeshResource(const MeshResource&) = delete;
+        MeshResource& operator=(const MeshResource&) = delete;
+        MeshResource(MeshResource&& other) noexcept = default;
+        MeshResource& operator=(MeshResource&& other) noexcept = default;
+    };
+
+    struct TextureResource {
+        VulkanImage image;
+        uint32_t id;
+        TextureResource() = default;
+        TextureResource(const TextureResource&) = delete;
+        TextureResource& operator=(const TextureResource&) = delete;
+        TextureResource(TextureResource&& other) noexcept = default;
+        TextureResource& operator=(TextureResource&& other) noexcept = default;
     };
 
     struct ResourceCache {
@@ -205,7 +208,7 @@ namespace Crescendo {
         static constexpr int MAX_TEXTURES = 100;
         VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
         VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-        VkDescriptorSet descriptorSet;
+        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
 
         // Pipelines
         VkRenderPass renderPass = VK_NULL_HANDLE;
@@ -306,9 +309,13 @@ namespace Crescendo {
         bool createTransparentPipeline();
         bool createWaterPipeline();
         void createWaterMesh();
-        bool createTextureSampler();
-        void createDefaultTexture();
-        bool createTextureImageView();
+        bool createTextureImage();
+        // You have the string version, but you need the void/bool version too:
+        
+        bool createTextureImage(const std::string& path, VulkanImage& outImage);
+
+        bool createTextureSampler();         
+        
         bool createViewportResources();
         bool createBloomResources();
         bool createBloomPipeline();
