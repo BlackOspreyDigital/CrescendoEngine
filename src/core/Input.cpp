@@ -13,10 +13,14 @@ namespace Crescendo {
     int Input::scrollY = 0;
 
     void Input::Update() {
-        // SDL_GetKeyboardState returns a pointer to an internal SDL array
         keyboardState = SDL_GetKeyboardState(NULL);
-        // SDL_GetMouseState updates X/Y returns bitmask for buttons
-        mouseState = SDL_GetMouseState(&mouseX, &mouseY);
+        
+        // [FIX] Get Relative Mouse State for Camera Look
+        // This function retrieves the motion since the last check
+        mouseState = SDL_GetRelativeMouseState(&mouseRelX, &mouseRelY);
+        
+        // If you need absolute position too:
+        // SDL_GetMouseState(&mouseX, &mouseY);
     }
 
     bool Input::IsKeyDown(SDL_Scancode key) {

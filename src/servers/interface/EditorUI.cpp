@@ -7,7 +7,7 @@
 #include "backends/imgui_impl_vulkan.h"
 #include "include/portable-file-dialogs.h" 
 #include <iostream>
-#include <cmath> 
+
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 
@@ -264,16 +264,16 @@ namespace Crescendo {
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("Import Model")) {
-                     auto selection = pfd::open_file("Select a file", ".",
+                    auto selection = pfd::open_file("Select a file", ".",
                         { "All Models", "*.obj *.gltf *.glb", "GLTF", "*.gltf *.glb", "OBJ", "*.obj" }).result();
-                     if (!selection.empty() && rendererRef) {
-                         std::string path = selection[0];
-                         if (path.find(".gltf") != std::string::npos || path.find(".glb") != std::string::npos) {
-                             rendererRef->loadGLTF(path, scene);
-                         } else {
-                             rendererRef->loadModel(path);
-                         }
-                     }
+                    
+                    if (!selection.empty() && rendererRef) {
+                        std::string path = selection[0];
+                        
+                        // [FIX] Always call loadModel and pass the 'scene' pointer.
+                        // Your RenderingServer::loadModel now handles the .gltf/.glb routing internally.
+                        rendererRef->loadModel(path, scene);
+                    }
                 }
                 if (ImGui::MenuItem("Exit", "Alt+F4")) {
                     SDL_Event quit_event; quit_event.type = SDL_QUIT; SDL_PushEvent(&quit_event);
@@ -410,8 +410,12 @@ namespace Crescendo {
         ImGui::Separator();
         ImGui::Text("Post Processing");
 
+        // [FIX] Rename 'bloomIntensity' to 'bloomStrength'
+        ImGui::DragFloat("Bloom Strength", &rendererRef->postProcessSettings.bloomStrength, 0.01f, 0.0f, 5.0f);
         
-        ImGui::DragFloat("Bloom Intensity", &rendererRef->postProcessSettings.bloomIntensity, 0.01f, 0.0f, 5.0f);
+        // [OPTIONAL] Add the Threshold slider (since it exists in the struct now)
+        ImGui::DragFloat("Bloom Threshold", &rendererRef->postProcessSettings.bloomThreshold, 0.01f, 0.0f, 10.0f);
+
         ImGui::DragFloat("Exposure", &rendererRef->postProcessSettings.exposure, 0.01f, 0.1f, 5.0f);
         ImGui::DragFloat("Gamma", &rendererRef->postProcessSettings.gamma, 0.01f, 0.1f, 3.0f);
 

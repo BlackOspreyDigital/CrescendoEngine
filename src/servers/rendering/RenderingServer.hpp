@@ -93,9 +93,8 @@ namespace Crescendo {
         glm::vec4 sunDirection;
         glm::vec4 sunColor;
         glm::vec4 params;
-        // --- Shadows ---
-        glm::mat4 cascadeViewProj[4]; 
-        glm::vec4 cascadeSplits;      
+        glm::mat4 lightSpaceMatrices[4]; // One matrix per cascade
+        glm::vec4 cascadeSplits;         // Split distances
     };
 
     struct PushConsts {
@@ -112,10 +111,10 @@ namespace Crescendo {
     };
     
     struct PostProcessPushConstants {
-        float bloomIntensity;
-        float exposure;
-        float gamma;
-        float padding; 
+       float exposure;
+       float gamma;
+       float bloomStrength;
+       float bloomThreshold;
     };
 
     class RenderingServer {   
@@ -138,7 +137,7 @@ namespace Crescendo {
         void endSingleTimeCommands(VkCommandBuffer commandBuffer);
         VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
 
-        void loadModel(const std::string& path);
+        void loadModel(const std::string& path, Scene* scene);
         void loadGLTF(const std::string& filePath, Scene* scene);
         void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene, glm::mat4 parentMatrix = glm::mat4(1.0f));
         void loadMaterialsFromOBJ(const std::string& baseDir, const std::vector<tinyobj::material_t>& materials);
@@ -146,11 +145,12 @@ namespace Crescendo {
         bool isPlayMode = false;
         CarController* activeCar = nullptr;
         
-        struct {
-            float bloomIntensity = 1.0f;
-            float exposure = 1.0f;
-            float gamma = 1.0f;
-        } postProcessSettings;
+        PostProcessPushConstants postProcessSettings{ 
+            1.0f,  // exposure
+            2.2f,  // gamma
+            1.09f, // bloomStrength
+            2.0f   // bloomThreshold
+        };
         
         Camera mainCamera;
         GameWorld gameWorld;

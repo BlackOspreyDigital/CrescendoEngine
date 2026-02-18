@@ -1,8 +1,8 @@
 #include "Engine.hpp"
 #include <iostream>
-#include <cstdarg> 
+
 #include <Jolt/Core/IssueReporting.h>
-#include <SDL2/SDL_image.h> // [FIX] Required for IMG_Init
+
 #include "core/Input.hpp"
 
 // 1. Jolt Callback
@@ -27,13 +27,7 @@ namespace Crescendo {
         // 1. Initialize Display (SDL_Init happens here)
         if (!displayServer.initialize(title, width, height)) return false;
 
-        // 2. [FIX] Initialize SDL_Image
-        // This must happen AFTER SDL_Init (DisplayServer) but BEFORE RenderingServer tries to load textures.
-        int imgFlags = IMG_INIT_PNG | IMG_INIT_JPG;
-        if (!(IMG_Init(imgFlags) & imgFlags)) {
-            std::cerr << "[Error] SDL_image could not initialize! IMG_Error: " << IMG_GetError() << std::endl;
-            return false;
-        }
+        
 
         // 3. Initialize Rendering
         if (!renderingServer.initialize(&displayServer)) return false;
@@ -78,43 +72,29 @@ namespace Crescendo {
 
            renderingServer.activeCar->SetDriverInput(forward, right, brake, handbrake);
 
-           // --- CHASE CAMERA LOGIC ---
-           // Get the Jolt Body Position
-           JPH::BodyID carBodyID = renderingServer.activeCar->vehicle->GetVehicleBody()->GetID();
-           JPH::Vec3 carPosJ = physicsServer.bodyInterface->GetPosition(carBodyID);
-           JPH::Vec3 carVelJ = physicsServer.bodyInterface->GetLinearVelocity(carBodyID);
+           } 
+           else {
+           // [FIX] ADD THIS: Free Flying Camera Mode
+           float dt = 1.0f / 60.0f; // Or calculate real delta time
            
-           glm::vec3 carPos = glm::vec3(carPosJ.GetX(), carPosJ.GetY(), carPosJ.GetZ());
-           glm::vec3 carVel = glm::vec3(carVelJ.GetX(), carVelJ.GetY(), carVelJ.GetZ());
-
-           // Calculate "Forward" based on velocity (prevents camera snapping when spinning)
-           // Fallback to car rotation if not moving
-           glm::vec3 camForward;
-           if (glm::length(carVel) > 2.0f) {
-               camForward = glm::normalize(carVel);
-           } else {
-               // If stopped, use the actual car mesh rotation
-               // (You might need to store the car's forward vector in CarController to make this cleaner)
-               camForward = glm::vec3(1, 0, 0); // Temporary default
-           }
-           // Flatten forward vector to keep camera horizontal
-           camForward.z = 0; 
-           camForward = glm::normalize(camForward);
-
-           // Desired Camera Position: 6 units behind, 3 units up
-           glm::vec3 targetPos = carPos - (camForward * 6.0f) + glm::vec3(0, 3.0f, 0);
-
-           // Smoothly interpolate current camera position to target
            auto& cam = renderingServer.mainCamera;
-           glm::vec3 currentPos = cam.GetPosition();
            
-           // 5.0f * dt creates a smooth "spring" effect
-           float dt = 1.0f / 60.0f; 
-           cam.SetPosition(glm::mix(currentPos, targetPos, 5.0f * dt));
+           // Keyboard Movement (WASD + Q/E for Up/Down)
+           float speed = 10.0f * dt;
+           if (Input::IsKeyDown(SDL_SCANCODE_LSHIFT)) speed *= 4.0f; // Sprint
 
-           // Always look at the car
-           // We look slightly above the car (carPos + 1.0f) so the car isn't dead center
-           cam.LookAt(carPos + glm::vec3(0, 1.0f, 0));
+           if (Input::IsKeyDown(SDL_SCANCODE_W)) cam.Position += cam.Front * speed;
+           if (Input::IsKeyDown(SDL_SCANCODE_S)) cam.Position -= cam.Front * speed;
+           if (Input::IsKeyDown(SDL_SCANCODE_A)) cam.Position -= cam.Right * speed;
+           if (Input::IsKeyDown(SDL_SCANCODE_D)) cam.Position += cam.Right * speed;
+           if (Input::IsKeyDown(SDL_SCANCODE_Q)) cam.Position += glm::vec3(0,0,1) * speed; // Up
+           if (Input::IsKeyDown(SDL_SCANCODE_E)) cam.Position -= glm::vec3(0,0,1) * speed; // Down
+           
+           // Mouse Look (Right Click to Rotate)
+           if (Input::IsMouseButtonDown(3)) { // 3 is usually Right Mouse Button in SDL
+               // Use Input::mouseRelX / mouseRelY which you are tracking in Input.cpp
+               cam.Rotate((float)Input::mouseRelX, (float)-Input::mouseRelY);
+           }
        }
 
        // 3. Physics Step
@@ -133,6 +113,6 @@ namespace Crescendo {
         renderingServer.shutdown();
         displayServer.shutdown();
         
-        IMG_Quit(); 
+        
     }
 }

@@ -10,16 +10,18 @@
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
 #define VMA_IMPLEMENTATION
 #include "deps/vk_mem_alloc.h"
+
 #include <array>
 #include <set>
 #include "scene/Scene.hpp"
 #include <cstring>
 #include <fstream>
+#include <algorithm>
 #include <iostream>
 #include <string>
 #include <vector>
+
 #include <SDL2/SDL_vulkan.h>
-#include <SDL2/SDL_image.h>
 #include <glm/common.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -32,6 +34,7 @@
 #include "servers/display/DisplayServer.hpp"
 #include "servers/rendering/RenderingServer.hpp"
 #include "Vertex.hpp"
+
 
 namespace Crescendo {
     
@@ -54,6 +57,11 @@ namespace Crescendo {
         this->display_ref = display;
         this->window = display->get_window(); 
 
+        postProcessSettings.exposure = 1.0f;
+        postProcessSettings.gamma = 1.0f;
+        postProcessSettings.bloomStrength = 0.04f;
+        postProcessSettings.bloomThreshold = 1.0f;
+
         std::cout << "[1/5] Initializing Core Vulkan..." << std::endl;
         if (!createInstance()) return false;
         if (!setupDebugMessenger()) return false;
@@ -61,29 +69,16 @@ namespace Crescendo {
         if (!pickPhysicalDevice()) return false;
         if (!createLogicalDevice()) return false;
 
-        // --- CHECK 1: VMA INIT (DYNAMIC) ---
         std::cout << "[Check 1] Creating VMA Allocator..." << std::endl;
-        
-        // 1. Configure Function Pointers
         VmaVulkanFunctions vulkanFunctions = {};
-        
-        // Root pointers
         vulkanFunctions.vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
         vulkanFunctions.vkGetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)vkGetInstanceProcAddr(instance, "vkGetDeviceProcAddr");
-        
-        // [CRITICAL FIX] We must NOT set these manually if we want VMA to fetch them!
-        // But since VMA is dynamic, we just give it the root pointers and tell it to use 1.0 logic to be safe
-        // Or better yet, we rely on the volk/loader if available.
-        // Since we are raw, we will try VK_API_VERSION_1_0 to disable the check for `vkGetBufferMemoryRequirements2`
         
         VmaAllocatorCreateInfo allocatorInfo = {};
         allocatorInfo.physicalDevice = physicalDevice;
         allocatorInfo.device = device;
         allocatorInfo.instance = instance;
         allocatorInfo.pVulkanFunctions = &vulkanFunctions;
-        
-        // [FIX] Downgrade to 1.0 to satisfy the missing function pointer assertion
-        // This forces VMA to use `vkGetBufferMemoryRequirements` (standard) instead of the `...2KHR` extension
         allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_0; 
         
         if (vmaCreateAllocator(&allocatorInfo, &allocator) != VK_SUCCESS) {
@@ -91,88 +86,72 @@ namespace Crescendo {
             return false;
         }
 
-        // --- CHECK 2: COMMANDS ---
-        std::cout << "[Check 2] Creating Command Infrastructure..." << std::endl;
+        std::cout << "[2/5] Setting up Command Infrastructure..." << std::endl;
         if (!createSwapChain()) return false;
         if (!createImageViews()) return false;
         if (!createRenderPass()) return false;
-        
-        // CRITICAL: Pool must be created BEFORE textures/resources
-        if (!createCommandPool()) {
-             std::cerr << "Failed to create Command Pool!" << std::endl;
-             return false;
-        }
-
-        // --- CHECK 3: RESOURCES ---
-        std::cout << "[Check 3] Creating Resources..." << std::endl;
+        if (!createCommandPool()) return false;
         if (!createDepthResources()) return false;
-        if (!createShadowResources()) return false;
-        if (!createTextureImage()) return false;
-        
-        
 
-        // --- CHECK 4: SAMPLERS ---
-        std::cout << "[Check 4] Creating Samplers..." << std::endl;
-        if (!createTextureSampler()) {
-            std::cerr << "!! Failed to create Texture Sampler" << std::endl;
-            return false;
-        }
+        // [STEP 1] Create Layout Dependencies (Samplers)
+        if (!createTextureSampler()) return false;
 
-        // [FIX] ADD THIS BLOCK HERE! ----------------------------------
-        // This creates the default texture AND resizes the bank to MAX_TEXTURES
-        if (!createTextureImage()) {
-            std::cerr << "Failed to create default texture resources!" << std::endl;
-            return false;
-        }
-
-        // Load Skybox Image
-        if (createHDRImage("assets/hdr/sky_cloudy.hdr", skyImage)) {
-            // RAII wrapper automatically creates skyImage.view
-        } else {
-            std::cout << "[Warning] Skybox HDR not found." << std::endl;
-        }
-
-        createWaterMesh();
-        this->waterTextureID = acquireTexture("assets/textures/water.png");
-
-        // --- CHECK 5: DESCRIPTORS ---
-        std::cout << "[Check 5] Creating Descriptors..." << std::endl;
+        // [STEP 2] Create Layouts & Pools (But NOT Sets yet)
         if (!createDescriptorSetLayout()) return false;
+        if (!createDescriptorPool()) return false;
 
+        // [STEP 3] Create ALL Resources needed by the Descriptors
+        // We moved these UP so they exist before createDescriptorSets() runs.
         createStorageBuffers(); 
         createGlobalUniformBuffer();
         
-        if (!createDescriptorPool()) return false;
-        if (!createDescriptorSets()) { 
-            std::cout << "!! Failed to create Global Descriptor Set" << std::endl; 
-            return false; 
+        // [FIX] Was missing! Required for Binding 4 (Shadows)
+        if (!createShadowResources()) return false; 
+
+        // Default Texture (Binding 0)
+        if (!createTextureImage()) return false; 
+
+        // Skybox (Binding 1)
+        if (createHDRImage("assets/hdr/sky_cloudy.hdr", skyImage)) {
+             // Skybox Loaded
         }
 
-        // --- CHECK 6: UI & PIPELINES ---
-        std::cout << "[Check 6] Initializing UI & Pipelines..." << std::endl;
-        QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
+        // [STEP 4] NOW Create the Descriptor Sets
+        // Since buffers and images exist, this will succeed.
+        if (!createDescriptorSets()) return false; 
 
+        // --- UI & Viewport ---
+        QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
         editorUI.Initialize(this, this->window, instance, physicalDevice, device, graphicsQueue, indices.graphicsFamily.value(), renderPass, static_cast<uint32_t>(swapChainImages.size()));
 
         if (!createViewportResources()) return false;
         if (!createBloomResources()) return false;
+
+        viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(viewportSampler, finalImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        // --- Pipelines ---
         if (!createGraphicsPipeline()) return false;
         if (!createWaterPipeline()) return false;        
         if (!createTransparentPipeline()) return false;
         if (!createBloomPipeline()) return false;
         if (!createCompositePipeline()) return false;
+        if (!createShadowPipeline()) return false; // [FIX] Added Shadow Pipeline creation
         if (!createFramebuffers()) return false;
 
-        // --- CHECK 7: SYNC ---
-        std::cout << "[Check 7] Final Sync..." << std::endl;
+        // --- Assets ---
+        std::cout << "[4/5] Loading Assets..." << std::endl;
+        
+        createWaterMesh();
+        this->waterTextureID = acquireTexture("assets/textures/water.png");
+
+        std::cout << "[5/5] Finalizing Synchronization..." << std::endl;
         if (!createSyncObjects()) return false;
         if (!createCommandBuffers()) return false;
 
         updateCompositeDescriptors();
 
-        // [ADD THIS] Set a default camera position to see the water
-        mainCamera.SetPosition(glm::vec3(0.0f, -10.0f, 5.0f)); // Back 10, Up 5
-        mainCamera.SetRotation(glm::vec3(25.0f, 0.0f, 0.0f));  // Look down 25 degrees
+        mainCamera.SetPosition(glm::vec3(0.0f, -10.0f, 5.0f)); 
+        mainCamera.SetRotation(glm::vec3(25.0f, 0.0f, 0.0f)); 
 
         std::cout << ">>> ENGINE READY! <<<" << std::endl;
         return true;
@@ -1049,55 +1028,55 @@ namespace Crescendo {
         return newIndex;
     }
 
+    // [FIX] Updated acquireTexture to match Old Logic (Use UNORM)
     int RenderingServer::acquireTexture(const std::string& path) {
-       if (cache.textures.find(path) != cache.textures.end()) {
-           return cache.textures[path];
-       }
+        if (cache.textures.find(path) != cache.textures.end()) {
+            return cache.textures[path];
+        }
 
-       int newID = static_cast<int>(textureMap.size()) + 1;
-       if (newID >= MAX_TEXTURES) return 0;
+        int newID = static_cast<int>(textureMap.size()) + 1;
+        if (newID >= MAX_TEXTURES) return 0;
 
-       int texWidth, texHeight, texChannels;
-       stbi_uc* pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-       if (!pixels) {
-           std::cerr << "Failed to load texture: " << path << std::endl;
-           return 0;
-       }
+        int texWidth, texHeight, texChannels;
+        stbi_uc* pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+        if (!pixels) {
+            std::cerr << "Failed to load texture: " << path << std::endl;
+            return 0;
+        }
 
-       // Create RAII Resource
-       TextureResource newTex;
-       newTex.image = UploadTexture(pixels, texWidth, texHeight, VK_FORMAT_R8G8B8A8_UNORM);
-       stbi_image_free(pixels);
+        TextureResource newTex;
+        // [FIX] Use VK_FORMAT_R8G8B8A8_SRGB
+        // This ensures the texture is linearized when sampled in the shader.
+        newTex.image = UploadTexture(pixels, texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB);
+        
+        stbi_image_free(pixels);
 
-       // Use std::move() because RAII objects cannot be copied
-       if (newID < textureBank.size()) {
-           textureBank[newID] = std::move(newTex); 
-       }
+        if (newID < textureBank.size()) {
+            textureBank[newID] = std::move(newTex);
+        }
 
-       cache.textures[path] = newID;
-       textureMap[path] = newID;
+        cache.textures[path] = newID;
+        textureMap[path] = newID;
 
-       // [CRITICAL FIX] Only update descriptor if the set exists!
-       // During initialization, this is VK_NULL_HANDLE, so we skip it.
-       // createDescriptorSets() will handle the binding later.
-       if (descriptorSet != VK_NULL_HANDLE) {
-           VkDescriptorImageInfo imageInfo{};
-           imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-           imageInfo.imageView = textureBank[newID].image.view;
-           imageInfo.sampler = VK_NULL_HANDLE;
+        // Immediate Descriptor Update
+        if (descriptorSet != VK_NULL_HANDLE) {
+            VkDescriptorImageInfo imageInfo{};
+            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            imageInfo.imageView = textureBank[newID].image.view;
+            imageInfo.sampler = textureSampler;
 
-           VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-           descriptorWrite.dstSet = descriptorSet;
-           descriptorWrite.dstBinding = 0;
-           descriptorWrite.dstArrayElement = newID;
-           descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-           descriptorWrite.descriptorCount = 1;
-           descriptorWrite.pImageInfo = &imageInfo;
+            VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            descriptorWrite.dstSet = descriptorSet;
+            descriptorWrite.dstBinding = 0;
+            descriptorWrite.dstArrayElement = newID;
+            descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrite.descriptorCount = 1;
+            descriptorWrite.pImageInfo = &imageInfo;
 
-           vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
-       }
+            vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+        }
 
-       return newID;
+        return newID;
     }
 
     //===============================================
@@ -1163,8 +1142,12 @@ namespace Crescendo {
         rasterizer.rasterizerDiscardEnable = VK_FALSE;
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-        rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        
+        // [FIX] Change from VK_CULL_MODE_BACK_BIT to VK_CULL_MODE_NONE
+        // This ensures the model draws even if the winding order is inverted.
+        rasterizer.cullMode = VK_CULL_MODE_NONE; 
+        
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -1841,31 +1824,21 @@ namespace Crescendo {
         return true;
     }
 
-    void RenderingServer::loadModel(const std::string& filePath) {
-        // Check if file exists
+    // ========================================================================
+    // MODEL LOADING STACK
+    // ========================================================================
+
+    void RenderingServer::loadModel(const std::string& filePath, Scene* scene) {
         std::ifstream f(filePath.c_str());
         if (!f.good()) {
             std::cerr << "[Error] File not found: " << filePath << std::endl;
             return;
         }
 
-        // Route based on extension
         if (filePath.find(".glb") != std::string::npos || filePath.find(".gltf") != std::string::npos) {
-            // Assumes 'scene' is your active scene member variable. 
-            // If you don't store it, you might need to pass it, but usually the server knows the active scene.
-            // Based on your previous code, you usually pass the active scene from the main loop, 
-            // but for a simple UI load, we often target the primary scene.
-            
-            // NOTE: If 'scene' isn't a class member, use the pointer to the main scene you created in Init.
-            // For now, let's assume you have a pointer or pass 'this->currentScene' if you have one.
-            // If you don't have a 'currentScene' member, you'll need to update the header to store it.
-            
-            // TEMPORARY FIX: Assuming you pass it or have a getter. 
-            // If this fails, we need to see how you store the Scene pointer.
-            // loadGLTF(filePath, this->activeScene); 
+            loadGLTF(filePath, scene); 
         } 
         else if (filePath.find(".obj") != std::string::npos) {
-            // loadOBJ(filePath, ...); 
             std::cout << "[Loader] OBJ loading not yet refactored." << std::endl;
         }
     }
@@ -1873,6 +1846,9 @@ namespace Crescendo {
     // --------------------------------------------------------------------
     // GLTF Loading & Handling (UPDATED)
     // --------------------------------------------------------------------
+
+    // [HELPER] Texture Upload Implementation (RAII)
+    
 
     // [HELPER] Standardize slashes
     std::string normalizePath(const std::string& path) {
@@ -1934,17 +1910,15 @@ namespace Crescendo {
                     return &model.buffers[view.buffer].data[acc.byteOffset + view.byteOffset];
                 };
 
-                auto posIt = primitive.attributes.find("POSITION");
-                if (posIt == primitive.attributes.end()) continue;
-                int posCount = model.accessors[posIt->second].count;
-
-                int posStride = 0, normStride = 0, tex0Stride = 0, tex1Stride = 0, tanStride = 0;
+                int posStride, normStride, tex0Stride, tex1Stride, tanStride;
                 const uint8_t* posBase = getAttrData("POSITION", posStride);
                 const uint8_t* normBase = getAttrData("NORMAL", normStride);
-                const uint8_t* tex0Base = getAttrData("TEXCOORD_0", tex0Stride); // Use tex0Stride
-                const uint8_t* tex1Base = getAttrData("TEXCOORD_1", tex1Stride); // Use tex1Stride
+                const uint8_t* tex0Base = getAttrData("TEXCOORD_0", tex0Stride); 
+                const uint8_t* tex1Base = getAttrData("TEXCOORD_1", tex1Stride);
                 const uint8_t* tanBase = getAttrData("TANGENT", tanStride);
 
+                if (!posBase) continue;
+                int posCount = model.accessors[primitive.attributes.at("POSITION")].count;
                 vertices.reserve(posCount);
 
                 for (int v = 0; v < posCount; v++) {
@@ -1957,42 +1931,25 @@ namespace Crescendo {
                         vert.normal = { n[0], n[1], n[2] };
                     } else vert.normal = { 0.0f, 0.0f, 1.0f };
 
-                    // UV 0
                     if (tex0Base) {
                         const auto& acc = model.accessors[primitive.attributes.at("TEXCOORD_0")];
-                        if (acc.componentType == 5126) { 
+                        if (acc.componentType == 5126) { // FLOAT
                             const float* t = reinterpret_cast<const float*>(tex0Base + (v * tex0Stride));
                             vert.texCoord = { t[0], t[1] };
-                        } else if (acc.componentType == 5123) {
+                        } else if (acc.componentType == 5123) { // UNSIGNED SHORT
                             const uint16_t* t = reinterpret_cast<const uint16_t*>(tex0Base + (v * tex0Stride));
                             vert.texCoord = { t[0] / 65535.0f, t[1] / 65535.0f };
                         }
                     }
-                    // UV 1
-                    if (tex1Base) {
-                        const auto& acc = model.accessors[primitive.attributes.at("TEXCOORD_1")];
-                        if (acc.componentType == 5126) { 
-                            const float* t = reinterpret_cast<const float*>(tex1Base + (v * tex1Stride));
-                            vert.texCoord = { t[0], t[1] };
-                        } else if (acc.componentType == 5123) { 
-                            const uint16_t* t = reinterpret_cast<const uint16_t*>(tex1Base + (v * tex1Stride));
-                            vert.texCoord = { t[0] / 65535.0f, t[1] / 65535.0f };
-                        }
-                    } else {
-                        vert.texCoord1 = { 0.0f, 0.0f }; // Default
-                    }
 
-                    // [CRITICAL] Tangent Calculation for Normal Mapping
                     if (tanBase) {
                         const float* t = reinterpret_cast<const float*>(tanBase + (v * tanStride));
                         vert.tangent = { t[0], t[1], t[2] };
                         vert.bitangent = glm::cross(vert.normal, vert.tangent) * t[3];
                     } else {
-                        // Safe Fallback
                         vert.tangent = { 1.0f, 0.0f, 0.0f };
                         vert.bitangent = { 0.0f, 1.0f, 0.0f };
                     }
-
                     vert.color = { 1.0f, 1.0f, 1.0f };
                     vertices.push_back(vert);
                 }
@@ -2011,10 +1968,10 @@ namespace Crescendo {
                 }
 
                 MeshResource newMesh{};
-                newMesh.name = baseDir + "_mesh_" + std::to_string(i) + "_" + std::to_string(j);
+                newMesh.name = normalizePath(baseDir) + "_mesh_" + std::to_string(i) + "_" + std::to_string(j);
                 newMesh.indexCount = static_cast<uint32_t>(indices.size());
-                newMesh.vertexBuffer = createVertexBuffer(vertices);
-                newMesh.indexBuffer = createIndexBuffer(indices);
+                newMesh.vertexBuffer = createVertexBuffer(vertices); // Moves buffer
+                newMesh.indexBuffer = createIndexBuffer(indices);   // Moves buffer
 
                 size_t globalIndex = meshes.size();
                 meshes.push_back(std::move(newMesh));
@@ -2022,10 +1979,9 @@ namespace Crescendo {
             }
         }
 
-        // --- NODE PROCESSING START ---
+        // --- NODE PROCESSING ---
         const auto& gltfScene = model.scenes[model.defaultScene > -1 ? model.defaultScene : 0];
         for (int nodeIdx : gltfScene.nodes) {
-            // [FIX] Pass Identity Matrix to start the chain
             processGLTFNode(model, model.nodes[nodeIdx], nullptr, baseDir, scene, glm::mat4(1.0f));
         }
     }
@@ -2042,7 +1998,7 @@ namespace Crescendo {
             parent->children.push_back(newEnt);
         }
 
-        // 1. Calculate LOCAL Matrix (T * R * S)
+        // 1. Calculate LOCAL Matrix
         glm::vec3 localTranslation(0.0f);
         glm::quat localRotation = glm::identity<glm::quat>();
         glm::vec3 localScale(1.0f);
@@ -2061,27 +2017,21 @@ namespace Crescendo {
             localMat = glm::translate(glm::mat4(1.0f), localTranslation) * glm::mat4(localRotation) * glm::scale(glm::mat4(1.0f), localScale);
         }
 
-        // 2. Calculate GLOBAL Matrix (Parent * Local)
-        // [CRITICAL] This applies the accumulated transform from the root down to this node.
+        // 2. Calculate GLOBAL Matrix
         glm::mat4 globalMat = parentMatrix * localMat;
 
-        // 3. Decompose Global Matrix to get World Transform
-        glm::vec3 worldScale;
+        // 3. Decompose & Convert Coordinate System (Y-Up -> Z-Up)
+        glm::vec3 worldScale, worldPos, skew;
         glm::quat worldRot;
-        glm::vec3 worldPos;
-        glm::vec3 skew; 
         glm::vec4 perspective;
-
         glm::decompose(globalMat, worldScale, worldRot, worldPos, skew, perspective);
 
-        // [FIX] Convert GLTF (Right-Handed Y-Up) to Engine (Z-Up)
-        // Swap Y and Z, and invert the new Z to maintain orientation
+        // [FIX] Convert Position: Swap Y/Z and negate new Y (standard Z-up conversion)
         newEnt->origin = glm::vec3(worldPos.x, -worldPos.z, worldPos.y);
 
-        // Apply a -90 degree X-axis rotation to orient the model correctly in Z-Up space
+        // [FIX] Convert Rotation: Rotate -90 on X
         glm::quat correction = glm::angleAxis(glm::radians(-90.0f), glm::vec3(1, 0, 0));
         newEnt->angles = glm::degrees(glm::eulerAngles(correction * worldRot));
-
         newEnt->scale = worldScale;
 
         if (node.mesh > -1) {
@@ -2094,21 +2044,18 @@ namespace Crescendo {
                 if (i > 0) {
                     targetEnt->moveParent = newEnt;
                     newEnt->children.push_back(targetEnt);
-                    // Submeshes inherit the node's resolved world transform directly
                     targetEnt->origin = newEnt->origin; 
                     targetEnt->angles = newEnt->angles;
                     targetEnt->scale  = newEnt->scale;
                 }
 
-                // --- Material Logic ---
                 if (primitive.material >= 0) {
                     const tinygltf::Material& mat = model.materials[primitive.material];
                     
-                    targetEnt->normalStrength = 0.0f;
                     targetEnt->roughness = (float)mat.pbrMetallicRoughness.roughnessFactor;
                     targetEnt->metallic = (float)mat.pbrMetallicRoughness.metallicFactor;
                 
-                    // [ADD] Emissive Factor (Fixes Dark Watch Hands)
+                    // Emissive
                     if (mat.emissiveFactor.size() == 3) {
                          float r = (float)mat.emissiveFactor[0];
                          float g = (float)mat.emissiveFactor[1];
@@ -2117,76 +2064,42 @@ namespace Crescendo {
                          if (maxEmit > 0.0f) targetEnt->emission = maxEmit * 5.0f;
                     }
 
-                    // [ADD] Parse Extensions (Glass/Transmission)
-                    if (mat.extensions.find("KHR_materials_transmission") != mat.extensions.end()) {
-                        const auto& ext = mat.extensions.at("KHR_materials_transmission");
-                        if (ext.Has("transmissionFactor")) targetEnt->transmission = (float)ext.Get("transmissionFactor").Get<double>();
-                    }
-
-                    if (mat.extensions.find("KHR_materials_volume") != mat.extensions.end()) {
-                        const auto& ext = mat.extensions.at("KHR_materials_volume");
-                        if (ext.Has("thicknessFactor")) targetEnt->thickness = (float)ext.Get("thicknessFactor").Get<double>();
-                        if (ext.Has("attenuationDistance")) targetEnt->attenuationDistance = (float)ext.Get("attenuationDistance").Get<double>();
-                        if (ext.Has("attenuationColor")) {
-                            auto c = ext.Get("attenuationColor");
-                            targetEnt->attenuationColor = glm::vec3(c.Get(0).Get<double>(), c.Get(1).Get<double>(), c.Get(2).Get<double>());
-                        }
-                    }
-
-                    if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
-                        targetEnt->albedoColor = glm::vec3(
-                            (float)mat.pbrMetallicRoughness.baseColorFactor[0],
-                            (float)mat.pbrMetallicRoughness.baseColorFactor[1],
-                            (float)mat.pbrMetallicRoughness.baseColorFactor[2]
-                        );
-                    }
-
+                    // Base Color Texture
                     int texIndex = mat.pbrMetallicRoughness.baseColorTexture.index;
                     if (texIndex >= 0) {
                         const tinygltf::Texture& tex = model.textures[texIndex];
                         const tinygltf::Image& img = model.images[tex.source];
                         
                         std::string texKey;
-                        if (!img.uri.empty()) {
-                            texKey = baseDir + "/" + decodeUri(img.uri);
-                        } else {
-                            texKey = "EMBEDDED_" + std::to_string(tex.source) + "_" + node.name;
-                        }
+                        if (!img.uri.empty()) texKey = baseDir + "/" + decodeUri(img.uri);
+                        else texKey = "EMBEDDED_" + std::to_string(tex.source) + "_" + node.name;
                         
                         if (textureMap.find(texKey) != textureMap.end()) {
                             targetEnt->textureID = textureMap[texKey];
                         } else {
                             int newID = static_cast<int>(textureMap.size()) + 1;
-                            
                             if (newID < MAX_TEXTURES) {
                                 TextureResource newTex;
                                 bool success = false;
-                                VkFormat format = VK_FORMAT_R8G8B8A8_UNORM; 
+                                // [FIX] Use SRGB to match Linear Workflow
+                                VkFormat format = VK_FORMAT_R8G8B8A8_SRGB; 
 
                                 if (!img.image.empty()) {
-                                    // [FIX] Use RAII UploadTexture
                                     newTex.image = UploadTexture((void*)img.image.data(), img.width, img.height, format);
-                                    // View is auto-created in newTex.image.view
                                     success = true;
                                 } 
                                 else if (!img.uri.empty()) {
-                                    // [FIX] Use updated createTextureImage signature
-                                    if (createTextureImage(texKey, newTex.image)) {
-                                         success = true;
-                                    }
+                                    if (createTextureImage(texKey, newTex.image)) success = true;
                                 }
 
                                 if (success) {
-                                    // [FIX] Move ownership to bank
                                     textureBank[newID] = std::move(newTex);
-                                    
                                     textureMap[texKey] = newID;
                                     cache.textures[texKey] = newID; 
                                     targetEnt->textureID = newID;
 
                                     VkDescriptorImageInfo imageInfo{};
                                     imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                                    // [FIX] Access view via .image.view
                                     imageInfo.imageView = textureBank[newID].image.view;
                                     imageInfo.sampler = textureSampler;
 
@@ -2198,32 +2111,23 @@ namespace Crescendo {
                                     descriptorWrite.descriptorCount = 1;
                                     descriptorWrite.pImageInfo = &imageInfo;
                                     vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
-                                    
-                                    std::cout << "[GLTF] Loaded Texture: " << texKey << " (ID: " << newID << ")" << std::endl;
-                                } else {
-                                    std::cerr << "[GLTF] Failed to load texture: " << texKey << std::endl;
                                 }
                             }
                         }
-                    } else {
-                        targetEnt->textureID = 0; 
                     }
                 }
                 
-                 std::string meshKey = normalizePath(baseDir) + "_mesh_" + std::to_string(node.mesh) + "_" + std::to_string(i); 
-                 if (meshMap.find(meshKey) != meshMap.end()) {
+                std::string meshKey = normalizePath(baseDir) + "_mesh_" + std::to_string(node.mesh) + "_" + std::to_string(i); 
+                if (meshMap.find(meshKey) != meshMap.end()) {
                      targetEnt->modelIndex = meshMap[meshKey];
-                 }
+                }
             }
         }
 
-        // [CHANGE] Recursion: Pass the NEW Global Matrix to children
         for (int childId : node.children) {
             processGLTFNode(model, model.nodes[childId], newEnt, baseDir, scene, globalMat);
         }
     }
-
-    
 
     // ---------------------------------------------------------------------------------------------
     
@@ -2318,25 +2222,18 @@ namespace Crescendo {
 
     void RenderingServer::render(Scene* scene) {
         if (!scene) return;
-        
-        // 1. Sync
+            
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
         
         uint32_t imageIndex;
-        VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, 
-            imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
-            
-        if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-            recreateSwapChain(window);
-            return;
-        } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-            throw std::runtime_error("failed to acquire swap chain image!");
-        }
-    
+        VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+        
+        if (result == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapChain(window); return; }
+
         editorUI.Prepare(scene, mainCamera, viewportDescriptorSet);
         
         vkResetFences(device, 1, &inFlightFences[currentFrame]);
-        vkResetCommandBuffer(commandBuffers[currentFrame], 0);  
+        vkResetCommandBuffer(commandBuffers[currentFrame], 0);
 
         // ---------------------------------------------------------
         // PHASE 0: UPLOAD ENTITY DATA TO GPU (SSBO)
@@ -2384,18 +2281,15 @@ namespace Crescendo {
         // ---------------------------------------------------------
 
         VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        if (vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo) != VK_SUCCESS) {
-            throw std::runtime_error("failed to begin recording command buffer!");
-        }
+        vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo);
 
-        // --- 1. CALCULATE MATRICES & SUN (Existing Code) ---
         float aspectRatio = 1.0f;
         glm::vec2 viewportSize = editorUI.GetViewportSize();
-        if (viewportSize.x > 0 && viewportSize.y > 0) aspectRatio = viewportSize.x / viewportSize.y; 
-
+        if (viewportSize.x > 0 && viewportSize.y > 0) aspectRatio = viewportSize.x / viewportSize.y;
+        
         glm::mat4 view = mainCamera.GetViewMatrix();
         glm::mat4 proj = mainCamera.GetProjectionMatrix(aspectRatio);
-        proj[1][1] *= -1; 
+        proj[1][1] *= -1; // Fix GLM Vulkan Clip
         glm::mat4 vp = proj * view;
 
         // 2. Sun Logic
@@ -2457,22 +2351,18 @@ namespace Crescendo {
             // -----------------------------------------------------------------
             // DRAW SKYBOX
             // -----------------------------------------------------------------
-            // vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
-            // vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                //                    pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
             {
-                // [FIX] Calculate and Push Skybox Matrix
-                //glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view));
+                struct SkyboxPush { glm::mat4 invViewProj; } skyPush;
+                glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view));
+                skyPush.invViewProj = glm::inverse(proj * viewNoTrans);
                 
-                // Use the struct defined in .hpp (SkyboxPushConsts)
-                //SkyboxPushConsts skyPush{}; 
-                //skyPush.invViewProj = glm::inverse(proj * viewNoTrans);
-                
-                //vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
-                //                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
-                //                   0, sizeof(SkyboxPushConsts), &skyPush);
+                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
+                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
+                                   0, sizeof(SkyboxPush), &skyPush);
             }
-            // vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
+            vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
         
             // -----------------------------------------------------------------
             // DRAW ENTITIES (OPAQUE & TRANSPARENT)
@@ -2547,9 +2437,7 @@ namespace Crescendo {
         // [FIX 1] END the Viewport Render Pass here!
         // This closes the main 3D rendering so we can transition images safely.
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
-        // [FIX 4] Transition Bloom Result for reading
-        //cmdTransitionImageLayout(commandBuffers[currentFrame], bloomBrightImage.handle, VK_FORMAT_R8G8B8A8_SRGB, 
-        //VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        
         
         // [BLOOM EXTRACT]
         {
