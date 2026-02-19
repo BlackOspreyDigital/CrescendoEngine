@@ -40,9 +40,6 @@ int main(int argc, char* argv[]) {
         std::cout << "[Main] Warning: Could not find 'Internal_Water' mesh!" << std::endl;
     }
     
-    // 5. Load Duck (Optional - verify path matches your folders)
-    // engine.renderingServer.loadGLTF("assets/models/duck/Duck.gltf", scene);
-
     // 6. Run
     engine.Run();
 

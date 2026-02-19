@@ -115,6 +115,7 @@ namespace Crescendo {
        float gamma;
        float bloomStrength;
        float bloomThreshold;
+       float blurRadius;
     };
 
     class RenderingServer {   
@@ -146,10 +147,10 @@ namespace Crescendo {
         CarController* activeCar = nullptr;
         
         PostProcessPushConstants postProcessSettings{ 
-            1.0f,  // exposure
+            0.0f,  // exposure
             2.2f,  // gamma
-            1.09f, // bloomStrength
-            2.0f   // bloomThreshold
+            1.0f, // bloomStrength
+            1.0f   // bloomThreshold
         };
         
         Camera mainCamera;

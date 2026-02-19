@@ -33,11 +33,11 @@ public:
     int textureID = 0;
     bool visible = true;
 
+    // [BSDF DEFAULTS]
     float roughness = 0.5f;
     float metallic = 0.0f;
     float emission = 0.0f;
-    float normalStrength = 1.0f;
-
+    float normalStrength = 0.0f; // default to 0 to assume no normal map
     float transmission = 0.0f; // 0.0 = Opaque, 1.0 = glass
     float thickness = 0.0f; // average thickness
     float attenuationDistance = 1.0f; // Distance at which color is fully absorbed

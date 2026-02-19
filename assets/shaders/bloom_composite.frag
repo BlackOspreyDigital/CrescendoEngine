@@ -6,18 +6,25 @@ layout(location = 0) out vec4 outColor;
 layout(binding = 0) uniform sampler2D sceneColor;
 layout(binding = 1) uniform sampler2D bloomBlur;
 
-// Now these are controlled by C++!
+// [UPDATED] Push Constants
 layout(push_constant) uniform PushConstants {
-    float bloomIntensity;
-    float exposure;
-    float gamma;
+    float exposure;       // Offset 0
+    float gamma;          // Offset 4
+    float bloomStrength;  // Offset 8
+    float bloomThreshold; // Offset 12 (Used in bright pass, padding here)
+    float blurRadius;     // Offset 16 [NEW]
 } settings;
 
 void main() {
     vec3 hdrColor = texture(sceneColor, fragTexCoord).rgb;
     
-    // --- 9-TAP GAUSSIAN BLUR ---
-    vec2 tex_offset = 1.0 / textureSize(bloomBlur, 0); // Size of single texel
+    // Calculate the size of 1 texel
+    vec2 tex_offset = 1.0 / textureSize(bloomBlur, 0); 
+    
+    // [NEW] Apply the Blur Radius Slider
+    // 1.0 = Crisp, 2.0-3.0 = Softer/Wider
+    tex_offset *= settings.blurRadius; 
+
     vec3 bloomColor = vec3(0.0);
     
     // Center (Highest weight)
@@ -29,20 +36,12 @@ void main() {
     bloomColor += texture(bloomBlur, fragTexCoord + vec2(0.0, tex_offset.y)).rgb * 0.1945946;
     bloomColor += texture(bloomBlur, fragTexCoord - vec2(0.0, tex_offset.y)).rgb * 0.1945946;
     
-    // Diagonals (Optional: Uncomment for even thicker, smoother blur)
-    /*
-    bloomColor += texture(bloomBlur, fragTexCoord + vec2(tex_offset.x, tex_offset.y)).rgb * 0.05;
-    bloomColor += texture(bloomBlur, fragTexCoord - vec2(tex_offset.x, tex_offset.y)).rgb * 0.05;
-    bloomColor += texture(bloomBlur, fragTexCoord + vec2(tex_offset.x, -tex_offset.y)).rgb * 0.05;
-    bloomColor += texture(bloomBlur, fragTexCoord - vec2(tex_offset.x, -tex_offset.y)).rgb * 0.05;
-    */
-
     // Additive Blending
-    vec3 result = hdrColor + bloomColor * settings.bloomIntensity;
+    vec3 result = hdrColor + bloomColor * settings.bloomStrength;
 
     // Tone Mapping (Reinhard)
     result = vec3(1.0) - exp(-result * settings.exposure);
-    
+
     // Gamma Correction
     result = pow(result, vec3(1.0 / settings.gamma));
 

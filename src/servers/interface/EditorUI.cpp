@@ -375,7 +375,10 @@ namespace Crescendo {
                 ImGui::SliderFloat("Roughness", &ent->roughness, 0.0f, 1.0f);
                 ImGui::SliderFloat("Metallic", &ent->metallic, 0.0f, 1.0f);
                 ImGui::SliderFloat("Emission", &ent->emission, 0.0f, 10.0f);
-    
+
+                // [FIX] Always show Transmission so you can TURN ON the glass effect
+                ImGui::SliderFloat("Transmission", &ent->transmission, 0.0f, 1.0f);
+
                 if (ent->transmission > 0.0f) {
                     ImGui::Separator();
                     ImGui::Text("Glass / Volume");
@@ -405,8 +408,6 @@ namespace Crescendo {
         ImGui::SameLine();
         if (ImGui::RadioButton("Scale", mCurrentGizmoOperation == ImGuizmo::SCALE)) mCurrentGizmoOperation = ImGuizmo::SCALE;
 
-        
-
         ImGui::Separator();
         ImGui::Text("Post Processing");
 
@@ -418,13 +419,13 @@ namespace Crescendo {
 
         ImGui::DragFloat("Exposure", &rendererRef->postProcessSettings.exposure, 0.01f, 0.1f, 5.0f);
         ImGui::DragFloat("Gamma", &rendererRef->postProcessSettings.gamma, 0.01f, 0.1f, 3.0f);
+        ImGui::DragFloat("Blur Radius", &rendererRef->postProcessSettings.blurRadius, 0.1f, 0.0f, 10.0f);
 
         ImGui::End();
 
         bool showConsole = true;
         gameConsole.Draw("Console", &showConsole);
 
-        
         ImGui::Render(); 
     }
     

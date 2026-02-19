@@ -61,6 +61,7 @@ namespace Crescendo {
         postProcessSettings.gamma = 1.0f;
         postProcessSettings.bloomStrength = 0.04f;
         postProcessSettings.bloomThreshold = 1.0f;
+        postProcessSettings.blurRadius = 1.0f;
 
         std::cout << "[1/5] Initializing Core Vulkan..." << std::endl;
         if (!createInstance()) return false;
@@ -205,12 +206,13 @@ namespace Crescendo {
 
         MeshResource waterMesh{};
         waterMesh.name = "Internal_Water";
-        waterMesh.indexCount = indices.size();
-        
-        
-        
-        // meshes.push_back(waterMesh);  <-- BAD
-        meshes.push_back(std::move(waterMesh)); // <-- GOOD
+        waterMesh.indexCount = static_cast<uint32_t>(indices.size());
+            
+        // Add these lines to actually upload the data to the GPU
+        waterMesh.vertexBuffer = createVertexBuffer(vertices);
+        waterMesh.indexBuffer = createIndexBuffer(indices);
+            
+        meshes.push_back(std::move(waterMesh));
         
         CBaseEntity* water = gameWorld.CreateEntity("prop_water");
         water->modelIndex = meshes.size() - 1;
@@ -1330,7 +1332,7 @@ namespace Crescendo {
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
         rasterizer.cullMode = VK_CULL_MODE_NONE;
-        rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -1847,9 +1849,6 @@ namespace Crescendo {
     // GLTF Loading & Handling (UPDATED)
     // --------------------------------------------------------------------
 
-    // [HELPER] Texture Upload Implementation (RAII)
-    
-
     // [HELPER] Standardize slashes
     std::string normalizePath(const std::string& path) {
         std::string s = path;
@@ -1924,12 +1923,14 @@ namespace Crescendo {
                 for (int v = 0; v < posCount; v++) {
                     Vertex vert{};
                     const float* p = reinterpret_cast<const float*>(posBase + (v * posStride));
-                    vert.pos = { p[0], p[1], p[2] };
+                    vert.pos = { p[0], p[2], -p[1] }; 
 
                     if (normBase) {
                         const float* n = reinterpret_cast<const float*>(normBase + (v * normStride));
-                        vert.normal = { n[0], n[1], n[2] };
-                    } else vert.normal = { 0.0f, 0.0f, 1.0f };
+                        vert.normal = { n[0], n[2], -n[1] }; // Match position swizzle
+                    } else {
+                        vert.normal = { 0.0f, 0.0f, 1.0f };
+                    }
 
                     if (tex0Base) {
                         const auto& acc = model.accessors[primitive.attributes.at("TEXCOORD_0")];
@@ -1944,11 +1945,8 @@ namespace Crescendo {
 
                     if (tanBase) {
                         const float* t = reinterpret_cast<const float*>(tanBase + (v * tanStride));
-                        vert.tangent = { t[0], t[1], t[2] };
+                        vert.tangent = { t[0], t[2], -t[1] }; // Match position swizzle
                         vert.bitangent = glm::cross(vert.normal, vert.tangent) * t[3];
-                    } else {
-                        vert.tangent = { 1.0f, 0.0f, 0.0f };
-                        vert.bitangent = { 0.0f, 1.0f, 0.0f };
                     }
                     vert.color = { 1.0f, 1.0f, 1.0f };
                     vertices.push_back(vert);
@@ -1968,14 +1966,19 @@ namespace Crescendo {
                 }
 
                 MeshResource newMesh{};
-                newMesh.name = normalizePath(baseDir) + "_mesh_" + std::to_string(i) + "_" + std::to_string(j);
+                // 1. Generate and store the name in a local string first
+                std::string meshName = normalizePath(baseDir) + "_mesh_" + std::to_string(i) + "_" + std::to_string(j);
+                newMesh.name = meshName; 
+
                 newMesh.indexCount = static_cast<uint32_t>(indices.size());
-                newMesh.vertexBuffer = createVertexBuffer(vertices); // Moves buffer
-                newMesh.indexBuffer = createIndexBuffer(indices);   // Moves buffer
+                newMesh.vertexBuffer = createVertexBuffer(vertices);
+                newMesh.indexBuffer = createIndexBuffer(indices);
 
                 size_t globalIndex = meshes.size();
-                meshes.push_back(std::move(newMesh));
-                meshMap[newMesh.name] = globalIndex;
+                meshes.push_back(std::move(newMesh)); 
+
+                // 2. Use the local string for the map
+                meshMap[meshName] = globalIndex;
             }
         }
 
@@ -2026,36 +2029,61 @@ namespace Crescendo {
         glm::vec4 perspective;
         glm::decompose(globalMat, worldScale, worldRot, worldPos, skew, perspective);
 
-        // [FIX] Convert Position: Swap Y/Z and negate new Y (standard Z-up conversion)
+        
         newEnt->origin = glm::vec3(worldPos.x, -worldPos.z, worldPos.y);
 
-        // [FIX] Convert Rotation: Rotate -90 on X
-        glm::quat correction = glm::angleAxis(glm::radians(-90.0f), glm::vec3(1, 0, 0));
-        newEnt->angles = glm::degrees(glm::eulerAngles(correction * worldRot));
+        // [FIX] Position: Map Y -> -Z, Z -> Y
+        newEnt->origin = glm::vec3(worldPos.x, worldPos.z, -worldPos.y);
+            
+        // [FIX] Rotation: Map Quaternion bases to match
+        // Rot Y (q.y) becomes Rot -Z (-q.z)
+        // Rot Z (q.z) becomes Rot Y (q.y)
+        glm::quat zUpRot(worldRot.w, worldRot.x, worldRot.z, -worldRot.y);
+            
+        newEnt->angles = glm::degrees(glm::eulerAngles(zUpRot));
         newEnt->scale = worldScale;
 
         if (node.mesh > -1) {
-            const tinygltf::Mesh& mesh = model.meshes[node.mesh];
+        const tinygltf::Mesh& mesh = model.meshes[node.mesh];
+        
+        for (size_t i = 0; i < mesh.primitives.size(); i++) {
+            const auto& primitive = mesh.primitives[i];
             
-            for (size_t i = 0; i < mesh.primitives.size(); i++) {
-                const auto& primitive = mesh.primitives[i];
-                CBaseEntity* targetEnt = (i == 0) ? newEnt : scene->CreateEntity("prop_submesh");
-
-                if (i > 0) {
-                    targetEnt->moveParent = newEnt;
-                    newEnt->children.push_back(targetEnt);
-                    targetEnt->origin = newEnt->origin; 
-                    targetEnt->angles = newEnt->angles;
-                    targetEnt->scale  = newEnt->scale;
-                }
+            // 1. Create or Identify the Entity
+            CBaseEntity* targetEnt = (i == 0) ? newEnt : scene->CreateEntity("prop_submesh");
+         
+            // [CRITICAL FIX] ---------------------------------------------------
+            // Force the texture ID to 0 immediately. 
+            // This ensures the ground doesn't accidentally inherit the Tree's texture.
+            
+            targetEnt->textureID = 0; 
+                     
+            if (i > 0) {
+                targetEnt->moveParent = newEnt;
+                newEnt->children.push_back(targetEnt);
+                targetEnt->origin = newEnt->origin; 
+                targetEnt->angles = newEnt->angles;
+                targetEnt->scale  = newEnt->scale;
+            }
 
                 if (primitive.material >= 0) {
                     const tinygltf::Material& mat = model.materials[primitive.material];
                     
+                    // Load BSDF
                     targetEnt->roughness = (float)mat.pbrMetallicRoughness.roughnessFactor;
                     targetEnt->metallic = (float)mat.pbrMetallicRoughness.metallicFactor;
+                    
+                    int normTexIndex = mat.normalTexture.index;
+                    if (normTexIndex >= 0) {
+                        const tinygltf::Texture& tex = model.textures[normTexIndex];
+                        const tinygltf::Image& img = model.images[tex.source];
+                        targetEnt->normalStrength = 1.0f;
+
+                    } else {
+                        targetEnt->normalStrength = 0.0f;
+                    }
                 
-                    // Emissive
+                    // Emissive Shader
                     if (mat.emissiveFactor.size() == 3) {
                          float r = (float)mat.emissiveFactor[0];
                          float g = (float)mat.emissiveFactor[1];

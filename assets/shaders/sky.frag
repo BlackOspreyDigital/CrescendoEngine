@@ -15,7 +15,7 @@ vec2 SampleSphericalMap(vec3 v) {
     uv += 0.5;
     
     // Optional: If the sky looks upside down, uncomment this:
-    uv.y = 1.0 - uv.y;
+    //uv.y = 1.0 - uv.y;
     
     return uv;
 }
