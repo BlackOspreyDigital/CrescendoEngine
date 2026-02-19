@@ -51,6 +51,11 @@ void main() {
     
     // 1. Base Albedo
     vec4 albedoSample = texture(texSampler[texID], fragTexCoord);
+
+    if (ent.volumeParams.x <= 0.0 && albedoSample.a < 0.5) {
+        discard;
+    }
+
     vec3 albedo = albedoSample.rgb * baseColor * fragColor;
 
     // 2. NORMAL MAPPING [RESTORED]

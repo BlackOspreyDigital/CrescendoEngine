@@ -77,12 +77,14 @@ namespace Crescendo {
     };
     
     struct EntityData {
-        glm::mat4 modelMatrix;      
-        glm::vec4 sphereBounds;     
-        glm::vec4 albedoTint;       
-        glm::vec4 pbrParams;        
-        glm::vec4 volumeParams;     
-        glm::vec4 volumeColor;      
+        glm::vec4 pos;         // .w can be used for uniform scale or flags later
+        glm::vec4 rot;         // .xyz = Euler Angles (Radians), .w = unused
+        glm::vec4 scale;       // .xyz = Scale, .w = unused
+        glm::vec4 sphereBounds; 
+        glm::vec4 albedoTint;
+        glm::vec4 pbrParams;
+        glm::vec4 volumeParams;
+        glm::vec4 volumeColor;
     };
 
     struct GlobalUniforms {

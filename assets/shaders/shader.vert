@@ -22,7 +22,9 @@ layout(location = 7) out vec2 fragTexCoord1;
 
 // --- SSBO STRUCT ---
 struct EntityData {
-    mat4 modelMatrix;
+    vec4 pos;
+    vec4 rot;
+    vec4 scale;
     vec4 sphereBounds;
     vec4 albedoTint;
     vec4 pbrParams;
@@ -51,27 +53,61 @@ layout(push_constant) uniform Constants {
     uint entityIndex;
 } PushConsts;
 
+// --- [ADD THIS] HELPER: Build Matrix on GPU ---
+mat4 buildMatrix(vec3 p, vec3 r, vec3 s) {
+    // Precompute Trig for rotation (Euler angles in radians)
+    float cx = cos(r.x); float sx = sin(r.x);
+    float cy = cos(r.y); float sy = sin(r.y);
+    float cz = cos(r.z); float sz = sin(r.z);
+
+    // Rotation Matrix (Z * Y * X order)
+    mat3 rotMat;
+    rotMat[0] = vec3(cy*cz, cy*sz, -sy);
+    rotMat[1] = vec3(cz*sx*sy - cx*sz, cx*cz + sx*sy*sz, cy*sx);
+    rotMat[2] = vec3(cx*cz*sy + sx*sz, -cz*sx + cx*sy*sz, cx*cy);
+
+    // Combine Scale -> Rotation -> Translation
+    mat4 m = mat4(1.0);
+    
+    // Columns (Vectors)
+    m[0] = vec4(rotMat[0] * s.x, 0.0);
+    m[1] = vec4(rotMat[1] * s.y, 0.0);
+    m[2] = vec4(rotMat[2] * s.z, 0.0);
+    m[3] = vec4(p, 1.0);
+
+    return m;
+}
+
 void main() {
     // 1. Fetch Entity Data using the Index
     uint id = PushConsts.entityIndex;
-    mat4 model = entities[id].modelMatrix;
     
-    // 2. Standard Transform
+    // Fetch raw pos/rot/scale instead of a pre-calculated matrix
+    vec3 p = entities[id].pos.xyz;
+    vec3 r = entities[id].rot.xyz;
+    vec3 s = entities[id].scale.xyz;
+
+    // 2. Build Matrix on the fly using the helper function
+    mat4 model = buildMatrix(p, r, s);
+    
+    // 3. Standard Transform
     vec4 worldPos = model * vec4(inPosition, 1.0);
     gl_Position = global.viewProj * worldPos;
 
-    // 3. Outputs
+    // 4. Outputs
     fragPos = worldPos.xyz;
     fragTexCoord = inTexCoord;
-    fragTexCoord1 = inTexCoord1; // [NEW] Pass through
+    fragTexCoord1 = inTexCoord1;
     fragColor = inColor; 
     
-    // 4. Normal Matrix (Inverse Transpose for non-uniform scaling)
+    // 5. Normal Matrix (Inverse Transpose for non-uniform scaling)
     mat3 normalMatrix = transpose(inverse(mat3(model)));
+
+    // 6. Standard Lighting Vectors
     fragNormal = normalize(normalMatrix * inNormal);
     fragTangent = normalize(normalMatrix * inTangent);
     fragBitangent = normalize(normalMatrix * inBitangent);
 
-    // 5. Pass ID to Fragment Shader
+    // 7. Pass ID to Fragment Shader
     outEntityIndex = int(id);
 }

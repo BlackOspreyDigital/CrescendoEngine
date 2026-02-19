@@ -102,11 +102,10 @@ namespace Crescendo {
         if (!createDescriptorPool()) return false;
 
         // [STEP 3] Create ALL Resources needed by the Descriptors
-        // We moved these UP so they exist before createDescriptorSets() runs.
         createStorageBuffers(); 
         createGlobalUniformBuffer();
         
-        // [FIX] Was missing! Required for Binding 4 (Shadows)
+        // [Required for Binding 4 (Shadows)
         if (!createShadowResources()) return false; 
 
         // Default Texture (Binding 0)
@@ -2016,8 +2015,15 @@ namespace Crescendo {
                 localRotation = glm::quat((float)node.rotation[3], (float)node.rotation[0], (float)node.rotation[1], (float)node.rotation[2]);
             if (node.scale.size() == 3) 
                 localScale = glm::vec3(node.scale[0], node.scale[1], node.scale[2]);
-
+        
             localMat = glm::translate(glm::mat4(1.0f), localTranslation) * glm::mat4(localRotation) * glm::scale(glm::mat4(1.0f), localScale);
+        }
+    
+        // [FIX START] Apply X-Flip to Root Node to fix Mirroring
+        // If this is a root node (no parent), we flip the X-axis scale.
+        // This un-mirrors the mesh effectively in World Space.
+        if (parent == nullptr) {
+            localMat = glm::scale(glm::mat4(1.0f), glm::vec3(-1.0f, 1.0f, 1.0f)) * localMat;
         }
 
         // 2. Calculate GLOBAL Matrix
@@ -2275,31 +2281,26 @@ namespace Crescendo {
         for (auto* ent : scene->entities) {
             if (!ent || entityCount >= MAX_ENTITIES) continue;
 
-            // 1. Calculate Transforms
-            glm::mat4 model = glm::mat4(1.0f);
-            model = glm::translate(model, ent->origin);
-            model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0,0,1)); // Fixed 'angels' typo
-            model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0,1,0));
-            model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1,0,0));
-            model = glm::scale(model, ent->scale);
-
-            // 2. Pack Data
+            // DIRECT UPLOAD: No Matrix Math on CPU!
+            // We send Radians so the GPU doesn't have to convert.
             EntityData& data = gpuData[entityCount];
-            data.modelMatrix = model;
 
-            // Material & Volume
+            data.pos   = glm::vec4(ent->origin, 1.0f);
+            data.rot   = glm::vec4(glm::radians(ent->angles), 0.0f); // Convert to radians here
+            data.scale = glm::vec4(ent->scale, 1.0f);
+
+            // Material & Volume logic remains the same...
             int texID = (ent->textureID > 0) ? ent->textureID : 0;
-            // [FIX] Corrected '==' to '=' 
             if (texID == 0 && ent->modelIndex < meshes.size() && meshes[ent->modelIndex].textureID > 0) {
                 texID = meshes[ent->modelIndex].textureID;
             }
-
+        
             data.albedoTint   = glm::vec4(ent->albedoColor, (float)texID);
+            data.sphereBounds = glm::vec4(0.0f); // Placeholder if you aren't using culling yet
             data.pbrParams    = glm::vec4(ent->roughness, ent->metallic, ent->emission, ent->normalStrength);
             data.volumeParams = glm::vec4(ent->transmission, ent->thickness, ent->attenuationDistance, ent->ior);
             data.volumeColor  = glm::vec4(ent->attenuationColor, 0.0f);
-            
-            // Store index for the Draw Loop
+
             entityGPUIndices[ent] = entityCount;
             entityCount++;
         }
