@@ -7,17 +7,20 @@ layout(location = 3) in vec3 fragPos;
 layout(location = 6) in flat int inEntityIndex;
 
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec4 outNormalRoughness; // [NEW] G-Buffer Output
 
 layout(binding = 0) uniform sampler2D texSampler[100];
 layout(binding = 1) uniform sampler2D skyTexture;
 
 // --- SSBO ---
 struct EntityData {
-    mat4 modelMatrix;
+    vec4 pos;
+    vec4 rot;
+    vec4 scale;
     vec4 sphereBounds;
     vec4 albedoTint;
-    vec4 pbrParams;
-    vec4 volumeParams;
+    vec4 pbrParams;    // x=Roughness, y=Metallic, z=Emission, w=NormalStrength
+    vec4 volumeParams; // x=Transmission, y=Thickness, z=AttDist, w=IOR
     vec4 volumeColor;
 };
 layout(std430, set = 0, binding = 2) readonly buffer ObjectBuffer { 
@@ -68,4 +71,5 @@ void main() {
 
     vec3 finalColor = mix(textureColor.rgb, reflection, 0.5);
     outColor = vec4(finalColor, 0.8);
+    outNormalRoughness = vec4(normalize(N), roughness);
 }

@@ -20,7 +20,7 @@ layout(location = 6) out flat int outEntityIndex;
 // [NEW] Pass UV1 to Fragment
 layout(location = 7) out vec2 fragTexCoord1; 
 
-// --- SSBO STRUCT ---
+// --- UPDATED SSBO STRUCT ---
 struct EntityData {
     vec4 pos;
     vec4 rot;
@@ -53,14 +53,14 @@ layout(push_constant) uniform Constants {
     uint entityIndex;
 } PushConsts;
 
-// --- [ADD THIS] HELPER: Build Matrix on GPU ---
+// --- HELPER: Build Matrix on GPU ---
 mat4 buildMatrix(vec3 p, vec3 r, vec3 s) {
     // Precompute Trig for rotation (Euler angles in radians)
     float cx = cos(r.x); float sx = sin(r.x);
     float cy = cos(r.y); float sy = sin(r.y);
     float cz = cos(r.z); float sz = sin(r.z);
 
-    // Rotation Matrix (Z * Y * X order)
+    // Rotation Matrix (Z * Y * X order to match GLM)
     mat3 rotMat;
     rotMat[0] = vec3(cy*cz, cy*sz, -sy);
     rotMat[1] = vec3(cz*sx*sy - cx*sz, cx*cz + sx*sy*sz, cy*sx);
@@ -79,15 +79,14 @@ mat4 buildMatrix(vec3 p, vec3 r, vec3 s) {
 }
 
 void main() {
-    // 1. Fetch Entity Data using the Index
     uint id = PushConsts.entityIndex;
     
-    // Fetch raw pos/rot/scale instead of a pre-calculated matrix
+    // 1. Fetch raw pos/rot/scale from SSBO
     vec3 p = entities[id].pos.xyz;
     vec3 r = entities[id].rot.xyz;
     vec3 s = entities[id].scale.xyz;
 
-    // 2. Build Matrix on the fly using the helper function
+    // 2. Build Matrix on the fly
     mat4 model = buildMatrix(p, r, s);
     
     // 3. Standard Transform

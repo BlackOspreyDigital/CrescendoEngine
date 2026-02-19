@@ -108,6 +108,13 @@ namespace Crescendo {
         uint32_t entityIndex;
     };
 
+    struct SSRPushConstants {
+        glm::mat4 proj;
+        glm::mat4 invProj;
+        glm::mat4 view;
+        glm::mat4 invView;
+    };
+
     struct SkyboxPushConsts {
         glm::mat4 invViewProj;  
     };
@@ -232,6 +239,16 @@ namespace Crescendo {
         VkPipelineLayout compositePipelineLayout = VK_NULL_HANDLE;
         VkDescriptorSet compositeDescriptorSet = VK_NULL_HANDLE;
 
+        // SSR Pipeline & Resources
+        VkPipeline ssrPipeline = VK_NULL_HANDLE;
+        VkPipelineLayout ssrPipelineLayout = VK_NULL_HANDLE;
+        VkRenderPass ssrRenderPass = VK_NULL_HANDLE;
+        VkFramebuffer ssrFramebuffer = VK_NULL_HANDLE;
+        VulkanImage ssrImage;
+
+        VkDescriptorSetLayout ssrDescriptorLayout = VK_NULL_HANDLE;
+        VkDescriptorSet ssrDescriptorSet = VK_NULL_HANDLE;
+
         // --- IMAGES / TEXTURES (RAII) ---
         // Note: Default views are accessed via .image.view (e.g. depthImage.view)
         
@@ -253,6 +270,7 @@ namespace Crescendo {
 
         // Viewport (HDR)
         VulkanImage viewportImage;
+        VulkanImage viewportNormalImage; // G-Buffer for Normal (RGB) & Roughness (A)
         VkSampler viewportSampler = VK_NULL_HANDLE;
         VkFramebuffer viewportFramebuffer = VK_NULL_HANDLE;
         VkRenderPass viewportRenderPass = VK_NULL_HANDLE;
@@ -309,6 +327,10 @@ namespace Crescendo {
         bool createDescriptorPool();
         bool createDescriptorSets();
         bool createGraphicsPipeline();
+        bool createSSRResources();
+        bool createSSRPipeline();
+        void updateSSRDescriptors(); // bind our G-Buffer
+
         bool createTransparentPipeline();
         bool createWaterPipeline();
         void createWaterMesh();

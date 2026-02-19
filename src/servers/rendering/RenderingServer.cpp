@@ -324,6 +324,53 @@ namespace Crescendo {
         return true;
     }
 
+    bool RenderingServer::createSSRResources() {
+        uint32_t width = swapChainExtent.width;
+        uint32_t height = swapChainExtent.height;
+
+        // 1. SSR Target Image
+        ssrImage = VulkanImage(allocator, device, width, height, VK_FORMAT_R16G16B16A16_SFLOAT,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
+            VK_IMAGE_ASPECT_COLOR_BIT);
+        transitionImageLayout(ssrImage.handle, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+        // 2. Render Pass
+        VkAttachmentDescription colorAttachment{};
+        colorAttachment.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &colorRef;
+
+        VkRenderPassCreateInfo rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        rpInfo.attachmentCount = 1;
+        rpInfo.pAttachments = &colorAttachment;
+        rpInfo.subpassCount = 1;
+        rpInfo.pSubpasses = &subpass;
+
+        if (vkCreateRenderPass(device, &rpInfo, nullptr, &ssrRenderPass) != VK_SUCCESS) return false;
+
+        // 3. Framebuffer
+        VkFramebufferCreateInfo fbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+        fbInfo.renderPass = ssrRenderPass;
+        fbInfo.attachmentCount = 1;
+        fbInfo.pAttachments = &ssrImage.view;
+        fbInfo.width = width;
+        fbInfo.height = height;
+        fbInfo.layers = 1;
+
+        return vkCreateFramebuffer(device, &fbInfo, nullptr, &ssrFramebuffer) == VK_SUCCESS;
+    }
+
     void RenderingServer::cmdTransitionImageLayout(VkCommandBuffer cmdbuffer, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -836,6 +883,50 @@ namespace Crescendo {
             return false;
         }
 
+        // =========================================================
+        // 3. SSR LAYOUT (Set 2)
+        // =========================================================
+
+        std::array<VkDescriptorSetLayoutBinding, 3> ssrBindings{};
+
+        // Binding 0: Scene Color
+        ssrBindings[0].binding = 0;
+        ssrBindings[0].descriptorCount = 1;
+        ssrBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ssrBindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        // Binding 1: Normal + Roughness
+        ssrBindings[1].binding = 1;
+        ssrBindings[1].descriptorCount =1;
+        ssrBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ssrBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        // Binding 2: Depth Buffer
+        ssrBindings[2].binding = 2;
+        ssrBindings[2].descriptorCount =1;
+        ssrBindings[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ssrBindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo ssrLayoutInfo{};
+        ssrLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        ssrLayoutInfo.bindingCount = static_cast<uint32_t>(ssrBindings.size());
+        ssrLayoutInfo.pBindings = ssrBindings.data();
+        
+        if (vkCreateDescriptorSetLayout(device, &ssrLayoutInfo, nullptr, &ssrDescriptorLayout) != VK_SUCCESS) {
+            return false;
+        }
+
+        // -----------------------------------------------------------
+        // SSR ALLOCATE (Set 2)
+        // -----------------------------------------------------------
+        VkDescriptorSetAllocateInfo ssrAlloc{};
+        ssrAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ssrAlloc.descriptorPool = descriptorPool;
+        ssrAlloc.descriptorSetCount = 1;
+        ssrAlloc.pSetLayouts = &ssrDescriptorLayout;
+
+        if (vkAllocateDescriptorSets(device, &ssrAlloc, &ssrDescriptorSet) != VK_SUCCESS) return false;
+
         return true;
     }
 
@@ -1267,7 +1358,6 @@ namespace Crescendo {
         return true;
     }
 
-    // [CLEANUP] Remove unused 'pipelineLayoutInfo' to fix warnings
     bool RenderingServer::createTransparentPipeline() {
         auto vertShaderCode = readFile("assets/shaders/shader.vert.spv");
         auto fragShaderCode = readFile("assets/shaders/shader.frag.spv");
@@ -1693,6 +1783,77 @@ namespace Crescendo {
         vkDestroyShaderModule(device, vertShaderModule, nullptr);
         return true;
     }
+
+    bool RenderingServer::createSSRPipeline() {
+        auto vertShaderCode = readFile("assets/shaders/fullscreen_vert.vert.spv");
+        auto fragShaderCode = readFile("assets/shaders/ssr.frag.spv");
+
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+        VkPipelineShaderStageCreateInfo stages[2] = {};
+        stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertShaderModule, "main", nullptr};
+        stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragShaderModule, "main", nullptr};
+
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, nullptr, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE};
+        VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, nullptr, 0, 1, nullptr, 1, nullptr};
+        
+        VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE;
+
+        VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, nullptr, 0, VK_SAMPLE_COUNT_1_BIT};
+        VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+
+        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachment.blendEnable = VK_FALSE;
+
+        VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &colorBlendAttachment;
+
+        std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0, (uint32_t)dynamicStates.size(), dynamicStates.data()};
+
+        // Layout & Push Constants
+        VkPushConstantRange pushConstantRange{};
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        pushConstantRange.offset = 0;
+        pushConstantRange.size = sizeof(SSRPushConstants);
+
+        VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        layoutInfo.setLayoutCount = 1;
+        layoutInfo.pSetLayouts = &ssrDescriptorLayout;
+        layoutInfo.pushConstantRangeCount = 1;
+        layoutInfo.pPushConstantRanges = &pushConstantRange;
+
+        vkCreatePipelineLayout(device, &layoutInfo, nullptr, &ssrPipelineLayout);
+
+        VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = stages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.layout = ssrPipelineLayout;
+        pipelineInfo.renderPass = ssrRenderPass;
+        pipelineInfo.subpass = 0;
+
+        VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &ssrPipeline);
+
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
+
+        return result == VK_SUCCESS;
+    }
     
     bool RenderingServer::createRenderPass() {
         VkAttachmentDescription colorAttachment{};
@@ -1826,7 +1987,7 @@ namespace Crescendo {
     }
 
     // ========================================================================
-    // MODEL LOADING STACK
+    // MODEL LOADING STACK (Moving to its own logic next)
     // ========================================================================
 
     void RenderingServer::loadModel(const std::string& filePath, Scene* scene) {
@@ -2463,10 +2624,45 @@ namespace Crescendo {
                 vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
         } // End of Water Loop
 
-        // [FIX 1] END the Viewport Render Pass here!
         // This closes the main 3D rendering so we can transition images safely.
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
-        
+
+        // =========================================================
+        // [NEW] PASS 2: SCREEN SPACE REFLECTIONS (SSR)
+        // =========================================================
+        {
+            VkRenderPassBeginInfo ssrPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+            ssrPassInfo.renderPass = ssrRenderPass;
+            ssrPassInfo.framebuffer = ssrFramebuffer;
+            ssrPassInfo.renderArea.extent = swapChainExtent;
+            VkClearValue ssrClear = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
+            ssrPassInfo.clearValueCount = 1;
+            ssrPassInfo.pClearValues = &ssrClear;
+
+            vkCmdBeginRenderPass(commandBuffers[currentFrame], &ssrPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+            
+            VkViewport ssrViewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
+            vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &ssrViewport);
+            VkRect2D ssrScissor{{0, 0}, swapChainExtent};
+            vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &ssrScissor);
+            
+            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, ssrPipeline);
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                    ssrPipelineLayout, 0, 1, &ssrDescriptorSet, 0, nullptr);
+
+            // Send Camera Matrices to the SSR Shader
+            SSRPushConstants ssrPush{};
+            ssrPush.proj = proj;
+            ssrPush.invProj = glm::inverse(proj);
+            ssrPush.view = view;
+            ssrPush.invView = glm::inverse(view);
+
+            vkCmdPushConstants(commandBuffers[currentFrame], ssrPipelineLayout,
+                               VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SSRPushConstants), &ssrPush);
+
+            vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
+            vkCmdEndRenderPass(commandBuffers[currentFrame]);
+        }        
         
         // [BLOOM EXTRACT]
         {
@@ -2891,7 +3087,7 @@ namespace Crescendo {
             depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
             depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
             depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
             VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
             VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
@@ -2903,7 +3099,7 @@ namespace Crescendo {
             subpass.pDepthStencilAttachment = &depthRef;
 
             // Dependencies for sync
-            // [FIX] Zero-initialize the array to prevent garbage flags!
+            // Zero-initialize the array to prevent garbage flags!
             std::array<VkSubpassDependency, 2> dependencies = {};
 
             dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -3105,6 +3301,40 @@ namespace Crescendo {
        postWrite.pImageInfo = compositeInfos;
 
        vkUpdateDescriptorSets(device, 1, &postWrite, 0, nullptr);
+    }
+
+    void RenderingServer::updateSSRDescriptors() {
+        if (viewportImage.view == VK_NULL_HANDLE || viewportNormalImage.view == VK_NULL_HANDLE || viewportDepthImage.view == VK_NULL_HANDLE) return;
+
+        std::array<VkDescriptorImageInfo, 3> ssrInfos{};
+
+        // Binding 0: Scene Color (HDR)
+        ssrInfos[0].sampler = viewportSampler;
+        ssrInfos[0].imageView = viewportImage.view;
+        ssrInfos[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        // Binding 1: Normal + Roughness G-Buffer
+        ssrInfos[1].sampler = viewportSampler;
+        ssrInfos[1].imageView = viewportNormalImage.view;
+        ssrInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        // Binding 2: Depth Buffer
+        ssrInfos[2].sampler = viewportSampler;
+        ssrInfos[2].imageView = viewportDepthImage.view;
+        ssrInfos[2].imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+        std::array<VkWriteDescriptorSet, 3> writes{};
+        for(int i = 0; i < 3; i++) {
+            writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet = ssrDescriptorSet;
+            writes[i].dstBinding = i;
+            writes[i].dstArrayElement = 0;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[i].pImageInfo = &ssrInfos[i];
+        }
+
+        vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
     }
 
     bool RenderingServer::createBloomPipeline() {

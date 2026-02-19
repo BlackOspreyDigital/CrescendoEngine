@@ -53,48 +53,48 @@ namespace Crescendo {
     }
 
     void Engine::Update() {
-       // 1. Poll Inputs (Keyboard/Mouse)
-       Input::Update();
+        // 1. Poll Inputs (Keyboard/Mouse)
+        Input::Update();
        
-       // 2. Game Logic / Car Control
-       if (renderingServer.activeCar) {
-           float forward = 0.0f;
-           float right = 0.0f;
-           float brake = 0.0f;
-           float handbrake = 0.0f;
-
-           // Simple Arcade Controls
-           if (Input::IsKeyDown(SDL_SCANCODE_W)) forward = 1.0f;
-           if (Input::IsKeyDown(SDL_SCANCODE_S)) forward = -1.0f; // Jolt handles reverse automatically if forward is negative
-           if (Input::IsKeyDown(SDL_SCANCODE_A)) right = -1.0f;   // Left
-           if (Input::IsKeyDown(SDL_SCANCODE_D)) right = 1.0f;    // Right
-           if (Input::IsKeyDown(SDL_SCANCODE_SPACE)) handbrake = 1.0f;
-
-           renderingServer.activeCar->SetDriverInput(forward, right, brake, handbrake);
-
-           } 
-           else {
-           // [FIX] ADD THIS: Free Flying Camera Mode
-           float dt = 1.0f / 60.0f; // Or calculate real delta time
-           
-           auto& cam = renderingServer.mainCamera;
-           
-           // Keyboard Movement (WASD + Q/E for Up/Down)
-           float speed = 10.0f * dt;
-           if (Input::IsKeyDown(SDL_SCANCODE_LSHIFT)) speed *= 4.0f; // Sprint
-
-           if (Input::IsKeyDown(SDL_SCANCODE_W)) cam.Position += cam.Front * speed;
-           if (Input::IsKeyDown(SDL_SCANCODE_S)) cam.Position -= cam.Front * speed;
-           if (Input::IsKeyDown(SDL_SCANCODE_A)) cam.Position -= cam.Right * speed;
-           if (Input::IsKeyDown(SDL_SCANCODE_D)) cam.Position += cam.Right * speed;
-           if (Input::IsKeyDown(SDL_SCANCODE_Q)) cam.Position += glm::vec3(0,0,1) * speed; // Up
-           if (Input::IsKeyDown(SDL_SCANCODE_E)) cam.Position -= glm::vec3(0,0,1) * speed; // Down
-           
-           // Mouse Look (Right Click to Rotate)
-           if (Input::IsMouseButtonDown(3)) { // 3 is usually Right Mouse Button in SDL
-               // Use Input::mouseRelX / mouseRelY which you are tracking in Input.cpp
-               cam.Rotate((float)Input::mouseRelX, (float)-Input::mouseRelY);
-           }
+        // 2. Game Logic / Car Control
+        if (renderingServer.activeCar) {
+            float forward = 0.0f;
+            float right = 0.0f;
+            float brake = 0.0f;
+            float handbrake = 0.0f;
+ 
+            // Simple Arcade Controls
+            if (Input::IsKeyDown(SDL_SCANCODE_W)) forward = 1.0f;
+            if (Input::IsKeyDown(SDL_SCANCODE_S)) forward = -1.0f; // Jolt handles reverse automatically if forward is negative
+            if (Input::IsKeyDown(SDL_SCANCODE_A)) right = -1.0f;   // Left
+            if (Input::IsKeyDown(SDL_SCANCODE_D)) right = 1.0f;    // Right
+            if (Input::IsKeyDown(SDL_SCANCODE_SPACE)) handbrake = 1.0f;
+ 
+            renderingServer.activeCar->SetDriverInput(forward, right, brake, handbrake);
+ 
+        } 
+        else {
+            // [FIX] ADD THIS: Free Flying Camera Mode
+            float dt = 1.0f / 60.0f; // Or calculate real delta time
+            
+            auto& cam = renderingServer.mainCamera;
+            
+            // Keyboard Movement (WASD + Q/E for Up/Down)
+            float speed = 10.0f * dt;
+            if (Input::IsKeyDown(SDL_SCANCODE_LSHIFT)) speed *= 4.0f; // Sprint
+ 
+            if (Input::IsKeyDown(SDL_SCANCODE_W)) cam.Position += cam.Front * speed;
+            if (Input::IsKeyDown(SDL_SCANCODE_S)) cam.Position -= cam.Front * speed;
+            if (Input::IsKeyDown(SDL_SCANCODE_A)) cam.Position -= cam.Right * speed;
+            if (Input::IsKeyDown(SDL_SCANCODE_D)) cam.Position += cam.Right * speed;
+            if (Input::IsKeyDown(SDL_SCANCODE_Q)) cam.Position += glm::vec3(0,0,1) * speed; // Up
+            if (Input::IsKeyDown(SDL_SCANCODE_E)) cam.Position -= glm::vec3(0,0,1) * speed; // Down
+            
+            // Mouse Look (Right Click to Rotate)
+            if (Input::IsMouseButtonDown(3)) { // 3 is usually Right Mouse Button in SDL
+                // Use Input::mouseRelX / mouseRelY which you are tracking in Input.cpp
+                cam.Rotate((float)Input::mouseRelX, (float)-Input::mouseRelY);
+            }
        }
 
        // 3. Physics Step

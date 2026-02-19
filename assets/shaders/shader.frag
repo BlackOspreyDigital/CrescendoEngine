@@ -15,7 +15,9 @@ layout(binding = 0) uniform sampler2D texSampler[100];
 layout(binding = 1) uniform sampler2D skyTexture;
 
 struct EntityData {
-    mat4 modelMatrix;
+    vec4 pos;
+    vec4 rot;
+    vec4 scale;
     vec4 sphereBounds;
     vec4 albedoTint;
     vec4 pbrParams;    // x=Roughness, y=Metallic, z=Emission, w=NormalStrength
