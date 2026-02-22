@@ -2055,7 +2055,8 @@ namespace Crescendo {
     // Render() / THE RENDER LOOP
     // --------------------------------------------------------------------
 
-    void RenderingServer::render(Scene* scene) {
+    // Change signature here for engine state
+    void RenderingServer::render(Scene* scene, EngineState& engineState) {
         if (!scene) return;
             
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
@@ -2065,7 +2066,8 @@ namespace Crescendo {
         
         if (result == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapChain(window); return; }
 
-        editorUI.Prepare(scene, mainCamera, viewportDescriptorSet);
+        // Pass the state reference to the UI!
+        editorUI.Prepare(scene, mainCamera, viewportDescriptorSet, engineState);
         
         vkResetFences(device, 1, &inFlightFences[currentFrame]);
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);

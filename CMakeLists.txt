@@ -15,6 +15,10 @@ pkg_check_modules(LUA REQUIRED lua5.4)
 
 # --- 2. Sources ---
 file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.c")
+
+# Explicitly add the controller so CMake never misses it
+list(APPEND SOURCES "src/controllers/VehicleController.cpp")
+
 # [FIX] Updated paths to your new module folders
 file(GLOB_RECURSE JOLT_SOURCES "modules/Jolt/JoltPhysics/Jolt/*.cpp")
 file(GLOB_RECURSE MODULE_SOURCES "modules/gltf/*.cpp")

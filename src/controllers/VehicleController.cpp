@@ -1,17 +1,25 @@
 #include "controllers/VehicleController.hpp"
+#include "servers/physics/PhysicsServer.hpp" // Required for Layers::MOVING
 #include <Jolt/Physics/Vehicle/VehicleCollisionTester.h>
+#include <Jolt/Physics/PhysicsSystem.h>
 #include <iostream>
 
 namespace Crescendo {
 
     VehicleController::~VehicleController() {
-        if (vehicleController) {
-            delete vehicleController;
-            vehicleController = nullptr;
+        // Jolt owns this memory, so we just null the pointer
+        vehicleController = nullptr;
+    }
+
+    void VehicleController::Cleanup(JPH::PhysicsSystem* physicsSystem) {
+        if (vehicleConstraint && physicsSystem) {
+            physicsSystem->RemoveStepListener(vehicleConstraint);
+            physicsSystem->RemoveConstraint(vehicleConstraint);
+            vehicleConstraint = nullptr;
         }
     }
 
-    void VehicleController::Initialize(JPH::PhysicsSystem* physicsSystem, JPH::BodyID chassisID) {
+    void VehicleController::Initialize(JPH::PhysicsSystem* physicsSystem, JPH::Body* chassisBody) {
         std::cout << "[Physics] Building Jolt Vehicle Constraint..." << std::endl;
         
         JPH::VehicleConstraintSettings vehicleSettings;
@@ -50,8 +58,7 @@ namespace Crescendo {
             JPH::WheelSettingsWV* ws = (i < 2) ? new JPH::WheelSettingsWV(wheelSettingsFront) : new JPH::WheelSettingsWV(wheelSettingsRear);
             ws->mPosition = wheelPositions[i];
             
-            // Raycast settings: shoot ray straight down (-Z)
-            ws->mDirection = JPH::Vec3(0, 0, -1);
+            ws->mSteeringAxis = JPH::Vec3(0, 0, 1); 
             ws->mSuspensionForcePoint = wheelPositions[i];
             ws->mSuspensionDirection = JPH::Vec3(0, 0, -1);
             
@@ -67,7 +74,6 @@ namespace Crescendo {
         controllerSettings->mTransmission.mMode = JPH::ETransmissionMode::Auto;
         controllerSettings->mTransmission.mGearRatios = { 2.66f, 1.78f, 1.30f, 1.0f, 0.74f, 0.50f }; 
         
-        // RWD Configuration (Apply engine torque to rear wheels only)
         controllerSettings->mDifferentials.clear();
         JPH::VehicleDifferentialSettings diff;
         diff.mLeftWheel = 2; // Rear Left
@@ -77,19 +83,16 @@ namespace Crescendo {
         vehicleSettings.mController = controllerSettings;
 
         // 5. Finalize Constraint
-        vehicleConstraint = new JPH::VehicleConstraint(
-            *physicsSystem->GetBodyInterface().GetBody(chassisID), 
-            vehicleSettings
-        );
+        vehicleConstraint = new JPH::VehicleConstraint(*chassisBody, vehicleSettings);
         
         JPH::Ref<JPH::VehicleCollisionTester> tester = new JPH::VehicleCollisionTesterRay(
-            physicsSystem->GetBroadPhaseQuery(),
-            physicsSystem->GetNarrowPhaseQuery()
+            Layers::MOVING, 
+            JPH::Vec3(0, 0, 1) 
         );
         vehicleConstraint->SetVehicleCollisionTester(tester);
 
-        physicsSystem->GetPhysicsSystem()->AddConstraint(vehicleConstraint);
-        physicsSystem->GetPhysicsSystem()->AddStepListener(vehicleConstraint);
+        physicsSystem->AddConstraint(vehicleConstraint);
+        physicsSystem->AddStepListener(vehicleConstraint);
         
         vehicleController = static_cast<JPH::WheeledVehicleController*>(vehicleConstraint->GetController());
         std::cout << "[Physics] Vehicle Constraint Active!" << std::endl;
@@ -98,14 +101,9 @@ namespace Crescendo {
     void VehicleController::SetInputs(float forward, float right, float brake, float handbrake) {
         if (!vehicleController) return;
         
-        currentSteering = JPH::Lerp(currentSteering, right, 0.1f);
+        currentSteering = currentSteering + (right - currentSteering) * 0.1f;
         
-        vehicleController->SetDriverInput(
-            forward, 
-            currentSteering, 
-            brake, 
-            handbrake
-        );
+        vehicleController->SetDriverInput(forward, currentSteering, brake, handbrake);
     }
 
     void VehicleController::UpdateWheelTransforms(CBaseEntity* frontLeft, CBaseEntity* frontRight, CBaseEntity* rearLeft, CBaseEntity* rearRight) {

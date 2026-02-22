@@ -23,19 +23,18 @@ namespace Crescendo {
     bool Engine::Initialize(const char* title, int width, int height) {
         JPH::AssertFailed = CustomAssertFailed;
         
-        // 1. MUST BE FIRST: Create the Window
         if (!displayServer.initialize(title, width, height)) return false;
-        
-        // 2. MUST BE SECOND: Start Vulkan and the VMA Allocator
         if (!renderingServer.initialize(&displayServer)) return false;
         
-        // 3. NOW it is safe to create the floor and load glTF models!
+        // Create visual ground
         renderingServer.createDefaultGround(&scene);
         
-        // (If you have any AssetLoader::loadModel calls, put them here too!)
-        
-        // 4. Start Physics 
+        // Start Physics 
         physicsServer.Initialize();
+        
+        // Create static ground collision
+        // Using a dummy entity ID like 9999 for the ground, placing it at Z = -1.0f
+        physicsServer.CreateBox(9999, glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(500.0f, 500.0f, 1.0f), false);
         
         isRunning = true;
         return true;
@@ -47,7 +46,7 @@ namespace Crescendo {
             Update();
             Render();
         }
-        Shutdown(); 
+        
     }
 
     void Engine::ProcessEvents() {
@@ -55,13 +54,9 @@ namespace Crescendo {
     }
 
     void Engine::Update() {
-        // 1. Calculate Delta Time (Fixed to 60fps for now, can be made dynamic later)
         float dt = 1.0f / 60.0f; 
-
-        // 2. Poll Inputs (Keyboard/Mouse)
         Input::Update();
        
-        // 3. Free Flying Camera Mode
         auto& cam = renderingServer.mainCamera;
         
         // Keyboard Movement (WASD + Q/E for Up/Down)
@@ -80,12 +75,62 @@ namespace Crescendo {
             cam.Rotate((float)Input::mouseRelX, (float)-Input::mouseRelY);
         }
 
+        // --- STATE TRANSITION LOGIC ---
+        if (currentState == EngineState::Playing && previousState == EngineState::Editor) {
+            std::cout << "[Engine] Play Mode: Saving initial state..." << std::endl;
+            for (auto* ent : scene.entities) {
+                if (ent) {
+                    ent->savedOrigin = ent->origin;
+                    ent->savedAngles = ent->angles;
+                }
+            }
+        } 
+        else if (currentState == EngineState::Editor && previousState == EngineState::Playing) {
+            std::cout << "[Engine] Editor Mode: Restoring scene..." << std::endl;
+            for (auto* ent : scene.entities) {
+                if (ent) {
+                    // Restore visuals
+                    ent->origin = ent->savedOrigin;
+                    ent->angles = ent->savedAngles;
+                    // Restore physics
+                    physicsServer.ResetBody(ent->index, ent->origin, ent->angles);
+                }
+            }
+        }
+        
+        // Update the tracker for the next frame
+        previousState = currentState;
+
         // 4. Physics Step
-        physicsServer.Update(dt, scene.entities);
+        if (currentState == EngineState::Playing) {
+            physicsServer.Update(dt, scene.entities);
+
+            // Drive the car!
+            if (activeVehicle) {
+                float forward = 0.0f;
+                float right = 0.0f;
+                float brake = 0.0f;
+
+                // Simple Keyboard Controls (Arrow Keys)
+                if (Input::IsKeyDown(SDL_SCANCODE_UP)) forward = 1.0f;     // Gas
+                if (Input::IsKeyDown(SDL_SCANCODE_DOWN)) brake = 1.0f;     // Brake/Reverse
+                if (Input::IsKeyDown(SDL_SCANCODE_LEFT)) right = -1.0f;    // Steer Left
+                if (Input::IsKeyDown(SDL_SCANCODE_RIGHT)) right = 1.0f;    // Steer Right
+
+                activeVehicle->SetInputs(forward, right, brake, 0.0f);
+                
+                // Sync the visual wheel models to the Jolt physics!
+                activeVehicle->UpdateWheelTransforms(
+                    vehicleWheels[0], vehicleWheels[1], 
+                    vehicleWheels[2], vehicleWheels[3]
+                );
+            }
+        }
     }
         
     void Engine::Render() {
-        renderingServer.render(&scene); 
+        // Pass the state by reference down to the renderer
+        renderingServer.render(&scene, currentState); 
     }
 
     void Engine::Shutdown() {

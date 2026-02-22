@@ -5,6 +5,7 @@
 #include <imgui.h>
 #include "deps/imgui/ImGuizmo.h"
 #include <glm/glm.hpp>
+#include "core/EngineState.hpp"
 
 
 namespace Crescendo {
@@ -35,7 +36,8 @@ namespace Crescendo {
         void Initialize(RenderingServer* renderer, SDL_Window* window, VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue graphicsQueue, uint32_t queueFamilyIndex, VkRenderPass renderPass, uint32_t imageCount);
         void Shutdown(VkDevice device);
 
-        void Prepare(Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor);
+        // Update this signature
+        void Prepare(Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor, EngineState& engineState);
         void Render(VkCommandBuffer cmd);
         
         void HandleInput(SDL_Event& event);

@@ -18,6 +18,7 @@
 #include "servers/camera/Camera.hpp"
 #include "scene/GameWorld.hpp"
 #include "servers/interface/EditorUI.hpp"
+#include "core/EngineState.hpp"
 
 struct VmaAllocator_T;
 typedef struct VmaAllocator_T* VmaAllocator;
@@ -122,8 +123,8 @@ namespace Crescendo {
        float bloomStrength;
        float bloomThreshold;
        float blurRadius;
-       float ssaoUVScale; // Tells shader if SSAO is half-res
-       float ssrUVScale;  // Tells shader if SSR is half-res
+       float ssaoUVScale;
+       float ssrUVScale;  
     };
 
     struct RenderSettings {
@@ -140,7 +141,10 @@ namespace Crescendo {
         RenderingServer();
         bool initialize(DisplayServer* display);
         void shutdown();
-        void render(Scene* scene); 
+        // Update this signature to take the state by reference
+        void render(Scene* scene, EngineState& engineState);
+
+        
 
         void createDefaultGround(Scene* scene);
 
@@ -338,7 +342,6 @@ namespace Crescendo {
         void updateSSRDescriptors(); // bind our G-Buffer
         bool createTransparentPipeline();
         bool createWaterPipeline();
-        
         bool createTextureImage();        
         bool createTextureImage(const std::string& path, VulkanImage& outImage);
         bool createTextureSampler();          

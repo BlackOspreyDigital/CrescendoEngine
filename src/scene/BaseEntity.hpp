@@ -26,6 +26,10 @@ public:
     glm::vec3 angles = {0.0f, 0.0f, 0.0f};
     glm::vec3 scale  = {1.0f, 1.0f, 1.0f};
 
+    // Add these alongside origin, angles, scale
+    glm::vec3 savedOrigin = glm::vec3(0.0f);
+    glm::vec3 savedAngles = glm::vec3(0.0f);
+
     CBaseEntity* moveParent = nullptr;
     std::vector<CBaseEntity*> children;
 

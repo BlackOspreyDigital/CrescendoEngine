@@ -153,71 +153,41 @@ public:
         entityBodyMap[entityID] = body->GetID();
     }
 
-    VehicleConstraint* CreateRaycastCar(int entityID, glm::vec3 position) {
-        std::cout << "[Physics] Creating Car Chassis (Z-Up)..." << std::endl;
+    // Change return type to JPH::Body*
+    JPH::Body* CreateChassisBody(int entityID, glm::vec3 position) {
+        std::cout << "[Physics] Creating Car Chassis Body (Z-Up)..." << std::endl;
         if (!bodyInterface) return nullptr;
 
-        // 1. Create Chassis Body
-        // Z-Up: Car is usually Length=X, Width=Y, Height=Z
-        Ref<BoxShape> chassisShape = new BoxShape(Vec3(2.0f, 1.0f, 0.5f)); 
-        // Offset center of mass DOWN on Z
-        Ref<OffsetCenterOfMassShape> offsetShape = new OffsetCenterOfMassShape(chassisShape, Vec3(0, 0, -0.5f));
+        Ref<BoxShape> chassisShape = new BoxShape(Vec3(0.75f, 1.5f, 0.25f)); 
+        Ref<OffsetCenterOfMassShape> offsetShape = new OffsetCenterOfMassShape(chassisShape, Vec3(0, 0, -0.4f));
 
         BodyCreationSettings carBodySettings(offsetShape, ToJolt(position), Quat::sIdentity(), EMotionType::Dynamic, Layers::MOVING);
         carBodySettings.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
-        carBodySettings.mMassPropertiesOverride.mMass = 1500.0f;
+        carBodySettings.mMassPropertiesOverride.mMass = 1200.0f; 
         
         Body* carBody = bodyInterface->CreateBody(carBodySettings);
         if (!carBody) return nullptr;
         
         bodyInterface->AddBody(carBody->GetID(), EActivation::Activate);
         entityBodyMap[entityID] = carBody->GetID();
-
-        // 2. Define Wheels
-        VehicleConstraintSettings settings;
-        settings.mDrawConstraintSize = 0.1f;
-        settings.mMaxPitchRollAngle = JPH::DegreesToRadians(60.0f);
-
-        // FIX 2: Z-Up Wheel Offsets (X=Forward, Y=Side, Z=Up)
-        Vec3 wheelOffsets[] = {
-            Vec3( 1.6f,  1.0f, -0.2f), // Front Left
-            Vec3( 1.6f, -1.0f, -0.2f), // Front Right
-            Vec3(-1.6f,  1.0f, -0.2f), // Rear Left
-            Vec3(-1.6f, -1.0f, -0.2f)  // Rear Right
-        };
-
-        for (int i = 0; i < 4; i++) {
-            WheelSettingsWV* w = new WheelSettingsWV();
-            w->mPosition = wheelOffsets[i];
-            
-            // --- FIX: Use Updated Jolt Variable Names ---
-            w->mSuspensionDirection = Vec3(0, 0, -1); // Down (Z)
-            w->mSteeringAxis = Vec3(0, 0, 1);         // Up (Z) - Axis used for steering rotation
-            // Note: Jolt usually derives the axle from Cross(Suspension, Steering) or forward.
-            // If mSteeringAxis doesn't exist, try just setting mSuspensionDirection.
-            // --------------------------------------------
-
-            w->mRadius = 0.4f; w->mWidth = 0.3f;
-            w->mSuspensionMinLength = 0.3f; w->mSuspensionMaxLength = 0.7f;
-            w->mMaxSteerAngle = (i < 2) ? JPH::DegreesToRadians(40.0f) : 0.0f;
-            w->mSuspensionSpring.mFrequency = 2.0f; w->mSuspensionSpring.mDamping = 0.5f;
-            settings.mWheels.push_back(w);
-        }
-
-        WheeledVehicleControllerSettings* controllerSettings = new WheeledVehicleControllerSettings();
-        controllerSettings->mEngine.mMaxTorque = 500.0f;
-        controllerSettings->mDifferentials.resize(1);
-        controllerSettings->mDifferentials[0].mLeftWheel = 0; // Front Left
-        controllerSettings->mDifferentials[0].mRightWheel = 1; // Front Right
-        settings.mController = controllerSettings;
-
-        VehicleConstraint* vehicle = new VehicleConstraint(*carBody, settings);
-        vehicle->SetVehicleCollisionTester(new VehicleCollisionTesterRay(Layers::MOVING));
         
-        physicsSystem->AddConstraint(vehicle);
-        physicsSystem->AddStepListener(vehicle);
+        // Return the raw pointer instead of the ID
+        return carBody;
+    }
 
-        return vehicle;
+    void ResetBody(int entityID, glm::vec3 pos, glm::vec3 rot) {
+        if (!bodyInterface) return;
+        
+        if (entityBodyMap.find(entityID) != entityBodyMap.end()) {
+            JPH::BodyID id = entityBodyMap[entityID];
+            
+            // 1. Stop all movement
+            bodyInterface->SetLinearAndAngularVelocity(id, JPH::Vec3::sZero(), JPH::Vec3::sZero());
+            
+            // 2. Teleport back to spawn
+            glm::quat q = glm::quat(glm::radians(rot)); // Convert Euler angles to Quaternion
+            bodyInterface->SetPositionAndRotation(id, ToJolt(pos), JPH::Quat(q.x, q.y, q.z, q.w), JPH::EActivation::Activate);
+        }
     }
 
     void Update(float deltaTime, std::vector<class CBaseEntity*>& entityList) {

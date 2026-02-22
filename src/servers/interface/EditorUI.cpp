@@ -225,7 +225,7 @@ namespace Crescendo {
     }
 
     
-    void EditorUI::Prepare(Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor) {
+    void EditorUI::Prepare(Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor, EngineState& engineState) {
         
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -308,6 +308,33 @@ namespace Crescendo {
 
             ImGui::EndMainMenuBar();
         }
+
+        // STATE TOOL BAR
+        ImGuiViewport* viewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + viewport->Size.x * 0.5f, viewport->Pos.y + 25.0f), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+        
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.15f, 0.15f, 0.16f, 0.9f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
+        
+        ImGui::Begin("Toolbar", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+        
+        if (ImGui::Button(engineState == EngineState::Playing ? "Playing" : "Play")) {
+            engineState = EngineState::Playing;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Pause")) {
+            engineState = EngineState::Paused;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Stop")) {
+            engineState = EngineState::Editor;
+            // Next step: Reset car transforms here
+        }
+        
+        ImGui::End();
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+        // --- END TOOLBAR CODE ---
 
         // 3. VIEWPORT WINDOW
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));

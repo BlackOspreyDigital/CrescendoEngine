@@ -16,3 +16,9 @@ imgui.ini
 
 # --- OS Specific ---
 Thumbs.db
+
+# --- CMake Generated Files ---
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
