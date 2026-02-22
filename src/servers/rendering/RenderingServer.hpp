@@ -17,11 +17,8 @@
 #include <imgui.h>
 #include "servers/camera/Camera.hpp"
 #include "scene/GameWorld.hpp"
-#include "scene/CarController.hpp"
 #include "servers/interface/EditorUI.hpp"
 
-
-// [VMA Forward Declarations]
 struct VmaAllocator_T;
 typedef struct VmaAllocator_T* VmaAllocator;
 struct VmaAllocation_T;
@@ -110,10 +107,10 @@ namespace Crescendo {
 
     struct SSRPushConstants {
         glm::mat4 proj;
-        glm::mat4 invProj;
-        glm::mat4 view;
-        glm::mat4 invView;
-    };
+        glm::mat4 view; // I swapped invProj for view!
+    }; // Exactly 128 bytes
+
+    // Nvidia is fine for 256 bytes of push, but for intel iGPU we need to lower to 128bytes.
 
     struct SkyboxPushConsts {
         glm::mat4 invViewProj;  
@@ -125,20 +122,32 @@ namespace Crescendo {
        float bloomStrength;
        float bloomThreshold;
        float blurRadius;
+       float ssaoUVScale; // Tells shader if SSAO is half-res
+       float ssrUVScale;  // Tells shader if SSR is half-res
     };
+
+    struct RenderSettings {
+        bool enableSSAO = false;
+        bool halfResSSAO = false;
+        bool enableSSR = false;
+        bool halfResSSR = false;
+    };
+
 
     class RenderingServer {   
     public:
+        friend class AssetLoader;
         RenderingServer();
         bool initialize(DisplayServer* display);
         void shutdown();
         void render(Scene* scene); 
 
+        void createDefaultGround(Scene* scene);
+
         // Asset Management
         int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
         int acquireTexture(const std::string& path);
         
-        // [UPDATED] Returns RAII Object
         VulkanImage UploadTexture(void* pixels, int width, int height, VkFormat format);
         
         GameWorld* GetWorld() { return &gameWorld; }
@@ -147,13 +156,8 @@ namespace Crescendo {
         void endSingleTimeCommands(VkCommandBuffer commandBuffer);
         VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
 
-        void loadModel(const std::string& path, Scene* scene);
-        void loadGLTF(const std::string& filePath, Scene* scene);
-        void processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene, glm::mat4 parentMatrix = glm::mat4(1.0f));
-        void loadMaterialsFromOBJ(const std::string& baseDir, const std::vector<tinyobj::material_t>& materials);
-
         bool isPlayMode = false;
-        CarController* activeCar = nullptr;
+        
         
         PostProcessPushConstants postProcessSettings{ 
             0.0f,  // exposure
@@ -161,6 +165,8 @@ namespace Crescendo {
             1.0f, // bloomStrength
             1.0f   // bloomThreshold
         };
+
+        RenderSettings renderSettings;
         
         Camera mainCamera;
         GameWorld gameWorld;
@@ -330,17 +336,12 @@ namespace Crescendo {
         bool createSSRResources();
         bool createSSRPipeline();
         void updateSSRDescriptors(); // bind our G-Buffer
-
         bool createTransparentPipeline();
         bool createWaterPipeline();
-        void createWaterMesh();
-        bool createTextureImage();
-        // You have the string version, but you need the void/bool version too:
         
+        bool createTextureImage();        
         bool createTextureImage(const std::string& path, VulkanImage& outImage);
-
-        bool createTextureSampler();         
-        
+        bool createTextureSampler();          
         bool createViewportResources();
         bool createBloomResources();
         bool createBloomPipeline();
@@ -373,7 +374,6 @@ namespace Crescendo {
         // Transitions
         void cmdTransitionImageLayout(VkCommandBuffer cmdbuffer, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
         void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
-        
         bool createShadowResources();
         bool createShadowPipeline();
         

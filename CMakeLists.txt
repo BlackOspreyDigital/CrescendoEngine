@@ -15,7 +15,9 @@ pkg_check_modules(LUA REQUIRED lua5.4)
 
 # --- 2. Sources ---
 file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.c")
-file(GLOB_RECURSE JOLT_SOURCES "JoltPhysics/Jolt/*.cpp")
+# [FIX] Updated paths to your new module folders
+file(GLOB_RECURSE JOLT_SOURCES "modules/Jolt/JoltPhysics/Jolt/*.cpp")
+file(GLOB_RECURSE MODULE_SOURCES "modules/gltf/*.cpp")
 
 set(IMGUI_SOURCES 
     deps/imgui/imgui.cpp 
@@ -31,8 +33,6 @@ set(IMGUI_SOURCES
 # --- 3. Shader Compilation ---
 find_program(GLSLC_EXECUTABLE glslc)
 
-# [FIX] Check your 'ls' output. If you don't have fullscreen.vert, 
-# remove it from this list or rename it to match your file!
 set(SHADER_FILES
     assets/shaders/shader.vert
     assets/shaders/shader.frag
@@ -43,6 +43,9 @@ set(SHADER_FILES
     assets/shaders/bloom_bright.frag
     assets/shaders/bloom_composite.frag
     assets/shaders/fullscreen_vert.vert
+    assets/shaders/ssr.frag  
+    assets/shaders/ssao.frag 
+    assets/shaders/shadow.vert 
 )
 
 foreach(SHADER ${SHADER_FILES})
@@ -58,8 +61,8 @@ foreach(SHADER ${SHADER_FILES})
 endforeach()
 
 # --- 4. Executable ---
-# Named crescendo_engine to match your previous setup
-add_executable(crescendo_engine ${SOURCES} ${JOLT_SOURCES} ${IMGUI_SOURCES} ${SHADER_SPV_FILES})
+# [FIX] Added ${MODULE_SOURCES} to the executable list
+add_executable(crescendo_engine ${SOURCES} ${JOLT_SOURCES} ${MODULE_SOURCES} ${IMGUI_SOURCES} ${SHADER_SPV_FILES})
 
 # --- 5. Includes ---
 target_include_directories(crescendo_engine PRIVATE 
@@ -72,7 +75,8 @@ target_include_directories(crescendo_engine PRIVATE
     ${CMAKE_SOURCE_DIR}/deps/stb
     ${CMAKE_SOURCE_DIR}/deps/imgui
     ${CMAKE_SOURCE_DIR}/deps/imgui/backends
-    ${CMAKE_SOURCE_DIR}/JoltPhysics
+    ${CMAKE_SOURCE_DIR}/modules/Jolt/JoltPhysics # [FIX] Updated Jolt include
+    ${CMAKE_SOURCE_DIR}/modules/gltf # [FIX] Added gltf include
     ${SDL2_INCLUDE_DIRS}
     ${Vulkan_INCLUDE_DIRS}
     ${LUA_INCLUDE_DIRS}

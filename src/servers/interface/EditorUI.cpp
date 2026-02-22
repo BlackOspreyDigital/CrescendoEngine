@@ -1,3 +1,4 @@
+#include "modules/gltf/AssetLoader.hpp"
 #include "EditorUI.hpp"
 #include "imgui.h"
 #include "servers/rendering/RenderingServer.hpp"
@@ -269,10 +270,7 @@ namespace Crescendo {
                     
                     if (!selection.empty() && rendererRef) {
                         std::string path = selection[0];
-                        
-                        // [FIX] Always call loadModel and pass the 'scene' pointer.
-                        // Your RenderingServer::loadModel now handles the .gltf/.glb routing internally.
-                        rendererRef->loadModel(path, scene);
+                        Crescendo::AssetLoader::loadModel(rendererRef, path, scene);
                     }
                 }
                 if (ImGui::MenuItem("Exit", "Alt+F4")) {
@@ -280,6 +278,34 @@ namespace Crescendo {
                 }
                 ImGui::EndMenu();
             }
+            if (ImGui::BeginMenu("Edit")) {
+                if (ImGui::MenuItem("Deselect All", "Esc")) { selectedObjectIndex = -1; }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Window")) {
+                ImGui::MenuItem("Engine Settings", NULL, &showSettingsWindow);
+                ImGui::MenuItem("Console", NULL, &showConsole);
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Help")) {
+                ImGui::MenuItem("About", NULL, &showAboutWindow);
+                ImGui::EndMenu();
+            }
+
+            static float fpsTimer = 0.0f;
+            static float displayFps = 0.0f;
+            
+            fpsTimer += io.DeltaTime;
+            if (fpsTimer >= 0.1f) { // Update every 100ms
+                displayFps = io.Framerate;
+                fpsTimer = 0.0f;
+            }
+
+            // Push the text to the far right of the menu bar
+            ImGui::SameLine(ImGui::GetWindowWidth() - 80.0f);
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "FPS: %.0f", displayFps);
+            // --------------------------------
+
             ImGui::EndMainMenuBar();
         }
 
@@ -296,7 +322,7 @@ namespace Crescendo {
             ImGui::Image((ImTextureID)viewportDescriptor, viewportSize);
         }
 
-        // --- GIZMOS ---
+       // --- GIZMOS ---
         
         if (viewportSize.x > 0 && viewportSize.y > 0 && scene) {
             ImGuizmo::SetOrthographic(false);
@@ -305,11 +331,12 @@ namespace Crescendo {
                 
             glm::mat4 view = camera.GetViewMatrix();
             float aspect = viewportSize.x / viewportSize.y;
+            
+            // Generate the raw OpenGL-style projection matrix
             glm::mat4 proj = glm::perspective(glm::radians(camera.fov), aspect, camera.nearClip, camera.farClip);
                 
-            // [FIX] FLIP THE Y-AXIS FOR IMGUIZMO
-            // This matches the flip you do in RenderingServer::render()
-            proj[1][1] *= -1; 
+            // DO NOT FLIP THE Y-AXIS! ImGuizmo needs the pure OpenGL matrix to calculate mouse dragging correctly.
+            // proj[1][1] *= -1;  <-- Remove this
                 
             if (selectedObjectIndex >= 0 && selectedObjectIndex < (int)scene->entities.size()) {
                 CBaseEntity* ent = scene->entities[selectedObjectIndex];
@@ -423,8 +450,47 @@ namespace Crescendo {
 
         ImGui::End();
 
-        bool showConsole = true;
-        gameConsole.Draw("Console", &showConsole);
+        // --- ENGINE SETTINGS WINDOW ---
+        if (showSettingsWindow) {
+            ImGui::Begin("Engine Settings", &showSettingsWindow);
+            
+            if (ImGui::CollapsingHeader("Graphics & Performance", ImGuiTreeNodeFlags_DefaultOpen)) {
+                // We will hook these up to RenderingServer next!
+                ImGui::Checkbox("Enable SSAO", &rendererRef->renderSettings.enableSSAO);
+                if (rendererRef->renderSettings.enableSSAO) {
+                    ImGui::Indent();
+                    ImGui::Checkbox("Half-Resolution SSAO", &rendererRef->renderSettings.halfResSSAO);
+                    ImGui::Unindent();
+                }
+
+                ImGui::Separator();
+
+                ImGui::Checkbox("Enable SSR", &rendererRef->renderSettings.enableSSR);
+                if (rendererRef->renderSettings.enableSSR) {
+                    ImGui::Indent();
+                    ImGui::Checkbox("Half-Resolution SSR", &rendererRef->renderSettings.halfResSSR);
+                    ImGui::Unindent();
+                }
+            }
+            ImGui::End();
+        }
+
+        // --- ABOUT WINDOW ---
+        if (showAboutWindow) {
+            ImGui::Begin("About", &showAboutWindow, ImGuiWindowFlags_AlwaysAutoResize);
+            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.0f, 1.0f), "Black Osprey Engine (Bravo Build)");
+            ImGui::Separator();
+            ImGui::Text("Developed by Bryan");
+            ImGui::Text("Powered by Vulkan & SDL2");
+            ImGui::Spacing();
+            ImGui::TextWrapped("A lightweight, high-performance 3D engine built for scalability.");
+            ImGui::End();
+        }
+
+        // --- CONSOLE (Updated to use the class-level flag) ---
+        if (showConsole) {
+            gameConsole.Draw("Console", &showConsole);
+        }
 
         ImGui::Render(); 
     }

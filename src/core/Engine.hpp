@@ -1,9 +1,11 @@
 #pragma once
+
 #include "servers/display/DisplayServer.hpp"
 #include "servers/rendering/RenderingServer.hpp"
 #include "servers/physics/PhysicsServer.hpp" 
 #include "core/ScriptSystem.hpp"
-#include "scene/CarController.hpp"
+#include "controllers/VehicleController.hpp"
+
 #include "scene/Scene.hpp"
 
 namespace Crescendo {
@@ -26,7 +28,7 @@ namespace Crescendo {
 
         // SYSTEMS
         ScriptSystem scriptSystem;
-        CarController carController;
+        
 
     private:
         bool isRunning;

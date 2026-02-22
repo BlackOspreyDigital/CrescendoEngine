@@ -7,7 +7,6 @@ layout(location = 2) in vec3 inNormal;
 layout(location = 3) in vec2 inTexCoord;
 layout(location = 4) in vec3 inTangent;
 layout(location = 5) in vec3 inBitangent;
-// [NEW] Second UV Channel
 layout(location = 6) in vec2 inTexCoord1; 
 
 layout(location = 0) out vec3 fragColor;
@@ -17,7 +16,6 @@ layout(location = 3) out vec3 fragPos;
 layout(location = 4) out vec3 fragTangent;
 layout(location = 5) out vec3 fragBitangent;
 layout(location = 6) out flat int outEntityIndex;
-// [NEW] Pass UV1 to Fragment
 layout(location = 7) out vec2 fragTexCoord1; 
 
 // --- UPDATED SSBO STRUCT ---

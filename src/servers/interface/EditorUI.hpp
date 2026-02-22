@@ -50,6 +50,11 @@ namespace Crescendo {
         // Descriptor Pool for ImGui
         VkDescriptorPool imguiPool = VK_NULL_HANDLE;
 
+        // Toggables
+        bool showSettingsWindow = false;
+        bool showAboutWindow = false;
+        bool showConsole = true;
+
         // Editor State
         Console gameConsole;
         glm::vec2 lastViewportSize = {1280.0f, 720.0f};

@@ -8,18 +8,16 @@ layout(binding = 0) uniform sampler2D sceneColorTex;
 layout(binding = 1) uniform sampler2D normalRoughnessTex;
 layout(binding = 2) uniform sampler2D depthTex;
 
-// We need these to convert between Screen Space and View Space
+// Update the Push Constants block
 layout(push_constant) uniform PushConsts {
     mat4 proj;
-    mat4 invProj;
-    mat4 view;
-    mat4 invView;
+    mat4 view; // Match the C++ side
 } params;
 
-// --- Helper: Reconstruct View-Space Position from Depth ---
+// Update the helper function to invert the matrix on the fly
 vec3 reconstructViewPos(vec2 uv, float depth) {
     vec4 clipSpace = vec4(uv * 2.0 - 1.0, depth, 1.0);
-    vec4 viewSpace = params.invProj * clipSpace;
+    vec4 viewSpace = inverse(params.proj) * clipSpace; // Natively calculate inverse here!
     return viewSpace.xyz / viewSpace.w;
 }
 

@@ -1,7 +1,4 @@
-
-#define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
-#define STB_IMAGE_WRITE_IMPLEMENTATION
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #ifndef GLM_ENABLE_EXPERIMENTAL
 #define GLM_ENABLE_EXPERIMENTAL
@@ -10,6 +7,7 @@
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
 #define VMA_IMPLEMENTATION
 #include "deps/vk_mem_alloc.h"
+#include "stb_image.h"
 
 #include <array>
 #include <set>
@@ -29,7 +27,7 @@
 #include <glm/gtx/intersect.hpp>       
 #include <glm/gtx/matrix_decompose.hpp> 
 #include "backends/imgui_impl_vulkan.h"
-#include "tiny_gltf.h"  
+  
 #include <vulkan/vulkan_core.h>  
 #include "servers/display/DisplayServer.hpp"
 #include "servers/rendering/RenderingServer.hpp"
@@ -112,7 +110,7 @@ namespace Crescendo {
         if (!createTextureImage()) return false; 
 
         // Skybox (Binding 1)
-        if (createHDRImage("assets/hdr/sky_cloudy.hdr", skyImage)) {
+        if (createHDRImage("assets/hdr/sky_cloudy2.hdr", skyImage)) {
              // Skybox Loaded
         }
 
@@ -126,6 +124,7 @@ namespace Crescendo {
 
         if (!createViewportResources()) return false;
         if (!createBloomResources()) return false;
+        if (!createSSRResources()) return false;
 
         viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(viewportSampler, finalImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
@@ -135,20 +134,20 @@ namespace Crescendo {
         if (!createTransparentPipeline()) return false;
         if (!createBloomPipeline()) return false;
         if (!createCompositePipeline()) return false;
-        if (!createShadowPipeline()) return false; // [FIX] Added Shadow Pipeline creation
+        if (!createShadowPipeline()) return false;
+        if (!createSSRPipeline()) return false;
         if (!createFramebuffers()) return false;
 
         // --- Assets ---
         std::cout << "[4/5] Loading Assets..." << std::endl;
-        
-        createWaterMesh();
-        this->waterTextureID = acquireTexture("assets/textures/water.png");
+               
 
         std::cout << "[5/5] Finalizing Synchronization..." << std::endl;
         if (!createSyncObjects()) return false;
         if (!createCommandBuffers()) return false;
 
         updateCompositeDescriptors();
+        updateSSRDescriptors();
 
         mainCamera.SetPosition(glm::vec3(0.0f, -10.0f, 5.0f)); 
         mainCamera.SetRotation(glm::vec3(25.0f, 0.0f, 0.0f)); 
@@ -157,7 +156,9 @@ namespace Crescendo {
         return true;
     }
 
-    void RenderingServer::createWaterMesh() {
+    void RenderingServer::createDefaultGround(Scene* scene) {
+        if (!scene) return; // Safety check
+
         std::vector<Vertex> vertices;
         std::vector<uint32_t> indices;
         
@@ -173,19 +174,16 @@ namespace Crescendo {
             for (int x = 0; x <= width; x++) {
                 Vertex v{};
                 v.pos = glm::vec3(startX + x * spacing, startY + z * spacing, 0.0f);
-                v.normal = glm::vec3(0.0f, 0.0f, 1.0f);
+                v.normal = glm::vec3(0.0f, 0.0f, 1.0f); 
                 v.color = glm::vec3(1.0f);
-                v.texCoord = glm::vec2((float)x / width, (float)z / depth);
-                
-                // Manually set tangents for the flat plane
+                v.texCoord = glm::vec2((float)x, (float)z);
                 v.tangent = glm::vec3(1.0f, 0.0f, 0.0f);
                 v.bitangent = glm::vec3(0.0f, 1.0f, 0.0f);
-                
                 vertices.push_back(v);
             }
         }
 
-        // 2. Generate Indices (This was likely missing!)
+        // 2. Generate Indices
         for (int z = 0; z < depth; z++) {
             for (int x = 0; x < width; x++) {
                 int topLeft = (z * (width + 1)) + x;
@@ -196,26 +194,29 @@ namespace Crescendo {
                 indices.push_back(topLeft);
                 indices.push_back(bottomLeft);
                 indices.push_back(topRight);
-
                 indices.push_back(topRight);
                 indices.push_back(bottomLeft);
                 indices.push_back(bottomRight);
             }
         }
 
-        MeshResource waterMesh{};
-        waterMesh.name = "Internal_Water";
-        waterMesh.indexCount = static_cast<uint32_t>(indices.size());
+        MeshResource groundMesh{};
+        groundMesh.name = "Internal_Ground";
+        groundMesh.indexCount = static_cast<uint32_t>(indices.size());
+        groundMesh.vertexBuffer = createVertexBuffer(vertices);
+        groundMesh.indexBuffer = createIndexBuffer(indices);
             
-        // Add these lines to actually upload the data to the GPU
-        waterMesh.vertexBuffer = createVertexBuffer(vertices);
-        waterMesh.indexBuffer = createIndexBuffer(indices);
-            
-        meshes.push_back(std::move(waterMesh));
+        meshes.push_back(std::move(groundMesh));
         
-        CBaseEntity* water = gameWorld.CreateEntity("prop_water");
-        water->modelIndex = meshes.size() - 1;
-        water->origin = glm::vec3(0, 0, -5.0f);
+        // 3. Put it in the REAL Scene!
+        CBaseEntity* ground = scene->CreateEntity("prop_static");
+        ground->targetName = "Ground Floor";
+        ground->modelIndex = meshes.size() - 1;
+        ground->origin = glm::vec3(0.0f, 0.0f, 0.0f); 
+        
+        ground->textureID = acquireTexture("assets/textures/grass.tga");
+        ground->roughness = 1.0f; 
+        ground->metallic = 0.0f;
     }
 
     bool RenderingServer::createInstance() {
@@ -745,52 +746,6 @@ namespace Crescendo {
         return vkCreateSampler(device, &samplerInfo, nullptr, &skySampler) == VK_SUCCESS;
     }
 
-    void RenderingServer::loadMaterialsFromOBJ(const std::string& baseDir, const std::vector<tinyobj::material_t>& materials) {
-        for (const auto& mat : materials) {
-            if (materialMap.find(mat.name) != materialMap.end()) {
-                continue;
-            }
-
-            Material newMat;
-            newMat.name = mat.name;
-            newMat.albedoColor = glm::vec3(mat.diffuse[0], mat.diffuse[1], mat.diffuse[2]);
-
-            if (mat.shininess > 0.0f) {
-                newMat.roughness = 1.0f - std::clamp(mat.shininess / 1000.0f, 0.0f, 1.0f);
-            } else {
-                newMat.roughness = 0.9f; 
-            }
-            newMat.metallic = 0.0f; 
-
-            // [FIXED] Single, clean texture loading block
-            if (!mat.diffuse_texname.empty()) {
-                std::string texturePath;
-
-                // Check paths in order of likelihood
-                if (std::ifstream(mat.diffuse_texname).good()) {
-                    texturePath = mat.diffuse_texname;
-                }
-                else if (std::ifstream(baseDir + "/" + mat.diffuse_texname).good()) {
-                    texturePath = baseDir + "/" + mat.diffuse_texname;
-                }
-                else if (std::ifstream("assets/textures/" + mat.diffuse_texname).good()) {
-                    texturePath = "assets/textures/" + mat.diffuse_texname;
-                }
-
-                if (!texturePath.empty()) {
-                    newMat.textureID = acquireTexture(texturePath);
-                } else {
-                    newMat.textureID = 0; // Default texture
-                }
-            } else {
-                newMat.textureID = 0;
-            } 
-
-            materialMap[mat.name] = static_cast<uint32_t>(materialBank.size());
-            materialBank.push_back(newMat);
-        }
-    }
-
     bool RenderingServer::createDescriptorSetLayout() {
         // =========================================================
         // 1. MAIN SCENE LAYOUT (Set 0)
@@ -871,8 +826,15 @@ namespace Crescendo {
         postBinding1.descriptorCount = 1;
         postBinding1.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         postBinding1.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        
+        VkDescriptorSetLayoutBinding postBinding2{};
+        postBinding2.binding = 2;
+        postBinding2.descriptorCount = 1;
+        postBinding2.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        postBinding2.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        std::array<VkDescriptorSetLayoutBinding, 2> postBindings = { postBinding0, postBinding1 };
+        // Make sure all 3 are in the array!
+        std::array<VkDescriptorSetLayoutBinding, 3> postBindings = { postBinding0, postBinding1, postBinding2 };
 
         VkDescriptorSetLayoutCreateInfo postLayoutInfo{};
         postLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -916,16 +878,7 @@ namespace Crescendo {
             return false;
         }
 
-        // -----------------------------------------------------------
-        // SSR ALLOCATE (Set 2)
-        // -----------------------------------------------------------
-        VkDescriptorSetAllocateInfo ssrAlloc{};
-        ssrAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        ssrAlloc.descriptorPool = descriptorPool;
-        ssrAlloc.descriptorSetCount = 1;
-        ssrAlloc.pSetLayouts = &ssrDescriptorLayout;
-
-        if (vkAllocateDescriptorSets(device, &ssrAlloc, &ssrDescriptorSet) != VK_SUCCESS) return false;
+        
 
         return true;
     }
@@ -1096,6 +1049,17 @@ namespace Crescendo {
 
         if (vkAllocateDescriptorSets(device, &postAlloc, &compositeDescriptorSet) != VK_SUCCESS) return false;
 
+        // -----------------------------------------------------------
+        // SSR ALLOCATE (Set 2) --- MOVED HERE!
+        // -----------------------------------------------------------
+        VkDescriptorSetAllocateInfo ssrAlloc{};
+        ssrAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ssrAlloc.descriptorPool = descriptorPool;
+        ssrAlloc.descriptorSetCount = 1;
+        ssrAlloc.pSetLayouts = &ssrDescriptorLayout;
+
+        if (vkAllocateDescriptorSets(device, &ssrAlloc, &ssrDescriptorSet) != VK_SUCCESS) return false;
+
         return true;
     }
 
@@ -1252,20 +1216,25 @@ namespace Crescendo {
         depthStencil.depthWriteEnable = VK_TRUE; // changed for viewport test
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
-        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        colorBlendAttachment.blendEnable = VK_TRUE;
-        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-        colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-        colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
+        
+        // Attachment 0: Scene Color
+        colorBlendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachments[0].blendEnable = VK_TRUE;
+        colorBlendAttachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        colorBlendAttachments[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorBlendAttachments[0].colorBlendOp = VK_BLEND_OP_ADD;
+        colorBlendAttachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        colorBlendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
+
+        // Attachment 1: Normal G-Buffer (Clone Attachment 0 to bypass the independentBlend rule!)
+        colorBlendAttachments[1] = colorBlendAttachments[0]; 
 
         VkPipelineColorBlendStateCreateInfo colorBlending{};
         colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        colorBlending.attachmentCount = 1;
-        colorBlending.pAttachments = &colorBlendAttachment;
+        colorBlending.attachmentCount = 2; 
+        colorBlending.pAttachments = colorBlendAttachments;
 
         std::vector<VkDynamicState> dynamicStates = {
             VK_DYNAMIC_STATE_VIEWPORT,
@@ -1434,20 +1403,25 @@ namespace Crescendo {
         depthStencil.depthWriteEnable = VK_FALSE;
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
-        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        colorBlendAttachment.blendEnable = VK_TRUE;
-        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-        colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-        colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
+        
+        // Attachment 0: Scene Color
+        colorBlendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachments[0].blendEnable = VK_TRUE;
+        colorBlendAttachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        colorBlendAttachments[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorBlendAttachments[0].colorBlendOp = VK_BLEND_OP_ADD;
+        colorBlendAttachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        colorBlendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
+
+        // Attachment 1: Normal G-Buffer (Clone Attachment 0 to bypass the independentBlend rule!)
+        colorBlendAttachments[1] = colorBlendAttachments[0]; 
 
         VkPipelineColorBlendStateCreateInfo colorBlending{};
         colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        colorBlending.attachmentCount = 1;
-        colorBlending.pAttachments = &colorBlendAttachment;
+        colorBlending.attachmentCount = 2; 
+        colorBlending.pAttachments = colorBlendAttachments;
 
         // [FIX] Removed unused 'VkPipelineLayoutCreateInfo pipelineLayoutInfo'
         // We reuse the 'pipelineLayout' created in createGraphicsPipeline
@@ -1549,20 +1523,26 @@ namespace Crescendo {
         depthStencil.depthWriteEnable = VK_TRUE; 
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
-        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        colorBlendAttachment.blendEnable = VK_TRUE; 
-        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-        colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-        colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+       VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
+        
+        // Attachment 0: Scene Color
+        colorBlendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachments[0].blendEnable = VK_TRUE;
+        colorBlendAttachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        colorBlendAttachments[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorBlendAttachments[0].colorBlendOp = VK_BLEND_OP_ADD;
+        colorBlendAttachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        colorBlendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
+
+        // Attachment 1: Normal G-Buffer (Clone Attachment 0 to bypass the independentBlend rule!)
+        colorBlendAttachments[1] = colorBlendAttachments[0]; 
 
         VkPipelineColorBlendStateCreateInfo colorBlending{};
         colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        colorBlending.attachmentCount = 1;
-        colorBlending.pAttachments = &colorBlendAttachment;
+        colorBlending.attachmentCount = 2; 
+        colorBlending.pAttachments = colorBlendAttachments;
+
         /*
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -1985,346 +1965,6 @@ namespace Crescendo {
         }
         return true;
     }
-
-    // ========================================================================
-    // MODEL LOADING STACK (Moving to its own logic next)
-    // ========================================================================
-
-    void RenderingServer::loadModel(const std::string& filePath, Scene* scene) {
-        std::ifstream f(filePath.c_str());
-        if (!f.good()) {
-            std::cerr << "[Error] File not found: " << filePath << std::endl;
-            return;
-        }
-
-        if (filePath.find(".glb") != std::string::npos || filePath.find(".gltf") != std::string::npos) {
-            loadGLTF(filePath, scene); 
-        } 
-        else if (filePath.find(".obj") != std::string::npos) {
-            std::cout << "[Loader] OBJ loading not yet refactored." << std::endl;
-        }
-    }
-
-    // --------------------------------------------------------------------
-    // GLTF Loading & Handling (UPDATED)
-    // --------------------------------------------------------------------
-
-    // [HELPER] Standardize slashes
-    std::string normalizePath(const std::string& path) {
-        std::string s = path;
-        for (char &c : s) if (c == '\\') c = '/';
-        return s;
-    }
-
-    // [HELPER] Decode URL characters
-    std::string decodeUri(const std::string& uri) {
-        std::string result;
-        for (size_t i = 0; i < uri.length(); i++) {
-            if (uri[i] == '%' && i + 2 < uri.length()) {
-                std::string hex = uri.substr(i + 1, 2);
-                char c = static_cast<char>(std::strtol(hex.c_str(), nullptr, 16));
-                result += c;
-                i += 2;
-            } else if (uri[i] == '+') result += ' ';
-            else result += uri[i];
-        }
-        return result;
-    }
-    
-    // 1. UPDATED LOADGLTF (Tangents + Safe Buffers) Added missing Texture function at bottom
-
-    void RenderingServer::loadGLTF(const std::string& filePath, Scene* scene) {
-        if (scene == nullptr) return;
-
-        tinygltf::Model model;
-        tinygltf::TinyGLTF loader;
-        std::string err, warn;
-
-        bool ret = (filePath.find(".glb") != std::string::npos) ? 
-                   loader.LoadBinaryFromFile(&model, &err, &warn, filePath) : 
-                   loader.LoadASCIIFromFile(&model, &err, &warn, filePath);
-
-        if (!ret) { std::cerr << "[GLTF Error] " << err << std::endl; return; }
-
-        std::string baseDir = "";
-        size_t lastSlash = filePath.find_last_of("/\\");
-        if (lastSlash != std::string::npos) baseDir = filePath.substr(0, lastSlash);
-        baseDir = normalizePath(baseDir);
-
-        // --- MESH LOADING ---
-        for (size_t i = 0; i < model.meshes.size(); i++) {
-            const auto& mesh = model.meshes[i];
-
-            for (size_t j = 0; j < mesh.primitives.size(); j++) {
-                const auto& primitive = mesh.primitives[j];
-                std::vector<Vertex> vertices;
-                std::vector<uint32_t> indices;
-
-                auto getAttrData = [&](const std::string& name, int& stride) -> const uint8_t* {
-                    auto it = primitive.attributes.find(name);
-                    if (it == primitive.attributes.end()) return nullptr;
-                    const auto& acc = model.accessors[it->second];
-                    const auto& view = model.bufferViews[acc.bufferView];
-                    stride = acc.ByteStride(view);
-                    return &model.buffers[view.buffer].data[acc.byteOffset + view.byteOffset];
-                };
-
-                int posStride, normStride, tex0Stride, tex1Stride, tanStride;
-                const uint8_t* posBase = getAttrData("POSITION", posStride);
-                const uint8_t* normBase = getAttrData("NORMAL", normStride);
-                const uint8_t* tex0Base = getAttrData("TEXCOORD_0", tex0Stride); 
-                const uint8_t* tex1Base = getAttrData("TEXCOORD_1", tex1Stride);
-                const uint8_t* tanBase = getAttrData("TANGENT", tanStride);
-
-                if (!posBase) continue;
-                int posCount = model.accessors[primitive.attributes.at("POSITION")].count;
-                vertices.reserve(posCount);
-
-                for (int v = 0; v < posCount; v++) {
-                    Vertex vert{};
-                    const float* p = reinterpret_cast<const float*>(posBase + (v * posStride));
-                    vert.pos = { p[0], p[2], -p[1] }; 
-
-                    if (normBase) {
-                        const float* n = reinterpret_cast<const float*>(normBase + (v * normStride));
-                        vert.normal = { n[0], n[2], -n[1] }; // Match position swizzle
-                    } else {
-                        vert.normal = { 0.0f, 0.0f, 1.0f };
-                    }
-
-                    if (tex0Base) {
-                        const auto& acc = model.accessors[primitive.attributes.at("TEXCOORD_0")];
-                        if (acc.componentType == 5126) { // FLOAT
-                            const float* t = reinterpret_cast<const float*>(tex0Base + (v * tex0Stride));
-                            vert.texCoord = { t[0], t[1] };
-                        } else if (acc.componentType == 5123) { // UNSIGNED SHORT
-                            const uint16_t* t = reinterpret_cast<const uint16_t*>(tex0Base + (v * tex0Stride));
-                            vert.texCoord = { t[0] / 65535.0f, t[1] / 65535.0f };
-                        }
-                    }
-
-                    if (tanBase) {
-                        const float* t = reinterpret_cast<const float*>(tanBase + (v * tanStride));
-                        vert.tangent = { t[0], t[2], -t[1] }; // Match position swizzle
-                        vert.bitangent = glm::cross(vert.normal, vert.tangent) * t[3];
-                    }
-                    vert.color = { 1.0f, 1.0f, 1.0f };
-                    vertices.push_back(vert);
-                }
-
-                if (primitive.indices > -1) {
-                    const auto& acc = model.accessors[primitive.indices];
-                    const auto& view = model.bufferViews[acc.bufferView];
-                    const uint8_t* idxData = &model.buffers[view.buffer].data[acc.byteOffset + view.byteOffset];
-                    int idxStride = acc.ByteStride(view);
-
-                    for (size_t k = 0; k < acc.count; k++) {
-                        if (acc.componentType == 5125) indices.push_back(*(const uint32_t*)(idxData + k * idxStride));
-                        else if (acc.componentType == 5123) indices.push_back(*(const uint16_t*)(idxData + k * idxStride));
-                        else if (acc.componentType == 5121) indices.push_back(*(const uint8_t*)(idxData + k * idxStride));
-                    }
-                }
-
-                MeshResource newMesh{};
-                // 1. Generate and store the name in a local string first
-                std::string meshName = normalizePath(baseDir) + "_mesh_" + std::to_string(i) + "_" + std::to_string(j);
-                newMesh.name = meshName; 
-
-                newMesh.indexCount = static_cast<uint32_t>(indices.size());
-                newMesh.vertexBuffer = createVertexBuffer(vertices);
-                newMesh.indexBuffer = createIndexBuffer(indices);
-
-                size_t globalIndex = meshes.size();
-                meshes.push_back(std::move(newMesh)); 
-
-                // 2. Use the local string for the map
-                meshMap[meshName] = globalIndex;
-            }
-        }
-
-        // --- NODE PROCESSING ---
-        const auto& gltfScene = model.scenes[model.defaultScene > -1 ? model.defaultScene : 0];
-        for (int nodeIdx : gltfScene.nodes) {
-            processGLTFNode(model, model.nodes[nodeIdx], nullptr, baseDir, scene, glm::mat4(1.0f));
-        }
-    }
-
-    void RenderingServer::processGLTFNode(tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene, glm::mat4 parentMatrix) {
-        if (!scene) return; 
-
-        CBaseEntity* newEnt = scene->CreateEntity("prop_static"); 
-        newEnt->targetName = node.name; 
-        newEnt->textureID = 0; 
-
-        if (parent) {
-            newEnt->moveParent = parent;
-            parent->children.push_back(newEnt);
-        }
-
-        // 1. Calculate LOCAL Matrix
-        glm::vec3 localTranslation(0.0f);
-        glm::quat localRotation = glm::identity<glm::quat>();
-        glm::vec3 localScale(1.0f);
-        glm::mat4 localMat(1.0f);
-
-        if (node.matrix.size() == 16) {
-            localMat = glm::make_mat4(node.matrix.data());
-        } else {
-            if (node.translation.size() == 3) 
-                localTranslation = glm::vec3(node.translation[0], node.translation[1], node.translation[2]);
-            if (node.rotation.size() == 4) 
-                localRotation = glm::quat((float)node.rotation[3], (float)node.rotation[0], (float)node.rotation[1], (float)node.rotation[2]);
-            if (node.scale.size() == 3) 
-                localScale = glm::vec3(node.scale[0], node.scale[1], node.scale[2]);
-        
-            localMat = glm::translate(glm::mat4(1.0f), localTranslation) * glm::mat4(localRotation) * glm::scale(glm::mat4(1.0f), localScale);
-        }
-    
-        // [FIX START] Apply X-Flip to Root Node to fix Mirroring
-        // If this is a root node (no parent), we flip the X-axis scale.
-        // This un-mirrors the mesh effectively in World Space.
-        if (parent == nullptr) {
-            localMat = glm::scale(glm::mat4(1.0f), glm::vec3(-1.0f, 1.0f, 1.0f)) * localMat;
-        }
-
-        // 2. Calculate GLOBAL Matrix
-        glm::mat4 globalMat = parentMatrix * localMat;
-
-        // 3. Decompose & Convert Coordinate System (Y-Up -> Z-Up)
-        glm::vec3 worldScale, worldPos, skew;
-        glm::quat worldRot;
-        glm::vec4 perspective;
-        glm::decompose(globalMat, worldScale, worldRot, worldPos, skew, perspective);
-
-        
-        newEnt->origin = glm::vec3(worldPos.x, -worldPos.z, worldPos.y);
-
-        // [FIX] Position: Map Y -> -Z, Z -> Y
-        newEnt->origin = glm::vec3(worldPos.x, worldPos.z, -worldPos.y);
-            
-        // [FIX] Rotation: Map Quaternion bases to match
-        // Rot Y (q.y) becomes Rot -Z (-q.z)
-        // Rot Z (q.z) becomes Rot Y (q.y)
-        glm::quat zUpRot(worldRot.w, worldRot.x, worldRot.z, -worldRot.y);
-            
-        newEnt->angles = glm::degrees(glm::eulerAngles(zUpRot));
-        newEnt->scale = worldScale;
-
-        if (node.mesh > -1) {
-        const tinygltf::Mesh& mesh = model.meshes[node.mesh];
-        
-        for (size_t i = 0; i < mesh.primitives.size(); i++) {
-            const auto& primitive = mesh.primitives[i];
-            
-            // 1. Create or Identify the Entity
-            CBaseEntity* targetEnt = (i == 0) ? newEnt : scene->CreateEntity("prop_submesh");
-         
-            // [CRITICAL FIX] ---------------------------------------------------
-            // Force the texture ID to 0 immediately. 
-            // This ensures the ground doesn't accidentally inherit the Tree's texture.
-            
-            targetEnt->textureID = 0; 
-                     
-            if (i > 0) {
-                targetEnt->moveParent = newEnt;
-                newEnt->children.push_back(targetEnt);
-                targetEnt->origin = newEnt->origin; 
-                targetEnt->angles = newEnt->angles;
-                targetEnt->scale  = newEnt->scale;
-            }
-
-                if (primitive.material >= 0) {
-                    const tinygltf::Material& mat = model.materials[primitive.material];
-                    
-                    // Load BSDF
-                    targetEnt->roughness = (float)mat.pbrMetallicRoughness.roughnessFactor;
-                    targetEnt->metallic = (float)mat.pbrMetallicRoughness.metallicFactor;
-                    
-                    int normTexIndex = mat.normalTexture.index;
-                    if (normTexIndex >= 0) {
-                        const tinygltf::Texture& tex = model.textures[normTexIndex];
-                        const tinygltf::Image& img = model.images[tex.source];
-                        targetEnt->normalStrength = 1.0f;
-
-                    } else {
-                        targetEnt->normalStrength = 0.0f;
-                    }
-                
-                    // Emissive Shader
-                    if (mat.emissiveFactor.size() == 3) {
-                         float r = (float)mat.emissiveFactor[0];
-                         float g = (float)mat.emissiveFactor[1];
-                         float b = (float)mat.emissiveFactor[2];
-                         float maxEmit = std::max(r, std::max(g, b));
-                         if (maxEmit > 0.0f) targetEnt->emission = maxEmit * 5.0f;
-                    }
-
-                    // Base Color Texture
-                    int texIndex = mat.pbrMetallicRoughness.baseColorTexture.index;
-                    if (texIndex >= 0) {
-                        const tinygltf::Texture& tex = model.textures[texIndex];
-                        const tinygltf::Image& img = model.images[tex.source];
-                        
-                        std::string texKey;
-                        if (!img.uri.empty()) texKey = baseDir + "/" + decodeUri(img.uri);
-                        else texKey = "EMBEDDED_" + std::to_string(tex.source) + "_" + node.name;
-                        
-                        if (textureMap.find(texKey) != textureMap.end()) {
-                            targetEnt->textureID = textureMap[texKey];
-                        } else {
-                            int newID = static_cast<int>(textureMap.size()) + 1;
-                            if (newID < MAX_TEXTURES) {
-                                TextureResource newTex;
-                                bool success = false;
-                                // [FIX] Use SRGB to match Linear Workflow
-                                VkFormat format = VK_FORMAT_R8G8B8A8_SRGB; 
-
-                                if (!img.image.empty()) {
-                                    newTex.image = UploadTexture((void*)img.image.data(), img.width, img.height, format);
-                                    success = true;
-                                } 
-                                else if (!img.uri.empty()) {
-                                    if (createTextureImage(texKey, newTex.image)) success = true;
-                                }
-
-                                if (success) {
-                                    textureBank[newID] = std::move(newTex);
-                                    textureMap[texKey] = newID;
-                                    cache.textures[texKey] = newID; 
-                                    targetEnt->textureID = newID;
-
-                                    VkDescriptorImageInfo imageInfo{};
-                                    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                                    imageInfo.imageView = textureBank[newID].image.view;
-                                    imageInfo.sampler = textureSampler;
-
-                                    VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-                                    descriptorWrite.dstSet = descriptorSet; 
-                                    descriptorWrite.dstBinding = 0;
-                                    descriptorWrite.dstArrayElement = newID; 
-                                    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                                    descriptorWrite.descriptorCount = 1;
-                                    descriptorWrite.pImageInfo = &imageInfo;
-                                    vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                std::string meshKey = normalizePath(baseDir) + "_mesh_" + std::to_string(node.mesh) + "_" + std::to_string(i); 
-                if (meshMap.find(meshKey) != meshMap.end()) {
-                     targetEnt->modelIndex = meshMap[meshKey];
-                }
-            }
-        }
-
-        for (int childId : node.children) {
-            processGLTFNode(model, model.nodes[childId], newEnt, baseDir, scene, globalMat);
-        }
-    }
-
-    // ---------------------------------------------------------------------------------------------
     
     void RenderingServer::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
         VkCommandBuffer commandBuffer = beginSingleTimeCommands();
@@ -2479,7 +2119,7 @@ namespace Crescendo {
         
         glm::mat4 view = mainCamera.GetViewMatrix();
         glm::mat4 proj = mainCamera.GetProjectionMatrix(aspectRatio);
-        proj[1][1] *= -1; // Fix GLM Vulkan Clip
+        // proj[1][1] *= -1; // Fix GLM Vulkan Clip
         glm::mat4 vp = proj * view;
 
         // 2. Sun Logic
@@ -2522,10 +2162,11 @@ namespace Crescendo {
         viewportPassInfo.framebuffer = viewportFramebuffer;
         viewportPassInfo.renderArea.extent = swapChainExtent;
         
-        std::array<VkClearValue, 2> clearValues{};
-        clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}}; 
-        clearValues[1].depthStencil = {1.0f, 0};
-        viewportPassInfo.clearValueCount = 2;
+        std::array<VkClearValue, 3> clearValues{};
+        clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};  // Scene Color
+        clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // Normal G-Buffer
+        clearValues[2].depthStencil = {1.0f, 0};            // Depth Buffer
+        viewportPassInfo.clearValueCount = 3;
         viewportPassInfo.pClearValues = clearValues.data();
         
         // Transition image for writing
@@ -2628,39 +2269,47 @@ namespace Crescendo {
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
 
         // =========================================================
-        // [NEW] PASS 2: SCREEN SPACE REFLECTIONS (SSR)
+        // PASS 2: SCREEN SPACE REFLECTIONS (SSR) [Optimized for intel]
         // =========================================================
         {
             VkRenderPassBeginInfo ssrPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
             ssrPassInfo.renderPass = ssrRenderPass;
             ssrPassInfo.framebuffer = ssrFramebuffer;
             ssrPassInfo.renderArea.extent = swapChainExtent;
+            
+            // Clear to black (no reflections) so if disabled, it doesn't leave garbage on screen
             VkClearValue ssrClear = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
             ssrPassInfo.clearValueCount = 1;
             ssrPassInfo.pClearValues = &ssrClear;
 
             vkCmdBeginRenderPass(commandBuffers[currentFrame], &ssrPassInfo, VK_SUBPASS_CONTENTS_INLINE);
             
-            VkViewport ssrViewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
-            vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &ssrViewport);
-            VkRect2D ssrScissor{{0, 0}, swapChainExtent};
-            vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &ssrScissor);
+            if (renderSettings.enableSSR) {
+                // Determine resolution scale
+                float scale = renderSettings.halfResSSR ? 0.5f : 1.0f;
+                uint32_t currentWidth = static_cast<uint32_t>(swapChainExtent.width * scale);
+                uint32_t currentHeight = static_cast<uint32_t>(swapChainExtent.height * scale);
+
+                VkViewport ssrViewport{0.0f, 0.0f, (float)currentWidth, (float)currentHeight, 0.0f, 1.0f};
+                vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &ssrViewport);
+                
+                VkRect2D ssrScissor{{0, 0}, {currentWidth, currentHeight}};
+                vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &ssrScissor);
+                
+                vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, ssrPipeline);
+                vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                        ssrPipelineLayout, 0, 1, &ssrDescriptorSet, 0, nullptr);
+
+                SSRPushConstants ssrPush{};
+                ssrPush.proj = proj;
+                ssrPush.view = view; // Pass the view matrix here
+
+                vkCmdPushConstants(commandBuffers[currentFrame], ssrPipelineLayout,
+                                   VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SSRPushConstants), &ssrPush);
+
+                vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
+            }
             
-            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, ssrPipeline);
-            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    ssrPipelineLayout, 0, 1, &ssrDescriptorSet, 0, nullptr);
-
-            // Send Camera Matrices to the SSR Shader
-            SSRPushConstants ssrPush{};
-            ssrPush.proj = proj;
-            ssrPush.invProj = glm::inverse(proj);
-            ssrPush.view = view;
-            ssrPush.invView = glm::inverse(view);
-
-            vkCmdPushConstants(commandBuffers[currentFrame], ssrPipelineLayout,
-                               VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SSRPushConstants), &ssrPush);
-
-            vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
         }        
         
@@ -2705,6 +2354,10 @@ namespace Crescendo {
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipeline);
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     compositePipelineLayout, 0, 1, &compositeDescriptorSet, 0, nullptr);
+            
+            postProcessSettings.ssaoUVScale = renderSettings.halfResSSAO ? 0.5f : 1.0f;
+            postProcessSettings.ssrUVScale = renderSettings.halfResSSR ? 0.5f : 1.0f;
+
             vkCmdPushConstants(commandBuffers[currentFrame], compositePipelineLayout,
                                 VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PostProcessPushConstants), &postProcessSettings);
             vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
@@ -3089,13 +2742,18 @@ namespace Crescendo {
             depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
-            VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-            VkAttachmentReference depthRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+            VkAttachmentDescription normalAttachment = colorAttachment; // Normals use the exact same config as color!
+
+            VkAttachmentReference colorRefs[2] = {
+                {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}, // Location 0: Color
+                {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}  // Location 1: Normals
+            };
+            VkAttachmentReference depthRef{2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL}; // Location 2: Depth
 
             VkSubpassDescription subpass{};
             subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-            subpass.colorAttachmentCount = 1;
-            subpass.pColorAttachments = &colorRef;
+            subpass.colorAttachmentCount = 2; // We now have 2 color targets!
+            subpass.pColorAttachments = colorRefs;
             subpass.pDepthStencilAttachment = &depthRef;
 
             // Dependencies for sync
@@ -3118,7 +2776,7 @@ namespace Crescendo {
             dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
-            std::array<VkAttachmentDescription, 2> attachments = {colorAttachment, depthAttachment};
+            std::array<VkAttachmentDescription, 3> attachments = {colorAttachment, normalAttachment, depthAttachment};
             VkRenderPassCreateInfo rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
             rpInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
             rpInfo.pAttachments = attachments.data();
@@ -3182,6 +2840,11 @@ namespace Crescendo {
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 
             VK_IMAGE_ASPECT_COLOR_BIT);
 
+        // 1.5 G-BUFFER NORMALS (HDR)
+        viewportNormalImage = VulkanImage(allocator, device, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, 
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
+            VK_IMAGE_ASPECT_COLOR_BIT);
+
         // 2. REFRACTION (Custom Mips)
         {
             VkImageCreateInfo refInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -3236,15 +2899,14 @@ namespace Crescendo {
 
         // 4. DEPTH IMAGE
         viewportDepthImage = VulkanImage(allocator, device, width, height, VK_FORMAT_D32_SFLOAT,
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
             VK_IMAGE_ASPECT_DEPTH_BIT);
 
         // 5. FRAMEBUFFERS
-        // NOTE: viewportRenderPass is now valid!
-        std::array<VkImageView, 2> fbAttachments = { viewportImage.view, viewportDepthImage.view };
+        std::array<VkImageView, 3> fbAttachments = { viewportImage.view, viewportNormalImage.view, viewportDepthImage.view };
         VkFramebufferCreateInfo fbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
         fbInfo.renderPass = viewportRenderPass; 
-        fbInfo.attachmentCount = 2;
+        fbInfo.attachmentCount = 3;
         fbInfo.pAttachments = fbAttachments.data();
         fbInfo.width = width;
         fbInfo.height = height;
@@ -3278,10 +2940,11 @@ namespace Crescendo {
     }
 
     void RenderingServer::updateCompositeDescriptors() {
-       // Only update if resources exist
-       if (viewportImage.view == VK_NULL_HANDLE || bloomBrightImage.view == VK_NULL_HANDLE) return;
+       // Added ssrImage check!
+       if (viewportImage.view == VK_NULL_HANDLE || bloomBrightImage.view == VK_NULL_HANDLE || ssrImage.view == VK_NULL_HANDLE) return;
 
-       VkDescriptorImageInfo compositeInfos[2] = {};
+       VkDescriptorImageInfo compositeInfos[3] = {}; // Update to 3!
+       
        // Binding 0: The 3D Scene
        compositeInfos[0].sampler = viewportSampler;
        compositeInfos[0].imageView = viewportImage.view;
@@ -3292,11 +2955,16 @@ namespace Crescendo {
        compositeInfos[1].imageView = bloomBrightImage.view;
        compositeInfos[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+       // --- ADD BINDING 2 (SSR) ---
+       compositeInfos[2].sampler = viewportSampler;
+       compositeInfos[2].imageView = ssrImage.view;
+       compositeInfos[2].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
        VkWriteDescriptorSet postWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
        postWrite.dstSet = compositeDescriptorSet;
        postWrite.dstBinding = 0;
        postWrite.dstArrayElement = 0;
-       postWrite.descriptorCount = 2;
+       postWrite.descriptorCount = 3; // Update to 3!
        postWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
        postWrite.pImageInfo = compositeInfos;
 
@@ -3511,15 +3179,20 @@ namespace Crescendo {
         if (viewportFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, viewportFramebuffer, nullptr);
         if (bloomFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, bloomFramebuffer, nullptr);
         if (finalFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, finalFramebuffer, nullptr);
+        if (ssrFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, ssrFramebuffer, nullptr); 
         for (auto framebuffer : swapChainFramebuffers) vkDestroyFramebuffer(device, framebuffer, nullptr);
 
         // 2. Destroy Images
         depthImage.destroy();
         refractionImage.destroy();
         viewportImage.destroy();
+        viewportNormalImage.destroy();
         viewportDepthImage.destroy();
         bloomBrightImage.destroy();
         finalImage.destroy();
+
+        ssrImage.destroy();
+        
 
         // 3. Destroy Manual Views & SAMPLERS [FIX]
         if (refractionImageView != VK_NULL_HANDLE) { vkDestroyImageView(device, refractionImageView, nullptr); refractionImageView = VK_NULL_HANDLE; }
@@ -3536,8 +3209,8 @@ namespace Crescendo {
         // 5. Destroy Offscreen Render Passes
         if (viewportRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, viewportRenderPass, nullptr); viewportRenderPass = VK_NULL_HANDLE; }
         if (compositeRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, compositeRenderPass, nullptr); compositeRenderPass = VK_NULL_HANDLE; }
-        // [FIX] Destroy Bloom Render Pass
         if (bloomRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, bloomRenderPass, nullptr); bloomRenderPass = VK_NULL_HANDLE; }
+        if (ssrRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, ssrRenderPass, nullptr); ssrRenderPass = VK_NULL_HANDLE; } 
     }
 
     void RenderingServer::shutdown() {
@@ -3553,12 +3226,16 @@ namespace Crescendo {
             if (bloomPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bloomPipeline, nullptr);
             if (compositePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, compositePipeline, nullptr);
             if (shadowPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, shadowPipeline, nullptr);
+            if (ssrPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, ssrPipeline, nullptr);
 
             if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
             if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
             if (shadowPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
+            if (ssrPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, ssrPipelineLayout, nullptr);
+
             if (postProcessLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, postProcessLayout, nullptr);
-            
+            if (ssrDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, ssrDescriptorLayout, nullptr);
+
             // 2. Destroy RenderPasses
             if (shadowRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, shadowRenderPass, nullptr);
             if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
@@ -3600,7 +3277,9 @@ namespace Crescendo {
                 globalUniformBufferMapped = nullptr;
             }
             entityStorageBuffer.destroy();
-            globalUniformBuffer.destroy(); 
+            globalUniformBuffer.destroy();
+
+            
                 
             // 9. Cleanup Swapchain
             cleanupSwapChain();
