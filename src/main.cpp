@@ -30,18 +30,22 @@ int main(int argc, char* argv[]) {
     int wheelsStartIndex = scene->entities.size();
     Crescendo::AssetLoader::loadModel(&engine.renderingServer, "assets/models/car/Wheels.glb", scene);
     
-    // The very first entity created is the invisible Root Node.
-    CBaseEntity* wheelsRoot = scene->entities[wheelsStartIndex];
-    
-    // Safely extract the 4 tires from the Root Node's children list
-    // Change 'int i = 0' to 'size_t i = 0'
-    for(size_t i = 0; i < 4; i++) {
-        if (i < wheelsRoot->children.size()) {
-            wheelEntities[i] = wheelsRoot->children[i];
-        } else {
-            wheelEntities[i] = nullptr; 
-            std::cout << "[Warning] Missing tire mesh " << i << " in Wheels.glb!" << std::endl;
+    // Safely extract the 4 tires by finding the newly added top-level entities
+    int wheelIndex = 0;
+    for (size_t i = wheelsStartIndex; i < scene->entities.size() && wheelIndex < 4; i++) {
+        CBaseEntity* ent = scene->entities[i];
+        
+        // If the entity has no parent, it is a root node from the GLTF (a wheel)
+        if (ent->moveParent == nullptr) {
+            wheelEntities[wheelIndex] = ent;
+            wheelIndex++;
         }
+    }
+
+    // Fill any missing slots with nullptr and print warnings
+    for (size_t i = wheelIndex; i < 4; i++) {
+        wheelEntities[i] = nullptr; 
+        std::cout << "[Warning] Missing tire mesh " << i << " in Wheels.glb!" << std::endl;
     }
 
     // 3. Create the Physics Body
@@ -52,6 +56,7 @@ int main(int argc, char* argv[]) {
     engine.activeVehicle = playerCar;
     engine.playerChassis = chassis; // Needed for the Chase Camera!
     for(int i = 0; i < 4; i++) engine.vehicleWheels[i] = wheelEntities[i];
+    
 
     // Run the engine loop
     engine.Run();

@@ -28,6 +28,9 @@ namespace Crescendo {
         JPH::Ref<JPH::VehicleConstraint> vehicleConstraint;
         JPH::WheeledVehicleController* vehicleController = nullptr;
         
+        JPH::PhysicsSystem* physicsSystem = nullptr; 
+        JPH::BodyID chassisId; 
+        
         float currentSteering = 0.0f;
     };
 

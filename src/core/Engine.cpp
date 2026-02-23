@@ -34,7 +34,8 @@ namespace Crescendo {
         
         // Create static ground collision
         // Using a dummy entity ID like 9999 for the ground, placing it at Z = -1.0f
-        physicsServer.CreateBox(9999, glm::vec3(0.0f, 0.0f, -1.0f), glm::vec3(500.0f, 500.0f, 1.0f), false);
+        // Center at -0.5f so the top half-extent rests perfectly at 0.0f
+        physicsServer.CreateBox(9999, glm::vec3(0.0f, 0.0f, -0.5f), glm::vec3(500.0f, 500.0f, 1.0f), false);
         
         isRunning = true;
         return true;

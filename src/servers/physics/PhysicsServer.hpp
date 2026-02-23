@@ -158,12 +158,16 @@ public:
         std::cout << "[Physics] Creating Car Chassis Body (Z-Up)..." << std::endl;
         if (!bodyInterface) return nullptr;
 
-        Ref<BoxShape> chassisShape = new BoxShape(Vec3(0.75f, 1.5f, 0.25f)); 
-        Ref<OffsetCenterOfMassShape> offsetShape = new OffsetCenterOfMassShape(chassisShape, Vec3(0, 0, -0.4f));
+        // SLIMMED DOWN COLLISION: 
+        // 1.2m wide, 2.6m long, 0.2m tall
+        Ref<BoxShape> chassisShape = new BoxShape(Vec3(0.6f, 1.3f, 0.1f)); 
+        
+        // Slightly reduced the center of mass offset to match the thinner box
+        Ref<OffsetCenterOfMassShape> offsetShape = new OffsetCenterOfMassShape(chassisShape, Vec3(0, 0, -0.2f));
 
         BodyCreationSettings carBodySettings(offsetShape, ToJolt(position), Quat::sIdentity(), EMotionType::Dynamic, Layers::MOVING);
         carBodySettings.mOverrideMassProperties = EOverrideMassProperties::CalculateInertia;
-        carBodySettings.mMassPropertiesOverride.mMass = 1200.0f; 
+        carBodySettings.mMassPropertiesOverride.mMass = 250.0f; 
         
         Body* carBody = bodyInterface->CreateBody(carBodySettings);
         if (!carBody) return nullptr;

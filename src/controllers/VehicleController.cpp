@@ -20,13 +20,19 @@ namespace Crescendo {
     }
 
     void VehicleController::Initialize(JPH::PhysicsSystem* physicsSystem, JPH::Body* chassisBody) {
-        std::cout << "[Physics] Building Jolt Vehicle Constraint..." << std::endl;
+        std::cout << "[Physics] Building Jolt Vehicle Constraint...\n";
+        
+        // Store references so we can wake the body up later
+        this->physicsSystem = physicsSystem;
+        this->chassisId = chassisBody->GetID();
         
         JPH::VehicleConstraintSettings vehicleSettings;
         
+        
+        
         // 1. Z-Up Engine Configuration
         vehicleSettings.mUp = JPH::Vec3(0, 0, 1);
-        vehicleSettings.mForward = JPH::Vec3(0, 1, 0);
+        vehicleSettings.mForward = JPH::Vec3(0, -1, 0); // FIXED: Forward is -Y
         vehicleSettings.mMaxPitchRollAngle = JPH::DegreesToRadians(60.0f);
 
         // 2. Wheel Dimensions and Suspension
@@ -48,10 +54,10 @@ namespace Crescendo {
 
         // 3. Attach Wheels to the Chassis
         JPH::Vec3 wheelPositions[4] = {
-            JPH::Vec3(-halfTrackWidth,  halfWheelBase, -suspensionLength), // Front Left
-            JPH::Vec3( halfTrackWidth,  halfWheelBase, -suspensionLength), // Front Right
-            JPH::Vec3(-halfTrackWidth, -halfWheelBase, -suspensionLength), // Rear Left
-            JPH::Vec3( halfTrackWidth, -halfWheelBase, -suspensionLength)  // Rear Right
+            JPH::Vec3(-halfTrackWidth, -halfWheelBase, -suspensionLength), // Front Left (-Y)
+            JPH::Vec3( halfTrackWidth, -halfWheelBase, -suspensionLength), // Front Right (-Y)
+            JPH::Vec3(-halfTrackWidth,  halfWheelBase, -suspensionLength), // Rear Left (+Y)
+            JPH::Vec3( halfTrackWidth,  halfWheelBase, -suspensionLength)  // Rear Right (+Y)
         };
 
         for (int i = 0; i < 4; i++) {
@@ -67,17 +73,28 @@ namespace Crescendo {
 
         // 4. Engine and Transmission Setup
         JPH::WheeledVehicleControllerSettings* controllerSettings = new JPH::WheeledVehicleControllerSettings();
-        controllerSettings->mEngine.mMaxTorque = 500.0f;
+        
+        // High torque combined with low mass equals instant acceleration
+        controllerSettings->mEngine.mMaxTorque = 4000.0f; 
         controllerSettings->mEngine.mMinRPM = 1000.0f;
-        controllerSettings->mEngine.mMaxRPM = 6000.0f;
+        // Bump max RPM so it stays in gear longer before shifting
+        controllerSettings->mEngine.mMaxRPM = 8500.0f; 
         
         controllerSettings->mTransmission.mMode = JPH::ETransmissionMode::Auto;
-        controllerSettings->mTransmission.mGearRatios = { 2.66f, 1.78f, 1.30f, 1.0f, 0.74f, 0.50f }; 
+        // Reduce shift time to nearly zero for instant gear changes
+        controllerSettings->mTransmission.mSwitchTime = 0.05f; 
+        
+        // Shorter gear ratios for punchier acceleration
+        controllerSettings->mTransmission.mGearRatios = { 3.0f, 2.0f, 1.5f, 1.1f, 0.8f }; 
         
         controllerSettings->mDifferentials.clear();
         JPH::VehicleDifferentialSettings diff;
         diff.mLeftWheel = 2; // Rear Left
         diff.mRightWheel = 3; // Rear Right
+        
+        // High differential ratio multiplies the torque hitting the wheels
+        diff.mDifferentialRatio = 4.5f; 
+        
         controllerSettings->mDifferentials.push_back(diff);
 
         vehicleSettings.mController = controllerSettings;
@@ -85,9 +102,10 @@ namespace Crescendo {
         // 5. Finalize Constraint
         vehicleConstraint = new JPH::VehicleConstraint(*chassisBody, vehicleSettings);
         
+        // Only pass the collision layer and the Up vector
         JPH::Ref<JPH::VehicleCollisionTester> tester = new JPH::VehicleCollisionTesterRay(
             Layers::MOVING, 
-            JPH::Vec3(0, 0, 1) 
+            JPH::Vec3(0, 0, 1) // Up
         );
         vehicleConstraint->SetVehicleCollisionTester(tester);
 
@@ -104,6 +122,12 @@ namespace Crescendo {
         currentSteering = currentSteering + (right - currentSteering) * 0.1f;
         
         vehicleController->SetDriverInput(forward, currentSteering, brake, handbrake);
+
+        // Wake up the physics body if the driver is touching the controls!
+        // Otherwise, the car stays asleep and ignores the gas pedal.
+        if ((forward != 0.0f || right != 0.0f || brake != 0.0f || handbrake != 0.0f) && physicsSystem) {
+            physicsSystem->GetBodyInterface().ActivateBody(chassisId);
+        }
     }
 
     void VehicleController::UpdateWheelTransforms(CBaseEntity* frontLeft, CBaseEntity* frontRight, CBaseEntity* rearLeft, CBaseEntity* rearRight) {
@@ -116,7 +140,7 @@ namespace Crescendo {
 
             JPH::RMat44 wheelMat = vehicleConstraint->GetWheelWorldTransform(
                 i, 
-                JPH::Vec3(0, 1, 0), // Wheel Forward (Y)
+                JPH::Vec3(1, 0, 0), // FIXED: Jolt expects Wheel Right (X), not Forward (Y)
                 JPH::Vec3(0, 0, 1)  // Wheel Up (Z)
             );
 
