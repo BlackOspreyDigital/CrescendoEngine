@@ -13,6 +13,7 @@ assets/shaders/*.spv
 .vscode/
 .DS_Store
 imgui.ini
+JoltPhysics/
 
 # --- OS Specific ---
 Thumbs.db
@@ -22,3 +23,23 @@ CMakeCache.txt
 CMakeFiles/
 Makefile
 cmake_install.cmake
+
+# --- Additional C++/CMake Build Artifacts ---
+_deps/
+bin/
+lib/
+out/
+*.dir/
+*.a
+*.so
+*.lib
+*.dll
+*.pdb
+*.suo
+*.sln
+*.vcxproj*
+
+# --- Ignore Dependency Build Folders ---
+# (If Jolt or other libraries compile locally)
+deps/*/build/
+modules/*/build/
