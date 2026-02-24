@@ -3,12 +3,13 @@
 #include <vector>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include "servers/camera/Camera.hpp"
 
 class CBaseEntity;
 
 class CBaseEntity {
 public:
-
+    
     int index = -1;
     std::string className;
     std::string targetName;
@@ -30,9 +31,27 @@ public:
     glm::vec3 savedOrigin = glm::vec3(0.0f);
     glm::vec3 savedAngles = glm::vec3(0.0f);
 
+    std::vector<Crescendo::Camera> cameras;
+    
+    // Which camera is currently active for this entity (-1 means none)
+    int activeCameraIndex = -1; 
+    
+    // Helper to add a camera and make it active
+    void AddCamera(const Crescendo::Camera& cam) {
+        cameras.push_back(cam);
+        if (activeCameraIndex == -1) activeCameraIndex = 0;
+    }
+    
+    Crescendo::Camera* GetActiveCamera() {
+        if (activeCameraIndex >= 0 && activeCameraIndex < static_cast<int>(cameras.size())) {
+            return &cameras[activeCameraIndex];
+        }
+        return nullptr;
+    }
+
     CBaseEntity* moveParent = nullptr;
     std::vector<CBaseEntity*> children;
-
+    
     int modelIndex = -1;
     int textureID = 0;
     bool visible = true;

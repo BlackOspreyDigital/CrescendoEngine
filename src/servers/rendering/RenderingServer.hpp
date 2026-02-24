@@ -128,9 +128,9 @@ namespace Crescendo {
     };
 
     struct RenderSettings {
-        bool enableSSAO = false;
+        bool enableSSAO = true;
         bool halfResSSAO = false;
-        bool enableSSR = false;
+        bool enableSSR = true;
         bool halfResSSR = false;
     };
 
@@ -284,6 +284,7 @@ namespace Crescendo {
         VkSampler viewportSampler = VK_NULL_HANDLE;
         VkFramebuffer viewportFramebuffer = VK_NULL_HANDLE;
         VkRenderPass viewportRenderPass = VK_NULL_HANDLE;
+        VkRenderPass transparentRenderPass = VK_NULL_HANDLE;
         VkDescriptorSet viewportDescriptorSet = VK_NULL_HANDLE;
         
         // Viewport Depth

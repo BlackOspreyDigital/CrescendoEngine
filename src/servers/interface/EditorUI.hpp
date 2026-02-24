@@ -6,12 +6,15 @@
 #include "deps/imgui/ImGuizmo.h"
 #include <glm/glm.hpp>
 #include "core/EngineState.hpp"
+#include "servers/camera/Camera.hpp"
 
 
 namespace Crescendo {
     class RenderingServer;
     class Scene;
     class Camera;
+
+    void UpdateEditorCamera(Crescendo::Camera& editorCam, float deltaTime);
 
     struct Console {
         ImGuiTextBuffer     Buf;

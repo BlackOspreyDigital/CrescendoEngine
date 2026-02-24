@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
-project(Crescendo)
+project(CrescendoEngine)
+
+# ADD THIS: Force all static libraries to use Position Independent Code
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 17)
@@ -12,6 +15,23 @@ find_package(Threads REQUIRED)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LUA REQUIRED lua5.4)
+
+# ADD THIS BLOCK: Download Jolt Physics automatically
+include(FetchContent)
+FetchContent_Declare(
+  JoltPhysics
+  GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+  GIT_TAG        v5.0.0 # Or whichever version you were using
+  SOURCE_SUBDIR Build # <--- THIS TELLS CMAKE WHERE TO FIND JOLT
+)
+# Disable Jolt's extra build targets so we only compile the core library
+set(TARGET_UNIT_TESTS OFF CACHE BOOL "Disable Jolt unit tests" FORCE)
+set(TARGET_HELLO_WORLD OFF CACHE BOOL "Disable Jolt hello world" FORCE)
+set(TARGET_PERFORMANCE_TEST OFF CACHE BOOL "Disable Jolt performance test" FORCE)
+set(TARGET_SAMPLES OFF CACHE BOOL "Disable Jolt samples" FORCE)
+set(TARGET_VIEWER OFF CACHE BOOL "Disable Jolt viewer" FORCE)
+
+FetchContent_MakeAvailable(JoltPhysics)
 
 # --- 2. Sources ---
 file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.c")
@@ -79,15 +99,18 @@ target_include_directories(crescendo_engine PRIVATE
     ${CMAKE_SOURCE_DIR}/deps/stb
     ${CMAKE_SOURCE_DIR}/deps/imgui
     ${CMAKE_SOURCE_DIR}/deps/imgui/backends
-    ${CMAKE_SOURCE_DIR}/modules/Jolt/JoltPhysics # [FIX] Updated Jolt include
-    ${CMAKE_SOURCE_DIR}/modules/gltf # [FIX] Added gltf include
+    ${CMAKE_SOURCE_DIR}/modules/gltf 
+    ${joltphysics_SOURCE_DIR} # <--- REPLACE YOUR OLD JOLT PATH WITH THIS
     ${SDL2_INCLUDE_DIRS}
     ${Vulkan_INCLUDE_DIRS}
     ${LUA_INCLUDE_DIRS}
 )
-
-target_compile_definitions(crescendo_engine PRIVATE JPH_PROFILE_ENABLED GLM_ENABLE_EXPERIMENTAL)
+# --- 6. Compile Definitions ---
+target_compile_definitions(crescendo_engine PRIVATE 
+    GLM_FORCE_RADIANS
+    GLM_FORCE_DEPTH_ZERO_TO_ONE
+)
 
 target_link_libraries(crescendo_engine PRIVATE 
-    SDL2::SDL2 SDL2_image Vulkan::Vulkan ${LUA_LIBRARIES} Threads::Threads dl
+    SDL2::SDL2 SDL2_image Vulkan::Vulkan ${LUA_LIBRARIES} Threads::Threads dl Jolt # <--- ADD 'Jolt' HERE
 )

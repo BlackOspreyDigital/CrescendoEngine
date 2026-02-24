@@ -15,12 +15,25 @@ layout(push_constant) uniform Params {
     float bloomThreshold;
     float blurRadius;
     float ssaoUVScale; 
-    float ssrUVScale;  // We need this to sample the Half-Res SSR correctly!
+    float ssrUVScale; 
 } params;
 
 void main() {
     vec3 color = texture(sceneTex, fragUV).rgb;
-    vec3 bloom = texture(bloomTex, fragUV).rgb;
+
+    vec2 texelSize = 1.0 / textureSize(bloomTex, 0);
+    vec3 bloom = vec3(0.0);
+
+    // 5x5 Gaussian weights
+    float weights[5] = float[](0.06136, 0.24477, 0.38774, 0.24477, 0.06136);
+
+    for (int x = -2; x <= 2; x++) {
+        for (int y = -2; y <= 2; y++) {
+            vec2 offset = vec2(float(x), float (y)) * texelSize * max(params.blurRadius, 0.1);
+            float weight = weights[x + 2] * weights[y + 2];
+            bloom += texture(bloomTex, fragUV + offset).rgb * weight;
+        }
+    }
     
     // Sample SSR using the UV scale (in case you have Half-Res turned on)
     vec4 ssr = texture(ssrTex, fragUV * params.ssrUVScale);

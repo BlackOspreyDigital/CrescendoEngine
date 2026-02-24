@@ -11,6 +11,6 @@ struct Material {
 
     // pbr extensions
     glm::vec3 albedoColor = {1.0f, 1.0f, 1.0};
-    float roughness = 0.5f;
+    float roughness = 0.0f;
     float metallic = 0.0f;
 };

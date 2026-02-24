@@ -3,6 +3,7 @@
 
 #include <Jolt/Core/IssueReporting.h>
 
+#include "Jolt/Core/Memory.h"
 #include "core/Input.hpp"
 
 // 1. Jolt Callback
@@ -21,7 +22,13 @@ namespace Crescendo {
     Engine::~Engine() {}
 
     bool Engine::Initialize(const char* title, int width, int height) {
-        JPH::AssertFailed = CustomAssertFailed;
+
+        JPH::RegisterDefaultAllocator();
+    
+        // JPH::Trace = CustomTrace;
+        // JPH::AssertFailed = CustomAssertFailed; 
+        
+        JPH::Factory::sInstance = new JPH::Factory();
         
         if (!displayServer.initialize(title, width, height)) return false;
         if (!renderingServer.initialize(&displayServer)) return false;

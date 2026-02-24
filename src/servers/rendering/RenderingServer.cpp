@@ -103,26 +103,22 @@ namespace Crescendo {
         createStorageBuffers(); 
         createGlobalUniformBuffer();
         
-        // [Required for Binding 4 (Shadows)
         if (!createShadowResources()) return false; 
-
-        // Default Texture (Binding 0)
         if (!createTextureImage()) return false; 
-
-        // Skybox (Binding 1)
         if (createHDRImage("assets/hdr/sky_cloudy2.hdr", skyImage)) {
              // Skybox Loaded
         }
 
+        // [FIX] Move Viewport creation HERE so the refraction image exists!
+        if (!createViewportResources()) return false;
+
         // [STEP 4] NOW Create the Descriptor Sets
-        // Since buffers and images exist, this will succeed.
         if (!createDescriptorSets()) return false; 
 
         // --- UI & Viewport ---
         QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
         editorUI.Initialize(this, this->window, instance, physicalDevice, device, graphicsQueue, indices.graphicsFamily.value(), renderPass, static_cast<uint32_t>(swapChainImages.size()));
 
-        if (!createViewportResources()) return false;
         if (!createBloomResources()) return false;
         if (!createSSRResources()) return false;
 
@@ -136,6 +132,7 @@ namespace Crescendo {
         if (!createCompositePipeline()) return false;
         if (!createShadowPipeline()) return false;
         if (!createSSRPipeline()) return false;
+
         if (!createFramebuffers()) return false;
 
         // --- Assets ---
@@ -637,7 +634,6 @@ namespace Crescendo {
         return true;
     }
 
-    // Add this implementation to fix the Linker Error
     bool RenderingServer::createTextureImage(const std::string& path, VulkanImage& outImage) {
         int texWidth, texHeight, texChannels;
         stbi_uc* pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
@@ -759,7 +755,6 @@ namespace Crescendo {
         samplerLayoutBinding.binding = 0;
         samplerLayoutBinding.descriptorCount = MAX_TEXTURES; // 100
         samplerLayoutBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        // [FIX] Point to the vector of samplers
         samplerLayoutBinding.pImmutableSamplers = immutableSamplers.data(); 
         samplerLayoutBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
@@ -794,10 +789,18 @@ namespace Crescendo {
         shadowBinding.pImmutableSamplers = nullptr;
         shadowBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+        // Binding 5: Refraction Map
+        VkDescriptorSetLayoutBinding refractionBinding{};
+        refractionBinding.binding = 5;
+        refractionBinding.descriptorCount = 1;
+        refractionBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        refractionBinding.pImmutableSamplers = nullptr;
+        refractionBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
         globalBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         
-        std::array<VkDescriptorSetLayoutBinding, 5> bindings = { // Updated size to 5
-            samplerLayoutBinding, skyLayoutBinding, ssboBinding, globalBinding, shadowBinding
+        std::array<VkDescriptorSetLayoutBinding, 6> bindings = { // Updated size to 6
+            samplerLayoutBinding, skyLayoutBinding, ssboBinding, globalBinding, shadowBinding, refractionBinding
         };
 
         // Update layoutInfo.bindingCount =4 
@@ -1032,8 +1035,23 @@ namespace Crescendo {
         shadowWrite.descriptorCount = 1;
         shadowWrite.pImageInfo = &shadowInfo;
 
-        std::array<VkWriteDescriptorSet, 5> writes = { 
-        descriptorWrite, skyWrite, ssboWrite, globalWrite, shadowWrite 
+        // Binding 5: Refraction Map
+        VkDescriptorImageInfo refInfo{};
+        refInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        refInfo.imageView = refractionImageView;
+        refInfo.sampler = refractionSampler;
+
+        VkWriteDescriptorSet refWrite{};
+        refWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        refWrite.dstSet = descriptorSet;
+        refWrite.dstBinding = 5;
+        refWrite.dstArrayElement = 0;
+        refWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        refWrite.descriptorCount = 1;
+        refWrite.pImageInfo = &refInfo;
+
+        std::array<VkWriteDescriptorSet, 6> writes = { // Updated size to 6
+            descriptorWrite, skyWrite, ssboWrite, globalWrite, shadowWrite, refWrite 
         };
 
         vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
@@ -1199,7 +1217,7 @@ namespace Crescendo {
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
         
-        // [FIX] Change from VK_CULL_MODE_BACK_BIT to VK_CULL_MODE_NONE
+        
         // This ensures the model draws even if the winding order is inverted.
         rasterizer.cullMode = VK_CULL_MODE_NONE; 
         
@@ -1360,7 +1378,6 @@ namespace Crescendo {
         vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
         vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
-        // ... (Input Assembly, Viewport, Rasterizer, Multisample, DepthStencil, ColorBlend - KEEP THESE) ...
         VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
         inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
         inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -1389,8 +1406,8 @@ namespace Crescendo {
         rasterizer.rasterizerDiscardEnable = VK_FALSE;
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_NONE;
-        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+        rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -1400,7 +1417,7 @@ namespace Crescendo {
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depthStencil.depthTestEnable = VK_TRUE;
-        depthStencil.depthWriteEnable = VK_FALSE;
+        depthStencil.depthWriteEnable = VK_TRUE;
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
         VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
@@ -1422,9 +1439,6 @@ namespace Crescendo {
         colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
         colorBlending.attachmentCount = 2; 
         colorBlending.pAttachments = colorBlendAttachments;
-
-        // [FIX] Removed unused 'VkPipelineLayoutCreateInfo pipelineLayoutInfo'
-        // We reuse the 'pipelineLayout' created in createGraphicsPipeline
 
         VkGraphicsPipelineCreateInfo pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -1834,6 +1848,8 @@ namespace Crescendo {
 
         return result == VK_SUCCESS;
     }
+
+    //===============================================
     
     bool RenderingServer::createRenderPass() {
         VkAttachmentDescription colorAttachment{};
@@ -2055,7 +2071,6 @@ namespace Crescendo {
     // Render() / THE RENDER LOOP
     // --------------------------------------------------------------------
 
-    // Change signature here for engine state
     void RenderingServer::render(Scene* scene, EngineState& engineState) {
         if (!scene) return;
             
@@ -2213,16 +2228,16 @@ namespace Crescendo {
                     if (entIsTransparent != isTransparentPass) continue;
 
                     MeshResource& mesh = meshes[ent->modelIndex];
-                    if (mesh.vertexBuffer.handle == VK_NULL_HANDLE) continue; // [FIX] Add .handle
+                    if (mesh.vertexBuffer.handle == VK_NULL_HANDLE) continue;
 
-                    VkBuffer vBuffers[] = { mesh.vertexBuffer.handle }; // [FIX] Define this!
+                    VkBuffer vBuffers[] = { mesh.vertexBuffer.handle };
                     VkDeviceSize offsets[] = {0};
 
                     vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
                     vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
                                         
                     PushConsts push{};
-                    push.entityIndex = entityGPUIndices[ent]; // Just the ID!
+                    push.entityIndex = entityGPUIndices[ent];
 
                     vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
                                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
@@ -2234,6 +2249,149 @@ namespace Crescendo {
 
             // Phase 1: Opaque
             DrawPass(false);
+
+            // =========================================================
+            // --- END OPAQUE PASS & COPY SCREEN FOR REFRACTION ---
+            // =========================================================
+            vkCmdEndRenderPass(commandBuffers[currentFrame]);
+
+            VkImageMemoryBarrier barriers[2] = {};
+
+            // 1. Transition Viewport (Source) from SHADER_READ_ONLY to TRANSFER_SRC
+            barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barriers[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // [FIX]
+            barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[0].image = viewportImage.handle;
+            barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            barriers[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT; // [FIX]
+            barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+            // 2. Transition Refraction (Destination) from Undefined to Transfer Destination
+            barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barriers[1].image = refractionImage.handle;
+            barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, refractionMipLevels, 0, 1};
+            barriers[1].srcAccessMask = 0;
+            barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+            // [FIX] Source stage must be FRAGMENT_SHADER to match the SHADER_READ access mask
+            vkCmdPipelineBarrier(commandBuffers[currentFrame], 
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 
+                0, 0, nullptr, 0, nullptr, 2, barriers);
+
+            // 3. Blit (Copy) the Image
+            VkImageBlit blit{};
+            blit.srcOffsets[0] = {0, 0, 0};
+            blit.srcOffsets[1] = {(int32_t)swapChainExtent.width, (int32_t)swapChainExtent.height, 1};
+            blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            
+            blit.dstOffsets[0] = {0, 0, 0};
+            blit.dstOffsets[1] = {(int32_t)swapChainExtent.width, (int32_t)swapChainExtent.height, 1};
+            blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+
+            vkCmdBlitImage(commandBuffers[currentFrame], 
+                viewportImage.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                refractionImage.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1, &blit, VK_FILTER_LINEAR);
+
+            // 4. Transition Viewport Image Back
+            barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // Match the end of the pass
+            barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT; // Match the shader read
+
+            // [FIX] Destination stage must be FRAGMENT_SHADER to match the SHADER_READ access mask
+            vkCmdPipelineBarrier(commandBuffers[currentFrame], 
+                VK_PIPELINE_STAGE_TRANSFER_BIT, 
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 
+                0, 0, nullptr, 0, nullptr, 1, &barriers[0]);
+
+            // 5. Generate Mipmaps for Refraction Image
+            int32_t mipWidth = swapChainExtent.width;
+            int32_t mipHeight = swapChainExtent.height;
+
+            VkImageMemoryBarrier mipBarrier{};
+            mipBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            mipBarrier.image = refractionImage.handle;
+            mipBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            mipBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            mipBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            mipBarrier.subresourceRange.baseArrayLayer = 0;
+            mipBarrier.subresourceRange.layerCount = 1;
+            mipBarrier.subresourceRange.levelCount = 1;
+
+            for (uint32_t i = 1; i < refractionMipLevels; i++) {
+                // Transition previous mip to TRANSFER_SRC
+                mipBarrier.subresourceRange.baseMipLevel = i - 1;
+                mipBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                mipBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                mipBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+                vkCmdPipelineBarrier(commandBuffers[currentFrame],
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                    0, nullptr, 0, nullptr, 1, &mipBarrier);
+
+                // Blit from previous mip to current mip
+                VkImageBlit mipBlit{};
+                mipBlit.srcOffsets[0] = {0, 0, 0};
+                mipBlit.srcOffsets[1] = {mipWidth, mipHeight, 1};
+                mipBlit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                mipBlit.srcSubresource.mipLevel = i - 1;
+                mipBlit.srcSubresource.baseArrayLayer = 0;
+                mipBlit.srcSubresource.layerCount = 1;
+
+                mipBlit.dstOffsets[0] = {0, 0, 0};
+                mipBlit.dstOffsets[1] = { mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1 };
+                mipBlit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                mipBlit.dstSubresource.mipLevel = i;
+                mipBlit.dstSubresource.baseArrayLayer = 0;
+                mipBlit.dstSubresource.layerCount = 1;
+
+                vkCmdBlitImage(commandBuffers[currentFrame],
+                    refractionImage.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    refractionImage.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    1, &mipBlit, VK_FILTER_LINEAR);
+
+                // Transition previous mip to SHADER_READ
+                mipBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                mipBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                mipBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+                vkCmdPipelineBarrier(commandBuffers[currentFrame],
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                    0, nullptr, 0, nullptr, 1, &mipBarrier);
+
+                if (mipWidth > 1) mipWidth /= 2;
+                if (mipHeight > 1) mipHeight /= 2;
+            }
+
+            // Transition the final mip level to SHADER_READ
+            mipBarrier.subresourceRange.baseMipLevel = refractionMipLevels - 1;
+            mipBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            mipBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            mipBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+            vkCmdPipelineBarrier(commandBuffers[currentFrame],
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                0, nullptr, 0, nullptr, 1, &mipBarrier);
+
+            // =========================================================
+            // --- RESUME RENDERING FOR TRANSPARENT PASS ---
+            // =========================================================
+            VkRenderPassBeginInfo transPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+            transPassInfo.renderPass = transparentRenderPass; 
+            transPassInfo.framebuffer = viewportFramebuffer; // Reusing the exact same framebuffer
+            transPassInfo.renderArea.extent = swapChainExtent;
+
+            vkCmdBeginRenderPass(commandBuffers[currentFrame], &transPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
             // Phase 2: Transparent
             DrawPass(true);
@@ -2758,8 +2916,6 @@ namespace Crescendo {
             subpass.pColorAttachments = colorRefs;
             subpass.pDepthStencilAttachment = &depthRef;
 
-            // Dependencies for sync
-            // Zero-initialize the array to prevent garbage flags!
             std::array<VkSubpassDependency, 2> dependencies = {};
 
             dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -2791,7 +2947,32 @@ namespace Crescendo {
                 std::cerr << "Failed to create Viewport RenderPass!" << std::endl;
                 return false;
             }
-        }
+
+            // =========================================================
+            // --- NEW: TRANSPARENT RENDER PASS (INSIDE THE SCOPE) ---
+            // =========================================================
+            VkAttachmentDescription colorLoad = colorAttachment;
+            colorLoad.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            colorLoad.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkAttachmentDescription normalLoad = normalAttachment;
+            normalLoad.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            normalLoad.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            VkAttachmentDescription depthLoad = depthAttachment;
+            depthLoad.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            depthLoad.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+            std::array<VkAttachmentDescription, 3> loadAttachments = {colorLoad, normalLoad, depthLoad};
+
+            VkRenderPassCreateInfo transRpInfo = rpInfo; // Re-uses the info we just built
+            transRpInfo.pAttachments = loadAttachments.data();
+
+            if (vkCreateRenderPass(device, &transRpInfo, nullptr, &transparentRenderPass) != VK_SUCCESS) {
+                std::cerr << "Failed to create Transparent RenderPass!" << std::endl;
+                return false;
+            }
+        } 
 
         // --- Composite Render Pass (Final Output LDR) ---
         {
@@ -2832,6 +3013,8 @@ namespace Crescendo {
                 return false;
             }
         }
+
+        
 
         // =========================================================
         // 2. CREATE IMAGES (Existing Code)
@@ -3174,6 +3357,22 @@ namespace Crescendo {
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
             );
         }
+
+        // [FIX] Update Refraction Descriptor after a window resize
+        VkDescriptorImageInfo refInfo{};
+        refInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        refInfo.imageView = refractionImageView;
+        refInfo.sampler = refractionSampler;
+
+        VkWriteDescriptorSet refWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        refWrite.dstSet = descriptorSet;
+        refWrite.dstBinding = 5;
+        refWrite.dstArrayElement = 0;
+        refWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        refWrite.descriptorCount = 1;
+        refWrite.pImageInfo = &refInfo;
+
+        vkUpdateDescriptorSets(device, 1, &refWrite, 0, nullptr);
     }
 
     void RenderingServer::cleanupSwapChain() {
@@ -3192,7 +3391,6 @@ namespace Crescendo {
         viewportDepthImage.destroy();
         bloomBrightImage.destroy();
         finalImage.destroy();
-
         ssrImage.destroy();
         
 
@@ -3210,6 +3408,7 @@ namespace Crescendo {
         
         // 5. Destroy Offscreen Render Passes
         if (viewportRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, viewportRenderPass, nullptr); viewportRenderPass = VK_NULL_HANDLE; }
+        if (transparentRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, transparentRenderPass, nullptr); transparentRenderPass = VK_NULL_HANDLE; } // [FIX] Fix Memory Leak!
         if (compositeRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, compositeRenderPass, nullptr); compositeRenderPass = VK_NULL_HANDLE; }
         if (bloomRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, bloomRenderPass, nullptr); bloomRenderPass = VK_NULL_HANDLE; }
         if (ssrRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, ssrRenderPass, nullptr); ssrRenderPass = VK_NULL_HANDLE; } 

@@ -1,10 +1,13 @@
 #pragma once
 
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#define GLM_ENABLE_EXPERIMENTAL
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/compatibility.hpp> // For glm::lerp
 #include <SDL2/SDL.h> 
+
 
 namespace Crescendo {
     class Camera {
@@ -40,11 +43,13 @@ namespace Crescendo {
             Pitch = pitch;
             UpdateCameraVectors();
         }
-
-        // --- INTERFACE MATCHING YOUR ENGINE ---
         
         void SetPosition(const glm::vec3& pos) {
             Position = pos;
+        }
+
+        void Move(const glm::vec3& direction, float amount) {
+            Position += direction * amount;
         }
 
         glm::vec3 GetPosition() {
@@ -84,6 +89,7 @@ namespace Crescendo {
             if (state[SDL_SCANCODE_Q]) Position += WorldUp * velocity;
             if (state[SDL_SCANCODE_E]) Position -= WorldUp * velocity;
         }
+        
 
         void LookAt(glm::vec3 target) {
             glm::vec3 direction = glm::normalize(target - Position);
@@ -129,5 +135,6 @@ namespace Crescendo {
             Right = glm::normalize(glm::cross(Front, WorldUp));  
             Up    = glm::normalize(glm::cross(Right, Front));
         }
+
     };
 }
