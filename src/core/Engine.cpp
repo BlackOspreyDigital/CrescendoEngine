@@ -5,16 +5,7 @@
 
 #include "Jolt/Core/Memory.h"
 #include "core/Input.hpp"
-
-// 1. Jolt Callback
-static bool CustomAssertFailed(const char* inExpression, const char* inMessage, const char* inFile, unsigned int inLine) {
-    std::cerr << "\n!!! JOLT ASSERTION FAILED !!!\n";
-    std::cerr << "File: " << inFile << ":" << inLine << "\n";
-    std::cerr << "Expr: " << inExpression << "\n";
-    std::cerr << "Msg:  " << (inMessage ? inMessage : "N/A") << "\n";
-    std::cerr << "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n" << std::endl;
-    return true; 
-}
+#include "scene/BaseEntity.hpp"
 
 namespace Crescendo {
 
@@ -24,19 +15,26 @@ namespace Crescendo {
     bool Engine::Initialize(const char* title, int width, int height) {
 
         JPH::RegisterDefaultAllocator();
-        
         JPH::Factory::sInstance = new JPH::Factory();
         
         if (!displayServer.initialize(title, width, height)) return false;
         if (!renderingServer.initialize(&displayServer)) return false;
-        
-        
-        
+
         // Start Physics 
         physicsServer.Initialize();
         scene.physics = &physicsServer;
-        
-        
+
+        // =========================================================
+        // SCENE BOOTSTRAP
+        // =========================================================
+
+        // Spawn Sky Entity
+        CBaseEntity* skyEnt = scene.CreateEntity("env_sky");
+        skyEnt->targetName = "Procedural Sky";
+        skyEnt->angles = glm::vec3(45.0f, -30.0f, 0.0f);
+        skyEnt->albedoColor = glm::vec3(0.5f, 0.7f, 1.0f);      // Zenith
+        skyEnt->attenuationColor = glm::vec3(0.2f, 0.1f, 0.0f); // Horizon
+                
         isRunning = true;
         return true;
     }

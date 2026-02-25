@@ -479,16 +479,79 @@ namespace Crescendo {
                     // Small Value = Dark/Thick (Red). Large Value = Clear/Thin (Yellow).
                     ImGui::DragFloat("Density (Dist)", &ent->attenuationDistance, 0.01f, 0.001f, 10.0f);
 
-                    ImGui::SliderFloat("Refraction (IOR)", &ent->ior, 1.0f, 2.5f); // Optional: We can hook this up next
+                    ImGui::SliderFloat("Refraction (IOR)", &ent->ior, 1.0f, 2.5f); 
                 }
             
                 ImGui::Separator();
                 ImGui::Text("Normal Maps");
                 // 0.0 = Flat, 1.0 = Default, >1.0 = Deep/Exaggerated
                 ImGui::SliderFloat("Strength", &ent->normalStrength, 0.0f, 5.0f);
+
+                // Inside your entity inspector loop
+                if (ent->className == "env_sky") { // [FIX] Changed selectedEntity to ent
+                    ImGui::SeparatorText("Atmosphere Settings");
+                
+                    // These link directly back to the Scene's environment struct
+                    ImGui::ColorEdit3("Sun Color", &scene->environment.sunColor.x);
+                    ImGui::SliderFloat("Sun Intensity", &scene->environment.sunIntensity, 0.0f, 10.0f);
+                
+                    if (ImGui::CollapsingHeader("Fog & GI")) {
+                        ImGui::ColorEdit4("Fog Color/Density", &scene->environment.fogColor.x);
+                        ImGui::SliderFloat("Fog Falloff", &scene->environment.fogParams.x, 0.0f, 1.0f);
+                        ImGui::SliderFloat("Fog Height", &scene->environment.fogParams.w, -50.0f, 50.0f);
+                    }
+                }
+
+                if (ent->className == "env_sky") { 
+                    ImGui::SeparatorText("Atmosphere Settings");
+                
+                    // 1. THE DROPDOWN MENU
+                    const char* skyTypeNames[] = { "Solid Color", "Procedural", "HDR Map" };
+                    int currentSkyType = static_cast<int>(scene->environment.skyType);
+                    
+                    if (ImGui::Combo("Sky Type", &currentSkyType, skyTypeNames, IM_ARRAYSIZE(skyTypeNames))) {
+                        scene->environment.skyType = static_cast<SkyType>(currentSkyType);
+                    }
+
+                    ImGui::Spacing();
+
+                    // Context panels
+                    if (scene->environment.skyType == SkyType::SolidColor) {
+                        ImGui::TextDisabled("Basic unlit background");
+                        ImGui::ColorEdit3("Background Color", glm::value_ptr(scene->environment.skyColor));
+                    }
+                    else if (scene->environment.skyType == SkyType::Procedural) {
+                        ImGui::TextDisabled("Sun-driven atmospheric scattering.");
+                        ImGui::ColorEdit3("Zenith  (Top) Color", glm::value_ptr(scene->environment.skyColor));
+                        ImGui::ColorEdit3("Horizon (Bottom) Color", glm::value_ptr(scene->environment.groundColor));
+                        ImGui::ColorEdit3("Sun Color", glm::value_ptr(scene->environment.sunColor));
+                        ImGui::SliderFloat("Sun Intensity", &scene->environment.sunIntensity, 0.0f, 10.0f);
+                    }
+                    else if (scene->environment.skyType == SkyType::HDRMap) {
+                        ImGui::TextDisabled("Image-based lighting.");
+                                        
+                        if (ImGui::Button("Load New HDR...")) {
+                            // Trigger the portable-file-dialogs window
+                            auto selection = pfd::open_file("Select HDR", ".", {"HDR Files", "*.hdr"}).result();
+                            
+                            // If the user didn't hit 'Cancel'
+                            if (!selection.empty()) {
+                                // Pass the selected file path directly to the GPU hot-swap function
+                                rendererRef->loadSkybox(selection[0]);
+                            }
+                        }
+                    }
+                    // FOG is always visible it applies to all sky types.
+                    if (ImGui::CollapsingHeader("Fog & Global Illumination")) {
+                        ImGui::ColorEdit4("Fog Color/Density", glm::value_ptr(scene->environment.fogColor));
+                        ImGui::SliderFloat("Fog Falloff", &scene->environment.fogParams.x, 0.0f, 1.0f);
+                        ImGui::SliderFloat("Fog Height", &scene->environment.fogParams.w, -50.0f, 50.0f);  
+                    }
+                }
             }
-        }
-        
+        } 
+
+        // Gizmo controls and Post Processing now safely sit OUTSIDE the entity selection!
         ImGui::Separator();
         ImGui::Text("Gizmo Controls");
         if (ImGui::RadioButton("Translate", mCurrentGizmoOperation == ImGuizmo::TRANSLATE)) mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
@@ -499,25 +562,20 @@ namespace Crescendo {
 
         ImGui::Separator();
         ImGui::Text("Post Processing");
-
-        // [FIX] Rename 'bloomIntensity' to 'bloomStrength'
         ImGui::DragFloat("Bloom Strength", &rendererRef->postProcessSettings.bloomStrength, 0.01f, 0.0f, 5.0f);
-        
-        // [OPTIONAL] Add the Threshold slider (since it exists in the struct now)
         ImGui::DragFloat("Bloom Threshold", &rendererRef->postProcessSettings.bloomThreshold, 0.01f, 0.0f, 10.0f);
-
         ImGui::DragFloat("Exposure", &rendererRef->postProcessSettings.exposure, 0.01f, 0.1f, 5.0f);
         ImGui::DragFloat("Gamma", &rendererRef->postProcessSettings.gamma, 0.01f, 0.1f, 3.0f);
         ImGui::DragFloat("Blur Radius", &rendererRef->postProcessSettings.blurRadius, 0.1f, 0.0f, 10.0f);
 
-        ImGui::End();
+        ImGui::End(); // Safely closes the "Inspector" window
 
         // --- ENGINE SETTINGS WINDOW ---
         if (showSettingsWindow) {
             ImGui::Begin("Engine Settings", &showSettingsWindow);
             
             if (ImGui::CollapsingHeader("Graphics & Performance", ImGuiTreeNodeFlags_DefaultOpen)) {
-                // We will hook these up to RenderingServer next!
+                
                 ImGui::Checkbox("Enable SSAO", &rendererRef->renderSettings.enableSSAO);
                 if (rendererRef->renderSettings.enableSSAO) {
                     ImGui::Indent();

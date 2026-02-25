@@ -30,6 +30,7 @@ layout(std430, set = 0, binding = 2) readonly buffer ObjectBuffer {
     EntityData entities[];
 };
 
+// [FIX] Updated to match C++ struct exactly!
 layout(set = 0, binding = 3) uniform GlobalUniforms {
     mat4 viewProj;
     mat4 view;
@@ -38,13 +39,36 @@ layout(set = 0, binding = 3) uniform GlobalUniforms {
     vec4 sunDirection;
     vec4 sunColor;
     vec4 params;
+    vec4 fogColor;
+    vec4 fogParams;
+    vec4 skyColor;
+    vec4 groundColor;
+    mat4 lightSpaceMatrices[4]; 
+    vec4 cascadeSplits;         
 } global;
 
+// --- Z-UP SPHERICAL MAPPING ---
 vec2 EquirectangularUV(vec3 v) {
-    vec2 uv = vec2(atan(v.z, v.x), asin(v.y));
-    uv *= vec2(0.1591, 0.3183); 
+    vec2 uv = vec2(atan(v.y, v.x), asin(v.z));
+    uv *= vec2(0.1591, 0.3183);
     uv += 0.5;
     return uv;
+}
+
+// --- HEIGHT FOG ---
+vec3 ApplyFog(vec3 rgb, float dist, float worldZ) {
+    float fogDensity = global.fogColor.a;
+    float fogFalloff = global.fogParams.x;
+    float maxOpacity = global.fogParams.y;
+    float fogStart   = global.fogParams.z;
+    float fogHeight  = global.fogParams.w;
+
+    float d = max(dist - fogStart, 0.0);
+    float distFactor = exp(-d * fogDensity);
+    float heightFactor = exp(-fogFalloff * (worldZ - fogHeight));
+    
+    float fogFactor = clamp(distFactor * heightFactor, 1.0 - maxOpacity, 1.0);
+    return mix(global.fogColor.rgb, rgb, fogFactor);
 }
 
 void main() {
@@ -52,48 +76,32 @@ void main() {
     int texID = int(ent.albedoTint.w);
     vec3 baseColor = ent.albedoTint.rgb;
     
-    // 1. Base Albedo
     vec4 albedoSample = texture(texSampler[texID], fragTexCoord);
-
     if (ent.volumeParams.x <= 0.0 && albedoSample.a < 0.5) {
         discard;
     }
 
     vec3 albedo = albedoSample.rgb * baseColor * fragColor;
 
-    // 2. NORMAL MAPPING
+    // --- NORMAL MAPPING ---
     vec3 N = normalize(fragNormal);
     float normalStr = ent.pbrParams.w;
     int normalTexID = int(ent.volumeColor.a);
-    
-    // Only calculate TBN if we have a normal map strength > 0
     if (normalStr > 0.0) {
-        // Sample Normal Map
         vec3 mapNormal = texture(texSampler[normalTexID], fragTexCoord).rgb;
-        // Transform from [0,1] to [-1,1]
         mapNormal = mapNormal * 2.0 - 1.0;
-        // Apply Slider Strength
         mapNormal.xy *= normalStr;
-        
-        // [FIX] Mathematical safety guard to prevent NaNs/fragmenting!
-        // Only process the normal if the vector has an actual length.
         if (length(mapNormal) > 0.001) {
             mapNormal = normalize(mapNormal);
-
-            // Build TBN Matrix (Tangent Space -> World Space)
             vec3 T = normalize(fragTangent);
             vec3 B = normalize(fragBitangent);
-            
-            // Gram-Schmidt re-orthogonalization
             T = normalize(T - dot(T, N) * N);
             mat3 TBN = mat3(T, B, N);
-            
-            // Transform Normal
             N = normalize(TBN * mapNormal);
         }
     }
     
-    // 3. Lighting Vectors
+    // --- LIGHTING VECTORS ---
     vec3 V = normalize(global.cameraPos.xyz - fragPos);
     vec3 L = normalize(vec3(0.5, 1.0, 0.5));
     if (length(global.sunDirection.xyz) > 0.01) L = normalize(global.sunDirection.xyz);
@@ -102,93 +110,87 @@ void main() {
     float roughness = ent.pbrParams.x;
     float metallic  = ent.pbrParams.y;
     float emission  = ent.pbrParams.z;
-    
-   // 4. PBR Lighting
-    // [FIX] Move transmission up here so the lighting math can see it!
     float transmission = ent.volumeParams.x; 
 
+    // --- HEMISPHERE GI ---
+    float skyWeight = N.z * 0.5 + 0.5; 
+    vec3 hemiAmbient = mix(global.groundColor.rgb, global.skyColor.rgb, skyWeight) * albedo * 0.15;
+
+    // --- PBR MATH ---
     float NdotL = max(dot(N, L), 0.0);
     float shininess = (1.0 - roughness) * (1.0 - roughness) * 128.0; 
-    
     float NdotH = max(dot(N, H), 0.0);
     float spec = pow(NdotH, max(shininess, 1.0));
     
     vec3 kS = vec3(spec) * (1.0 - roughness);
     vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
-    
-    // Light passes THROUGH transmissive materials, it doesn't bounce off!
-    kD *= (1.0 - transmission); 
+    kD *= (1.0 - transmission); // Light passes THROUGH transmissive materials
 
     vec3 directLight = (kD * albedo / 3.14159 + kS) * 1.0 * NdotL * global.sunColor.rgb;
-
-    // Calculate our ambient and emissive lighting using the already-declared emission variable
-    vec3 ambient = albedo * 0.03; 
     vec3 emissive = albedo * emission;
+    vec3 finalColor = directLight + hemiAmbient + emissive;
 
-    vec3 finalColor = directLight + ambient + emissive;
-
-    // 5. VOLUME / GLASS LOGIC
-    float thickness     = max(ent.volumeParams.y, 1.0); // Ensure thickness is never 0
+    // --- GLASS REFRACTION LOGIC ---
+    float thickness     = max(ent.volumeParams.y, 1.0);
     float densitySlider = ent.volumeParams.z;
     float ior           = max(ent.volumeParams.w, 1.0);
-    // Safe tint to prevent black/white math explosions
-    vec3  tintColor     = clamp(ent.volumeColor.rgb, vec3(0.001), vec3(0.999)); 
-    float volumeOpacity = 0.0;
+    vec3  tintColor     = clamp(ent.volumeColor.rgb, vec3(0.001), vec3(0.999));
 
-    // Two-sided normals for glass: prevents backfaces from glitching out
     float NdotV = abs(dot(N, V));
-
-    // Calculate real Fresnel based on your IOR slider
     float f0 = pow((1.0 - ior) / (1.0 + ior), 2.0);
     float fresnel = f0 + (1.0 - f0) * pow(1.0 - NdotV, 5.0);
 
     vec3 transmissionColor = vec3(0.0);
-
     if (transmission > 0.0) {
-        // Calculate where this pixel is on the screen
         vec2 screenUV = gl_FragCoord.xy / vec2(global.params.z, global.params.w);
-
-        // Offset UVs based on normal and IOR
         vec2 distortion = (N.xy * (1.0 - (1.0 / ior))) * 0.1;
-
-        // Calculate blur level based on roughness
-        float maxLod = 10.0; 
+        
+        float maxLod = 10.0;
         float blurLevel = roughness * maxLod;
 
-        // Sample the blurred background
         vec3 sceneRefr = textureLod(refractionTexture, screenUV + distortion, blurLevel).rgb;
-
-        // [FIX] Artist-Friendly Density Math!
-        // We MULTIPLY by density instead of dividing by distance.
-        // 0.0 = Perfectly Clear, 1.0 = Highly Colored.
-        float density = densitySlider * 5.0; // You can raise/lower this 5.0 if it gets dark too fast!
         
+        float density = densitySlider * 5.0; 
         vec3 absorption = -log(tintColor) * density;
         vec3 transmittance = exp(-absorption * thickness);
         
-        // Apply to background color
         transmissionColor = sceneRefr * transmittance; 
-        
-        // Calculate resulting opacity
-        float avgTrans = dot(transmittance, vec3(0.333));
-        volumeOpacity = 1.0 - avgTrans;
     }
     
-    // 6. Skybox Reflection 
+    // --- DYNAMIC SKYBOX REFLECTION ---
     vec3 R = reflect(-V, N);
-    vec3 skyRefl = texture(skyTexture, EquirectangularUV(normalize(R))).rgb;
-    skyRefl *= (1.0 - roughness);
+    vec3 skyRefl = vec3(0.0);
+    int skyType = int(global.params.y);
+
+    if (skyType == 0) {
+        skyRefl = global.skyColor.rgb;
+    } 
+    else if (skyType == 1) {
+        float upBlend = smoothstep(-0.2, 0.4, R.z);
+        skyRefl = mix(global.groundColor.rgb, global.skyColor.rgb, upBlend);
+        float sunDot = max(dot(R, normalize(global.sunDirection.xyz)), 0.0);
+        skyRefl += global.sunColor.rgb * global.sunDirection.w * pow(sunDot, 256.0);
+    } 
+    else {
+        skyRefl = texture(skyTexture, EquirectangularUV(normalize(R))).rgb;
+    }
     
-    // Apply our true IOR Fresnel to the reflection
+    skyRefl *= (1.0 - roughness);
     vec3 finalReflection = skyRefl * (kS + fresnel);
 
-    // 7. Final Alpha
-    // [FIX] Stop hardware double-blending! 
-    // Because we manually composited the background via refraction, we MUST output a fully opaque pixel.
-    float finalAlpha = mix(albedoSample.a, 1.0, transmission);
+    // --- FINAL ATMOSPHERIC PASS ---
+    float dist = length(global.cameraPos.xyz - fragPos);
+    vec3 finalOutput;
 
-    // Add the refracted interior color to our final output
-    finalColor += (transmissionColor * transmission);
-
-    outColor = vec4(finalColor + finalReflection, finalAlpha);
+    if (transmission > 0.0) {
+        // Output Alpha 1.0 so we don't accidentally double-blend with the background
+        finalOutput = transmissionColor + finalColor + finalReflection;
+        finalOutput = ApplyFog(finalOutput, dist, fragPos.z);
+        outColor = vec4(finalOutput, 1.0); 
+    } 
+    else {
+        finalOutput = finalColor + finalReflection;
+        finalOutput = ApplyFog(finalOutput, dist, fragPos.z);
+        outColor = vec4(finalOutput, albedoSample.a); 
+    }
 }

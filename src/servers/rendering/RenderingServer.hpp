@@ -16,7 +16,7 @@
 #include <SDL2/SDL.h>
 #include <imgui.h>
 #include "servers/camera/Camera.hpp"
-#include "scene/GameWorld.hpp"
+
 #include "servers/interface/EditorUI.hpp"
 #include "core/EngineState.hpp"
 
@@ -93,6 +93,10 @@ namespace Crescendo {
         glm::vec4 sunDirection;
         glm::vec4 sunColor;
         glm::vec4 params;
+        glm::vec4 fogColor;
+        glm::vec4 fogParams;
+        glm::vec4 skyColor;
+        glm::vec4 groundColor;
         glm::mat4 lightSpaceMatrices[4]; // One matrix per cascade
         glm::vec4 cascadeSplits;         // Split distances
     };
@@ -147,11 +151,11 @@ namespace Crescendo {
         // Asset Management
         int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
         int acquireTexture(const std::string& path);
+        void loadSkybox(const std::string& path);
+
         
         VulkanImage UploadTexture(void* pixels, int width, int height, VkFormat format);
         
-        GameWorld* GetWorld() { return &gameWorld; }
-
         VkCommandBuffer beginSingleTimeCommands();
         void endSingleTimeCommands(VkCommandBuffer commandBuffer);
         VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
@@ -169,7 +173,6 @@ namespace Crescendo {
         RenderSettings renderSettings;
         
         Camera mainCamera;
-        GameWorld gameWorld;
         std::vector<MeshResource> meshes;
         int waterTextureID = 0;
         Console gameConsole;

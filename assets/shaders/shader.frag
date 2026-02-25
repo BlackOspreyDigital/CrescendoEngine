@@ -38,11 +38,40 @@ layout(set = 0, binding = 3) uniform GlobalUniforms {
     vec4 sunDirection;
     vec4 sunColor;
     vec4 params;
+    vec4 fogColor;
+    vec4 fogParams;
+    vec4 skyColor;
+    vec4 groundColor;
+    mat4 lightSpaceMatrices[4]; // Added to match C++
+    vec4 cascadeSplits;         // Added to match C++
 } global;
 
+// Exponential Height Fog MATH
+vec3 ApplyFog(vec3 rgb, float dist, float worldZ) {
+    float fogDensity = global.fogColor.a;
+    float fogFalloff = global.fogParams.x;
+    float maxOpacity = global.fogParams.y; // Fixed typo: fogParmas -> fogParams
+    float fogStart   = global.fogParams.z;
+    float fogHeight  = global.fogParams.w;
+
+    // calculate distance-based falloff 
+    float d = max(dist - fogStart, 0.0);
+    float distFactor = exp(-d * fogDensity);
+
+    // calculate height-based falloff 
+    // Fixed: GLSL uses pow(), and we apply height falloff to the density
+    float heightFactor = exp(-fogFalloff * (worldZ - fogHeight));
+
+    // combine and clamp to ensure we never over-fog beyond maxOpacity
+    float fogFactor = clamp(distFactor * heightFactor, 1.0 - maxOpacity, 1.0);
+
+    return mix(global.fogColor.rgb, rgb, fogFactor);
+}
+
 vec2 EquirectangularUV(vec3 v) {
-    vec2 uv = vec2(atan(v.z, v.x), asin(v.y));
-    uv *= vec2(0.1591, 0.3183); 
+    // Z is now the vertical axis (asin), and Y/X form the horizontal plane (atan)
+    vec2 uv = vec2(atan(v.y, v.x), asin(v.z)); 
+    uv *= vec2(0.1591, 0.3183);
     uv += 0.5;
     return uv;
 }
@@ -80,6 +109,10 @@ void main() {
             N = normalize(TBN * mapNormal);
         }
     }
+
+    // --- UPDATED AMBIENT: HEMISPHERE GI ---
+    float skyWeight = N.z * 0.5 + 0.5;
+    vec3 hemiAmbient = mix(global.groundColor.rgb, global.skyColor.rgb, skyWeight) * albedo * 0.15;
     
     // --- LIGHTING VECTORS ---
     vec3 V = normalize(global.cameraPos.xyz - fragPos);
@@ -104,20 +137,29 @@ void main() {
     vec3 ambient = albedo * 0.03;
     vec3 emissive = albedo * emission;
 
-    vec3 finalColor = directLight + ambient + emissive;
+    vec3 finalColor = directLight + hemiAmbient + emissive;
 
     // --- SKYBOX REFLECTION ---
     vec3 R = reflect(-V, N);
-    vec3 skyRefl = texture(skyTexture, EquirectangularUV(normalize(R))).rgb;
+    vec3 skyRefl = vec3(0.0);
+    int skyType = int(global.params.y);
+
+    if (skyType == 0) {
+        skyRefl = global.skyColor.rgb;
+    }
+    else if (skyType == 1) {
+        // Procedural reflection
+        float upBlend = smoothstep(-0.2, 0.4, R.z);
+        skyRefl = mix(global.groundColor.rgb, global.skyColor.rgb, upBlend);
+
+        // Add a bright specular highlight from the procedural sun 
+        float sunDot = max(dot(R, normalize(global.sunDirection.xyz)), 0.0);
+        skyRefl += global.sunColor.rgb * global.sunDirection.w * pow(sunDot, 256.0);
+    }
+    else {
+        // HDR reflection 
+        skyRefl = texture(skyTexture, EquirectangularUV(normalize(R))).rgb; // <--- FIXED (uppercase 'R')
+    }
+
     skyRefl *= (1.0 - roughness);
-    
-    // Standard Schlick Fresnel approximation for opaque objects
-    float f0 = 0.04; 
-    float NdotV = max(dot(N, V), 0.0);
-    float fresnel = f0 + (1.0 - f0) * pow(1.0 - NdotV, 5.0);
-
-    vec3 finalReflection = skyRefl * (kS + fresnel);
-
-    // Opaque objects always output their original alpha!
-    outColor = vec4(finalColor + finalReflection, albedoSample.a);
 }

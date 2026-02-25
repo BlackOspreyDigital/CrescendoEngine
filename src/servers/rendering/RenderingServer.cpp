@@ -603,7 +603,6 @@ namespace Crescendo {
         return true;
     }
 
-    // [FIX] Update signature to take VulkanImage&
     bool RenderingServer::createHDRImage(const std::string& path, VulkanImage& outImage) {
         int width, height, nrComponents;
         float* data = stbi_loadf(path.c_str(), &width, &height, &nrComponents, 4);
@@ -633,6 +632,32 @@ namespace Crescendo {
         transitionImageLayout(outImage.handle, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         
         return true;
+    }
+
+    void RenderingServer::loadSkybox(const std::string& path) {
+        vkDeviceWaitIdle(device); 
+
+        VulkanImage newSky;
+        if (createHDRImage(path, newSky)) {
+            skyImage.destroy(); 
+            skyImage = std::move(newSky);
+
+            VkDescriptorImageInfo skyInfo{};
+            skyInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            skyInfo.imageView = skyImage.view;
+            skyInfo.sampler = skySampler;
+
+            VkWriteDescriptorSet skyWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            skyWrite.dstSet = descriptorSet;
+            skyWrite.dstBinding = 1;
+            skyWrite.dstArrayElement = 0;
+            skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            skyWrite.descriptorCount = 1;
+            skyWrite.pImageInfo = &skyInfo;
+
+            vkUpdateDescriptorSets(device, 1, &skyWrite, 0, nullptr);
+            std::cout << "[Engine] Successfully loaded new HDR: " << path << std::endl;
+        }
     }
 
     bool RenderingServer::createTextureSampler() {
@@ -2067,15 +2092,17 @@ namespace Crescendo {
         glm::vec3 sunColor = glm::vec3(1.0f, 1.0f, 1.0f);
         float sunIntensity = 1.0f;
         
-        for (auto* sunEnt : scene->entities) {
-            if (sunEnt && sunEnt->targetName == "Sun") {
-                // Calculate sun direction from entity rotation
-                glm::mat4 rotMat = glm::mat4(1.0f);
-                rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.x), glm::vec3(1, 0, 0));
-                rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.y), glm::vec3(0, 1, 0));
-                rotMat = glm::rotate(rotMat, glm::radians(sunEnt->angles.z), glm::vec3(0, 0, 1));
-                sunDirection = glm::normalize(glm::vec3(rotMat * glm::vec4(0.0f, 0.0f, 1.0f, 0.0f)));
-                break; 
+        // Look for our environment entity to sync settings
+        for (auto* ent : scene->entities) {
+            if (ent && ent->className == "env_sky") {
+                // Sync GI Colors
+                scene->environment.skyColor = ent->albedoColor; // Use albedo as sky color
+                scene->environment.groundColor = ent->attenuationColor; // Use attenuation as ground
+                
+                // Update Sun from this entity's rotation
+                glm::mat4 rotMat = glm::mat4_cast(glm::quat(glm::radians(ent->angles)));
+                scene->environment.sunDirection = glm::normalize(glm::vec3(rotMat * glm::vec4(0, 0, 1, 0)));
+                break;
             }
         }
 
@@ -2089,7 +2116,15 @@ namespace Crescendo {
         globalData.cameraPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
         globalData.sunDirection = glm::vec4(sunDirection, sunIntensity);
         globalData.sunColor = glm::vec4(sunColor, 1.0f);
-        globalData.params = glm::vec4(SDL_GetTicks() / 1000.0f, 0.0f, viewportSize.x, viewportSize.y);
+        float skyTypeFloat = static_cast<float>(scene->environment.skyType);
+        globalData.params = glm::vec4(SDL_GetTicks() / 1000.0f, skyTypeFloat, viewportSize.x, viewportSize.y);
+        globalData.fogColor    = scene->environment.fogColor;
+        globalData.fogParams   = scene->environment.fogParams;
+        globalData.skyColor    = glm::vec4(scene->environment.skyColor, 1.0f);
+        globalData.groundColor = glm::vec4(scene->environment.groundColor, 1.0f);
+        
+        // We haven't set up CSM math yet, so these will stay zeroed out for now
+        // globalData.lightSpaceMatrices and cascadeSplits are already zero-init by {}
 
         // Upload to GPU (Binding 3)
         memcpy(globalUniformBufferMapped, &globalData, sizeof(GlobalUniforms));
@@ -3378,7 +3413,7 @@ namespace Crescendo {
             
             // 5. Cleanup Meshes & Textures
             meshes.clear(); 
-            gameWorld.Clear();
+            
             textureBank.clear();
             textureMap.clear();
             

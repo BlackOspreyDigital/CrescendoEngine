@@ -21,7 +21,7 @@ namespace Crescendo {
         m_character = new JPH::CharacterVirtual(&settings, JPH::Vec3(spawnPos.x, spawnPos.y, spawnPos.z), JPH::Quat::sIdentity(), physicsServer->physicsSystem);
     }
 
-    // The legendary Quake/Source Acceleration math!
+    
     void Accelerate(JPH::Vec3& vel, JPH::Vec3 wishDir, float wishSpeed, float accel, float dt) {
         // How much of our current velocity is aligned with our desired input direction?
         float currentSpeed = vel.Dot(wishDir);
