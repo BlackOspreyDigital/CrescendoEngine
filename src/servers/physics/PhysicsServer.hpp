@@ -1,30 +1,39 @@
 #pragma once
 
+// 1. Standard / Engine Includes FIRST
+#include "scene/BaseEntity.hpp"
+#include "servers/rendering/Vertex.hpp"
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <iostream>
+#include <unordered_map>
+#include <thread> 
+
+// 2. The Core Jolt Header MUST BE HERE
 #include <Jolt/Jolt.h>
 #include <Jolt/RegisterTypes.h>
 #include <Jolt/Core/Factory.h>
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Core/JobSystemThreadPool.h>
+
+// 3. All other Jolt Headers go AFTER Jolt.h
+#include <Jolt/Math/Float3.h> // <--- Moved down!
+#include <Jolt/Geometry/Triangle.h> // <--- Added to fix 'VertexList'
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyActivationListener.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h> 
 #include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
+#include <Jolt/Physics/Collision/Shape/MeshShape.h>
 
 // Vehicle Headers
 #include <Jolt/Physics/Vehicle/VehicleConstraint.h>
 #include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
 #include <Jolt/Physics/Vehicle/VehicleCollisionTester.h>
 
-#include <glm/glm.hpp>
-#include <glm/gtc/quaternion.hpp>
-#include <iostream>
-#include <unordered_map>
-#include <thread> 
-#include <algorithm> 
-#include <cstdio>
-
 using namespace JPH;
+
+namespace Crescendo {
 
 namespace Layers {
     static constexpr ObjectLayer NON_MOVING = 0;
@@ -130,6 +139,54 @@ public:
         }
     }
 
+    void CreateMeshCollider(int entityID, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices, glm::vec3 pos, glm::vec3 scale) {
+        if (!bodyInterface) {
+            std::cerr << "!! CRITICAL: BodyInterface is NULL" << std::endl; 
+            return; 
+        }
+
+        // 1. Convert our Vulkan Vertices into Jolt's Float3 format, applying the model's scale
+        JPH::VertexList joltVertices;
+        joltVertices.reserve(vertices.size());
+        for (const auto& v : vertices) {
+            joltVertices.push_back(JPH::Float3(v.pos.x * scale.x, v.pos.y * scale.y, v.pos.z * scale.z));
+        }
+
+        // 2. Convert our raw index buffer into Jolt's IndexedTriangle format
+        JPH::IndexedTriangleList joltIndices;
+        joltIndices.reserve(indices.size() / 3);
+        for (size_t i = 0; i < indices.size(); i += 3) {
+            joltIndices.push_back(JPH::IndexedTriangle(indices[i], indices[i+1], indices[i+2]));
+        }
+
+        // 3. Bake the Mesh Shape
+        JPH::MeshShapeSettings meshSettings(joltVertices, joltIndices);
+        JPH::ShapeSettings::ShapeResult result = meshSettings.Create();
+        
+        if (result.HasError()) {
+            std::cerr << "[Physics] Failed to create Mesh Collider: " << result.GetError().c_str() << std::endl;
+            return;
+        }
+
+        // 4. Attach it to a Static Body
+        BodyCreationSettings settings(
+            result.Get(), 
+            ToJolt(pos), 
+            JPH::Quat::sIdentity(), 
+            EMotionType::Static, 
+            Layers::NON_MOVING
+        );
+
+        Body* body = bodyInterface->CreateBody(settings);
+        if (!body) {
+            std::cerr << "[Physics] Failed to create Mesh Body for ID " << entityID << std::endl;
+            return;
+        }
+        
+        bodyInterface->AddBody(body->GetID(), EActivation::DontActivate);
+        entityBodyMap[entityID] = body->GetID();
+    }
+
     void CreateBox(int entityID, glm::vec3 position, glm::vec3 scale, bool isDynamic) {
         if (!bodyInterface) { std::cerr << "!! CRITICAL: BodyInterface is NULL" << std::endl; return; }
 
@@ -225,3 +282,4 @@ public:
     static inline JPH::Vec3 ToJolt(glm::vec3 v) { return JPH::Vec3(v.x, v.y, v.z); }
     static inline glm::vec3 ToGlm(JPH::Vec3 v) { return glm::vec3(v.GetX(), v.GetY(), v.GetZ()); }
 };
+}

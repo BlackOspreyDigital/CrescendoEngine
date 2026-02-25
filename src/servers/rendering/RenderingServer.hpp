@@ -144,10 +144,6 @@ namespace Crescendo {
         // Update this signature to take the state by reference
         void render(Scene* scene, EngineState& engineState);
 
-        
-
-        void createDefaultGround(Scene* scene);
-
         // Asset Management
         int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
         int acquireTexture(const std::string& path);

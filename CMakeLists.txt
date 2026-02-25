@@ -60,6 +60,7 @@ find_program(GLSLC_EXECUTABLE glslc)
 set(SHADER_FILES
     assets/shaders/shader.vert
     assets/shaders/shader.frag
+    assets/shaders/transparent.frag
     assets/shaders/sky.vert
     assets/shaders/sky.frag
     assets/shaders/water.vert
@@ -70,6 +71,7 @@ set(SHADER_FILES
     assets/shaders/ssr.frag  
     assets/shaders/ssao.frag 
     assets/shaders/shadow.vert 
+
 )
 
 foreach(SHADER ${SHADER_FILES})

@@ -4,6 +4,7 @@
 
 #include "AssetLoader.hpp"
 #include "servers/rendering/RenderingServer.hpp"
+#include "servers/physics/PhysicsServer.hpp"
 #include "tiny_gltf.h"
 #include <iostream>
 #include <glm/gtc/type_ptr.hpp>
@@ -66,6 +67,8 @@ namespace Crescendo {
         size_t lastSlash = filePath.find_last_of("/\\");
         if (lastSlash != std::string::npos) baseDir = filePath.substr(0, lastSlash);
         baseDir = normalizePath(baseDir);
+
+        RawMeshMap rawMeshes;
 
         // =========================================================
         // MESH LOADING SECTION (From Classic Script)
@@ -159,16 +162,19 @@ namespace Crescendo {
                 size_t globalIndex = renderer->meshes.size();
                 renderer->meshes.push_back(std::move(newMesh));
                 renderer->meshMap[meshKey] = globalIndex;
+
+                rawMeshes[meshKey] = {vertices, indices};
             }
         }
 
         const auto& gltfScene = model.scenes[model.defaultScene > -1 ? model.defaultScene : 0];
         for (int nodeIdx : gltfScene.nodes) {
-            processGLTFNode(renderer, model, model.nodes[nodeIdx], nullptr, baseDir, scene, glm::mat4(1.0f));
+            // --- FIX: Pass 'rawMeshes' here ---
+            processGLTFNode(renderer, model, model.nodes[nodeIdx], nullptr, baseDir, scene, glm::mat4(1.0f), rawMeshes);
         }
     }
 
-    void AssetLoader::processGLTFNode(RenderingServer* renderer, tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene, glm::mat4 parentMatrix) {
+    void AssetLoader::processGLTFNode(RenderingServer* renderer, tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene, glm::mat4 parentMatrix, RawMeshMap& rawMeshes) {
         if (!scene) return; 
 
         CBaseEntity* newEnt = scene->CreateEntity("prop_static"); 
@@ -286,12 +292,23 @@ namespace Crescendo {
                 std::string meshKey = normalizePath(baseDir) + "_mesh_" + std::to_string(node.mesh) + "_" + std::to_string(i); 
                 if (renderer->meshMap.find(meshKey) != renderer->meshMap.end()) {
                     targetEnt->modelIndex = renderer->meshMap[meshKey];
+
+                    if (scene->physics && rawMeshes.find(meshKey) != rawMeshes.end()) {
+                        scene->physics->CreateMeshCollider(
+                            targetEnt->index, 
+                            rawMeshes[meshKey].first, 
+                            rawMeshes[meshKey].second, 
+                            targetEnt->origin, 
+                            targetEnt->scale
+                        );
+                    }
                 }
             }
         }
 
         for (int childId : node.children) {
-            processGLTFNode(renderer, model, model.nodes[childId], newEnt, baseDir, scene, glm::mat4(1.0f));
+            // --- FIX: Pass 'rawMeshes' to children ---
+            processGLTFNode(renderer, model, model.nodes[childId], newEnt, baseDir, scene, glm::mat4(1.0f), rawMeshes);
         }
     }
 }

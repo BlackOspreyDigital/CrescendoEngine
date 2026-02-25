@@ -141,69 +141,6 @@ namespace Crescendo {
         return true;
     }
 
-    void RenderingServer::createDefaultGround(Scene* scene) {
-        if (!scene) return; // Safety check
-
-        std::vector<Vertex> vertices;
-        std::vector<uint32_t> indices;
-        
-        int width = 1000;
-        int depth = 1000;
-        float spacing = 2.0f;
-        
-        float startX = -(width * spacing) / 2.0f;
-        float startY = -(depth * spacing) / 2.0f;
-
-        // 1. Generate Vertices
-        for (int z = 0; z <= depth; z++) {
-            for (int x = 0; x <= width; x++) {
-                Vertex v{};
-                v.pos = glm::vec3(startX + x * spacing, startY + z * spacing, 0.0f);
-                v.normal = glm::vec3(0.0f, 0.0f, 1.0f); 
-                v.color = glm::vec3(1.0f);
-                v.texCoord = glm::vec2((float)x, (float)z);
-                v.tangent = glm::vec3(1.0f, 0.0f, 0.0f);
-                v.bitangent = glm::vec3(0.0f, 1.0f, 0.0f);
-                vertices.push_back(v);
-            }
-        }
-
-        // 2. Generate Indices
-        for (int z = 0; z < depth; z++) {
-            for (int x = 0; x < width; x++) {
-                int topLeft = (z * (width + 1)) + x;
-                int topRight = topLeft + 1;
-                int bottomLeft = ((z + 1) * (width + 1)) + x;
-                int bottomRight = bottomLeft + 1;
-
-                indices.push_back(topLeft);
-                indices.push_back(bottomLeft);
-                indices.push_back(topRight);
-                indices.push_back(topRight);
-                indices.push_back(bottomLeft);
-                indices.push_back(bottomRight);
-            }
-        }
-
-        MeshResource groundMesh{};
-        groundMesh.name = "Internal_Ground";
-        groundMesh.indexCount = static_cast<uint32_t>(indices.size());
-        groundMesh.vertexBuffer = createVertexBuffer(vertices);
-        groundMesh.indexBuffer = createIndexBuffer(indices);
-            
-        meshes.push_back(std::move(groundMesh));
-        
-        // 3. Put it in the REAL Scene!
-        CBaseEntity* ground = scene->CreateEntity("prop_static");
-        ground->targetName = "Ground Floor";
-        ground->modelIndex = meshes.size() - 1;
-        ground->origin = glm::vec3(0.0f, 0.0f, 0.0f); 
-        
-        ground->textureID = acquireTexture("assets/textures/grass.tga");
-        ground->roughness = 1.0f; 
-        ground->metallic = 0.0f;
-    }
-
     bool RenderingServer::createInstance() {
         VkApplicationInfo appInfo{};
         appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -1333,7 +1270,7 @@ namespace Crescendo {
 
     bool RenderingServer::createTransparentPipeline() {
         auto vertShaderCode = readFile("assets/shaders/shader.vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/shader.frag.spv");
+        auto fragShaderCode = readFile("assets/shaders/transparent.frag.spv");
 
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -1392,8 +1329,8 @@ namespace Crescendo {
         rasterizer.rasterizerDiscardEnable = VK_FALSE;
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-        rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        rasterizer.cullMode = VK_CULL_MODE_BACK_BIT; 
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -2205,214 +2142,213 @@ namespace Crescendo {
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
                                     pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
             
-            auto DrawPass = [&](bool isTransparentPass) {
-                for (auto* ent : scene->entities) {
-                    if (!ent || ent->modelIndex >= meshes.size()) continue;
-                    if (ent->className == "prop_water") continue; 
+            // -----------------------------------------------------------------
+            // 1. SEPARATE AND SORT DRAW ENTITIES
+            // -----------------------------------------------------------------
+            std::vector<CBaseEntity*> opaqueList;
+            std::vector<std::pair<float, CBaseEntity*>> transPairs;
+            glm::vec3 camPos = mainCamera.GetPosition();
 
-                    bool entIsTransparent = (ent->transmission > 0.0f);
-                    if (entIsTransparent != isTransparentPass) continue;
+            for (auto* ent : scene->entities) {
+                if (!ent || ent->modelIndex >= meshes.size() || ent->className == "prop_water") continue;
+                if (ent->transmission > 0.0f) {
+                    float distSq = glm::dot(ent->origin - camPos, ent->origin - camPos);
+                    transPairs.push_back({distSq, ent});
+                } else {
+                    opaqueList.push_back(ent);
+                }
+            }
 
+            // Sort transparent objects back-to-front
+            std::sort(transPairs.begin(), transPairs.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+            
+            std::vector<CBaseEntity*> transparentList;
+            for (auto& p : transPairs) transparentList.push_back(p.second);
+
+            // Generic Draw Helper
+            auto DrawList = [&](const std::vector<CBaseEntity*>& list) {
+                for (auto* ent : list) {
                     MeshResource& mesh = meshes[ent->modelIndex];
                     if (mesh.vertexBuffer.handle == VK_NULL_HANDLE) continue;
 
                     VkBuffer vBuffers[] = { mesh.vertexBuffer.handle };
                     VkDeviceSize offsets[] = {0};
-
                     vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
                     vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
                                         
                     PushConsts push{};
                     push.entityIndex = entityGPUIndices[ent];
-
-                    vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
-                                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
-                                        0, sizeof(PushConsts), &push);
-                    
+                    vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConsts), &push);
                     vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
                 }
             };
 
-            // Phase 1: Opaque
-            DrawPass(false);
+            // -----------------------------------------------------------------
+            // 2. DRAW OPAQUE
+            // -----------------------------------------------------------------
+            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+            
+            DrawList(opaqueList);
 
-            // =========================================================
-            // --- END OPAQUE PASS & COPY SCREEN FOR REFRACTION ---
-            // =========================================================
+            // Close the opaque pass so we can snapshot it!
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
 
-            VkImageMemoryBarrier barriers[2] = {};
-
-            // 1. Transition Viewport (Source) from SHADER_READ_ONLY to TRANSFER_SRC
-            barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barriers[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // [FIX]
-            barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-            barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barriers[0].image = viewportImage.handle;
-            barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-            barriers[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT; // [FIX]
-            barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-
-            // 2. Transition Refraction (Destination) from Undefined to Transfer Destination
-            barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barriers[1].image = refractionImage.handle;
-            barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, refractionMipLevels, 0, 1};
-            barriers[1].srcAccessMask = 0;
-            barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-            // [FIX] Source stage must be FRAGMENT_SHADER to match the SHADER_READ access mask
-            vkCmdPipelineBarrier(commandBuffers[currentFrame], 
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 
-                0, 0, nullptr, 0, nullptr, 2, barriers);
-
-            // 3. Blit (Copy) the Image
-            VkImageBlit blit{};
-            blit.srcOffsets[0] = {0, 0, 0};
-            blit.srcOffsets[1] = {(int32_t)swapChainExtent.width, (int32_t)swapChainExtent.height, 1};
-            blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            // -----------------------------------------------------------------
+            // 3. ITERATIVE REFRACTION (TRANSPARENT PASS)
+            // -----------------------------------------------------------------
             
-            blit.dstOffsets[0] = {0, 0, 0};
-            blit.dstOffsets[1] = {(int32_t)swapChainExtent.width, (int32_t)swapChainExtent.height, 1};
-            blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            // Wrap your entire mip-mapping and barrier block in a reusable lambda!
+            auto UpdateRefractionTexture = [&]() {
+                VkImageMemoryBarrier barriers[2] = {};
+                barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                barriers[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barriers[0].image = viewportImage.handle;
+                barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                barriers[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 
-            vkCmdBlitImage(commandBuffers[currentFrame], 
-                viewportImage.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                refractionImage.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                1, &blit, VK_FILTER_LINEAR);
+                barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barriers[1].image = refractionImage.handle;
+                barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, refractionMipLevels, 0, 1};
+                barriers[1].srcAccessMask = 0;
+                barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
-            // 4. Transition Viewport Image Back
-            barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-            barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // Match the end of the pass
-            barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT; // Match the shader read
+                vkCmdPipelineBarrier(commandBuffers[currentFrame], VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
 
-            // [FIX] Destination stage must be FRAGMENT_SHADER to match the SHADER_READ access mask
-            vkCmdPipelineBarrier(commandBuffers[currentFrame], 
-                VK_PIPELINE_STAGE_TRANSFER_BIT, 
-                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 
-                0, 0, nullptr, 0, nullptr, 1, &barriers[0]);
+                VkImageBlit blit{};
+                blit.srcOffsets[0] = {0, 0, 0};
+                blit.srcOffsets[1] = {(int32_t)swapChainExtent.width, (int32_t)swapChainExtent.height, 1};
+                blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                blit.dstOffsets[0] = {0, 0, 0};
+                blit.dstOffsets[1] = {(int32_t)swapChainExtent.width, (int32_t)swapChainExtent.height, 1};
+                blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
 
-            // 5. Generate Mipmaps for Refraction Image
-            int32_t mipWidth = swapChainExtent.width;
-            int32_t mipHeight = swapChainExtent.height;
+                vkCmdBlitImage(commandBuffers[currentFrame], viewportImage.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, refractionImage.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
 
-            VkImageMemoryBarrier mipBarrier{};
-            mipBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-            mipBarrier.image = refractionImage.handle;
-            mipBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            mipBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            mipBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            mipBarrier.subresourceRange.baseArrayLayer = 0;
-            mipBarrier.subresourceRange.layerCount = 1;
-            mipBarrier.subresourceRange.levelCount = 1;
+                barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-            for (uint32_t i = 1; i < refractionMipLevels; i++) {
-                // Transition previous mip to TRANSFER_SRC
-                mipBarrier.subresourceRange.baseMipLevel = i - 1;
+                vkCmdPipelineBarrier(commandBuffers[currentFrame], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barriers[0]);
+
+                int32_t mipWidth = swapChainExtent.width;
+                int32_t mipHeight = swapChainExtent.height;
+                VkImageMemoryBarrier mipBarrier{};
+                mipBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                mipBarrier.image = refractionImage.handle;
+                mipBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                mipBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                mipBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                mipBarrier.subresourceRange.baseArrayLayer = 0;
+                mipBarrier.subresourceRange.layerCount = 1;
+                mipBarrier.subresourceRange.levelCount = 1;
+
+                for (uint32_t i = 1; i < refractionMipLevels; i++) {
+                    mipBarrier.subresourceRange.baseMipLevel = i - 1;
+                    mipBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+                    mipBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                    mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                    mipBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+                    vkCmdPipelineBarrier(commandBuffers[currentFrame], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &mipBarrier);
+
+                    VkImageBlit mipBlit{};
+                    mipBlit.srcOffsets[0] = {0, 0, 0};
+                    mipBlit.srcOffsets[1] = {mipWidth, mipHeight, 1};
+                    mipBlit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    mipBlit.srcSubresource.mipLevel = i - 1;
+                    mipBlit.srcSubresource.baseArrayLayer = 0;
+                    mipBlit.srcSubresource.layerCount = 1;
+                    mipBlit.dstOffsets[0] = {0, 0, 0};
+                    mipBlit.dstOffsets[1] = { mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1 };
+                    mipBlit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    mipBlit.dstSubresource.mipLevel = i;
+                    mipBlit.dstSubresource.baseArrayLayer = 0;
+                    mipBlit.dstSubresource.layerCount = 1;
+
+                    vkCmdBlitImage(commandBuffers[currentFrame], refractionImage.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, refractionImage.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &mipBlit, VK_FILTER_LINEAR);
+
+                    mipBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+                    mipBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                    mipBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+                    vkCmdPipelineBarrier(commandBuffers[currentFrame], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &mipBarrier);
+
+                    if (mipWidth > 1) mipWidth /= 2;
+                    if (mipHeight > 1) mipHeight /= 2;
+                }
+
+                mipBarrier.subresourceRange.baseMipLevel = refractionMipLevels - 1;
                 mipBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-                mipBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-                mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                mipBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-
-                vkCmdPipelineBarrier(commandBuffers[currentFrame],
-                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-                    0, nullptr, 0, nullptr, 1, &mipBarrier);
-
-                // Blit from previous mip to current mip
-                VkImageBlit mipBlit{};
-                mipBlit.srcOffsets[0] = {0, 0, 0};
-                mipBlit.srcOffsets[1] = {mipWidth, mipHeight, 1};
-                mipBlit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                mipBlit.srcSubresource.mipLevel = i - 1;
-                mipBlit.srcSubresource.baseArrayLayer = 0;
-                mipBlit.srcSubresource.layerCount = 1;
-
-                mipBlit.dstOffsets[0] = {0, 0, 0};
-                mipBlit.dstOffsets[1] = { mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1 };
-                mipBlit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                mipBlit.dstSubresource.mipLevel = i;
-                mipBlit.dstSubresource.baseArrayLayer = 0;
-                mipBlit.dstSubresource.layerCount = 1;
-
-                vkCmdBlitImage(commandBuffers[currentFrame],
-                    refractionImage.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    refractionImage.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    1, &mipBlit, VK_FILTER_LINEAR);
-
-                // Transition previous mip to SHADER_READ
-                mipBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
                 mipBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                 mipBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 
-                vkCmdPipelineBarrier(commandBuffers[currentFrame],
-                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-                    0, nullptr, 0, nullptr, 1, &mipBarrier);
+                vkCmdPipelineBarrier(commandBuffers[currentFrame], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &mipBarrier);
+            };
 
-                if (mipWidth > 1) mipWidth /= 2;
-                if (mipHeight > 1) mipHeight /= 2;
+            // --- THE MAGIC LOOP ---
+            // Draw glass objects one by one, snapshotting the screen between them!
+            for (auto* transEnt : transparentList) {
+                // 1. Snapshot the screen (including any previously drawn glass!)
+                UpdateRefractionTexture();
+
+                // 2. Open the Render Pass
+                VkRenderPassBeginInfo transPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+                transPassInfo.renderPass = transparentRenderPass; 
+                transPassInfo.framebuffer = viewportFramebuffer; 
+                transPassInfo.renderArea.extent = swapChainExtent;
+                vkCmdBeginRenderPass(commandBuffers[currentFrame], &transPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+                // 3. Draw exactly ONE transparent entity
+                vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, transparentPipeline);
+                vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+                
+                std::vector<CBaseEntity*> singleList = { transEnt };
+                DrawList(singleList);
+
+                // 4. Close the pass so the next object can snapshot it
+                vkCmdEndRenderPass(commandBuffers[currentFrame]);
             }
 
-            // Transition the final mip level to SHADER_READ
-            mipBarrier.subresourceRange.baseMipLevel = refractionMipLevels - 1;
-            mipBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            mipBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            mipBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-            vkCmdPipelineBarrier(commandBuffers[currentFrame],
-                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-                0, nullptr, 0, nullptr, 1, &mipBarrier);
-
-            // =========================================================
-            // --- RESUME RENDERING FOR TRANSPARENT PASS ---
-            // =========================================================
-            VkRenderPassBeginInfo transPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-            transPassInfo.renderPass = transparentRenderPass; 
-            transPassInfo.framebuffer = viewportFramebuffer; // Reusing the exact same framebuffer
-            transPassInfo.renderArea.extent = swapChainExtent;
-
-            vkCmdBeginRenderPass(commandBuffers[currentFrame], &transPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-
-            // Phase 2: Transparent
-            DrawPass(true);
-
-            // =========================================================
-            // PHASE 3: WATER OBJECTS
-            // =========================================================
-            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipeline);
-            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                                    pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-
+            // -----------------------------------------------------------------
+            // 4. WATER OBJECTS
+            // -----------------------------------------------------------------
+            // If we have water, we need to do one last snapshot so water refracts the glass!
+            bool hasWater = false;
+            std::vector<CBaseEntity*> waterList;
             for (auto* ent : scene->entities) {
-                if (!ent || ent->className != "prop_water") continue;
-                if (ent->modelIndex >= meshes.size()) continue;
+                if (ent && ent->className == "prop_water") {
+                    waterList.push_back(ent);
+                    hasWater = true;
+                }
+            }
 
-                MeshResource& mesh = meshes[ent->modelIndex];
-                if (mesh.vertexBuffer.handle == VK_NULL_HANDLE) continue;
+            if (hasWater) {
+                UpdateRefractionTexture();
 
-                VkBuffer vBuffers[] = { mesh.vertexBuffer.handle };
-                VkDeviceSize offsets[] = { 0 };
-                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
+                VkRenderPassBeginInfo waterPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+                waterPassInfo.renderPass = transparentRenderPass; 
+                waterPassInfo.framebuffer = viewportFramebuffer; 
+                waterPassInfo.renderArea.extent = swapChainExtent;
+                vkCmdBeginRenderPass(commandBuffers[currentFrame], &waterPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-                PushConsts push{};
-                push.entityIndex = entityGPUIndices[ent];
+                vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipeline);
+                vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
 
-                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
-                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
-                                    0, sizeof(PushConsts), &push);
-                
-                vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
-        } // End of Water Loop
-
-        // This closes the main 3D rendering so we can transition images safely.
-        vkCmdEndRenderPass(commandBuffers[currentFrame]);
+                DrawList(waterList);
+                vkCmdEndRenderPass(commandBuffers[currentFrame]);
+            }
 
         // =========================================================
         // PASS 2: SCREEN SPACE REFLECTIONS (SSR) [Optimized for intel]

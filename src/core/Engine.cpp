@@ -24,25 +24,18 @@ namespace Crescendo {
     bool Engine::Initialize(const char* title, int width, int height) {
 
         JPH::RegisterDefaultAllocator();
-    
-        // JPH::Trace = CustomTrace;
-        // JPH::AssertFailed = CustomAssertFailed; 
         
         JPH::Factory::sInstance = new JPH::Factory();
         
         if (!displayServer.initialize(title, width, height)) return false;
         if (!renderingServer.initialize(&displayServer)) return false;
         
-        // Create visual ground
-        renderingServer.createDefaultGround(&scene);
+        
         
         // Start Physics 
         physicsServer.Initialize();
+        scene.physics = &physicsServer;
         
-        // Create static ground collision
-        // Using a dummy entity ID like 9999 for the ground, placing it at Z = -1.0f
-        // Center at -0.5f so the top half-extent rests perfectly at 0.0f
-        physicsServer.CreateBox(9999, glm::vec3(0.0f, 0.0f, -0.5f), glm::vec3(500.0f, 500.0f, 1.0f), false);
         
         isRunning = true;
         return true;
@@ -67,20 +60,22 @@ namespace Crescendo {
        
         auto& cam = renderingServer.mainCamera;
         
-        // Keyboard Movement (WASD + Q/E for Up/Down)
-        float speed = 10.0f * dt;
-        if (Input::IsKeyDown(SDL_SCANCODE_LSHIFT)) speed *= 4.0f; // Sprint
- 
-        if (Input::IsKeyDown(SDL_SCANCODE_W)) cam.Position += cam.Front * speed;
-        if (Input::IsKeyDown(SDL_SCANCODE_S)) cam.Position -= cam.Front * speed;
-        if (Input::IsKeyDown(SDL_SCANCODE_A)) cam.Position -= cam.Right * speed;
-        if (Input::IsKeyDown(SDL_SCANCODE_D)) cam.Position += cam.Right * speed;
-        if (Input::IsKeyDown(SDL_SCANCODE_Q)) cam.Position += glm::vec3(0,0,1) * speed; // Up
-        if (Input::IsKeyDown(SDL_SCANCODE_E)) cam.Position -= glm::vec3(0,0,1) * speed; // Down
-        
-        // Mouse Look (Right Click to Rotate)
-        if (Input::IsMouseButtonDown(3)) { 
-            cam.Rotate((float)Input::mouseRelX, (float)-Input::mouseRelY);
+        // --- EDITOR MODE: Free-Fly Camera ---
+        if (currentState == EngineState::Editor) {
+            float speed = 10.0f * dt;
+            if (Input::IsKeyDown(SDL_SCANCODE_LSHIFT)) speed *= 4.0f; // Sprint
+     
+            if (Input::IsKeyDown(SDL_SCANCODE_W)) cam.Position += cam.Front * speed;
+            if (Input::IsKeyDown(SDL_SCANCODE_S)) cam.Position -= cam.Front * speed;
+            if (Input::IsKeyDown(SDL_SCANCODE_A)) cam.Position -= cam.Right * speed;
+            if (Input::IsKeyDown(SDL_SCANCODE_D)) cam.Position += cam.Right * speed;
+            if (Input::IsKeyDown(SDL_SCANCODE_Q)) cam.Position += glm::vec3(0,0,1) * speed; // Up
+            if (Input::IsKeyDown(SDL_SCANCODE_E)) cam.Position -= glm::vec3(0,0,1) * speed; // Down
+            
+            // Mouse Look (Right Click to Rotate)
+            if (Input::IsMouseButtonDown(3)) { 
+                cam.Rotate((float)Input::mouseRelX, (float)-Input::mouseRelY);
+            }
         }
 
         // --- STATE TRANSITION LOGIC ---
@@ -106,33 +101,39 @@ namespace Crescendo {
             }
         }
         
-        // Update the tracker for the next frame
         previousState = currentState;
 
-        // 4. Physics Step
+        // --- PLAY MODE: FPS Controller & Physics ---
         if (currentState == EngineState::Playing) {
-            physicsServer.Update(dt, scene.entities);
+            
+            if (activePlayer) {
+                // 1. Flatten the camera vectors to the XY ground plane
+                glm::vec3 forward = glm::normalize(glm::vec3(cam.Front.x, cam.Front.y, 0.0f));
+                glm::vec3 right = glm::normalize(glm::vec3(cam.Right.x, cam.Right.y, 0.0f));
 
-            // Drive the car!
-            if (activeVehicle) {
-                float forward = 0.0f;
-                float right = 0.0f;
-                float brake = 0.0f;
+                // 2. Build the movement input vector
+                glm::vec3 inputDir(0.0f);
+                if (Input::IsKeyDown(SDL_SCANCODE_W)) inputDir += forward;
+                if (Input::IsKeyDown(SDL_SCANCODE_S)) inputDir -= forward;
+                if (Input::IsKeyDown(SDL_SCANCODE_D)) inputDir += right;
+                if (Input::IsKeyDown(SDL_SCANCODE_A)) inputDir -= right;
 
-                // Simple Keyboard Controls (Arrow Keys)
-                if (Input::IsKeyDown(SDL_SCANCODE_UP)) forward = 1.0f;     // Gas
-                if (Input::IsKeyDown(SDL_SCANCODE_DOWN)) brake = 1.0f;     // Brake/Reverse
-                if (Input::IsKeyDown(SDL_SCANCODE_LEFT)) right = -1.0f;    // Steer Left
-                if (Input::IsKeyDown(SDL_SCANCODE_RIGHT)) right = 1.0f;    // Steer Right
+                bool jump = Input::IsKeyDown(SDL_SCANCODE_SPACE);
 
-                activeVehicle->SetInputs(forward, right, brake, 0.0f);
-                
-                // Sync the visual wheel models to the Jolt physics!
-                activeVehicle->UpdateWheelTransforms(
-                    vehicleWheels[0], vehicleWheels[1], 
-                    vehicleWheels[2], vehicleWheels[3]
-                );
+                // 3. Run the Source Engine math!
+                activePlayer->Update(dt, &physicsServer, inputDir, jump);
+
+                // 4. Lock the camera to the player's head
+                cam.SetPosition(activePlayer->GetPosition());
             }
+
+            // Mouse Look in Play Mode (Still holding Right Click for now)
+            if (Input::IsMouseButtonDown(3)) { 
+                cam.Rotate((float)Input::mouseRelX, (float)-Input::mouseRelY);
+            }
+
+            // Step the world physics
+            physicsServer.Update(dt, scene.entities);
         }
     }
         

@@ -1,10 +1,11 @@
 #pragma once
 
+#include "controllers/FPSController.hpp"
 #include "servers/display/DisplayServer.hpp"
 #include "servers/rendering/RenderingServer.hpp"
 #include "servers/physics/PhysicsServer.hpp" 
 #include "core/ScriptSystem.hpp"
-#include "controllers/VehicleController.hpp"
+
 #include "scene/Scene.hpp"
 #include "core/EngineState.hpp"
 
@@ -23,10 +24,7 @@ namespace Crescendo {
         EngineState currentState = EngineState::Editor;
         EngineState previousState = EngineState::Editor;
 
-        // for the car test
-        Crescendo::VehicleController* activeVehicle = nullptr;
-        CBaseEntity* vehicleWheels[4] = {nullptr, nullptr, nullptr, nullptr};
-        CBaseEntity* playerChassis = nullptr; 
+        FPSController* activePlayer = nullptr;
         
         DisplayServer displayServer;
         RenderingServer renderingServer;

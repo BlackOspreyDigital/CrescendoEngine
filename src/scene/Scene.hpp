@@ -5,9 +5,14 @@
 #include "BaseEntity.hpp"
 
 namespace Crescendo {
+
+    class PhysicsServer;
+
     class Scene {
     public:
         std::vector<CBaseEntity*> entities;
+
+        PhysicsServer* physics = nullptr; // physics bridge
 
         // FIX: Add 'className' argument with a default value
         CBaseEntity* CreateEntity(const std::string& className = "prop_dynamic") {
