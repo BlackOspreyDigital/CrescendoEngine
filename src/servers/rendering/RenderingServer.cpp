@@ -78,7 +78,7 @@ namespace Crescendo {
         allocatorInfo.device = device;
         allocatorInfo.instance = instance;
         allocatorInfo.pVulkanFunctions = &vulkanFunctions;
-        allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_0; 
+        allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_3; 
         
         if (vmaCreateAllocator(&allocatorInfo, &allocator) != VK_SUCCESS) {
             std::cerr << "Failed to create VMA Allocator!" << std::endl;
@@ -91,30 +91,18 @@ namespace Crescendo {
         if (!createRenderPass()) return false;
         if (!createCommandPool()) return false;
         if (!createDepthResources()) return false;
-
-        // [STEP 1] Create Layout Dependencies (Samplers)
         if (!createTextureSampler()) return false;
-
-        // [STEP 2] Create Layouts & Pools (But NOT Sets yet)
         if (!createDescriptorSetLayout()) return false;
         if (!createDescriptorPool()) return false;
-
-        // [STEP 3] Create ALL Resources needed by the Descriptors
         createStorageBuffers(); 
         createGlobalUniformBuffer();
-        
         if (!createShadowResources()) return false; 
         if (!createTextureImage()) return false; 
         if (createHDRImage("assets/hdr/sky_cloudy2.hdr", skyImage)) {
              // Skybox Loaded
         }
-
-        // [FIX] Move Viewport creation HERE so the refraction image exists!
         if (!createViewportResources()) return false;
-
-        // [STEP 4] NOW Create the Descriptor Sets
         if (!createDescriptorSets()) return false; 
-
         // --- UI & Viewport ---
         QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
         editorUI.Initialize(this, this->window, instance, physicalDevice, device, graphicsQueue, indices.graphicsFamily.value(), renderPass, static_cast<uint32_t>(swapChainImages.size()));
@@ -219,8 +207,8 @@ namespace Crescendo {
     bool RenderingServer::createInstance() {
         VkApplicationInfo appInfo{};
         appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        appInfo.pApplicationName = "Crescendo Engine v0.5a";
-        appInfo.apiVersion = VK_API_VERSION_1_0;
+        appInfo.pApplicationName = "Crescendo Engine v0.6a";
+        appInfo.apiVersion = VK_API_VERSION_1_3;
 
         uint32_t extensionCount = 0;
         SDL_Vulkan_GetInstanceExtensions(display_ref->get_window(), &extensionCount, nullptr);
@@ -880,8 +868,6 @@ namespace Crescendo {
         if (vkCreateDescriptorSetLayout(device, &ssrLayoutInfo, nullptr, &ssrDescriptorLayout) != VK_SUCCESS) {
             return false;
         }
-
-        
 
         return true;
     }
@@ -2136,7 +2122,7 @@ namespace Crescendo {
         
         glm::mat4 view = mainCamera.GetViewMatrix();
         glm::mat4 proj = mainCamera.GetProjectionMatrix(aspectRatio);
-        // proj[1][1] *= -1; // Fix GLM Vulkan Clip
+        
         glm::mat4 vp = proj * view;
 
         // 2. Sun Logic

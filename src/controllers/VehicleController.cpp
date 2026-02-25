@@ -40,12 +40,12 @@ namespace Crescendo {
         float halfWheelBase = 1.5f;  
 
         // 3. Attach Wheels to the Chassis
-        // Z set to 0.0f so suspension attaches to the belly, fixing the floating chassis
+        // [FIX] Lowered Z to -0.4f so the suspension attaches to the belly, fixing the hovering chassis!
         JPH::Vec3 wheelPositions[4] = {
-            JPH::Vec3(-halfTrackWidth, -halfWheelBase, 0.0f), // Front Left (-Y)
-            JPH::Vec3( halfTrackWidth, -halfWheelBase, 0.0f), // Front Right (-Y)
-            JPH::Vec3(-halfTrackWidth,  halfWheelBase, 0.0f), // Rear Left (+Y)
-            JPH::Vec3( halfTrackWidth,  halfWheelBase, 0.0f)  // Rear Right (+Y)
+            JPH::Vec3(-halfTrackWidth, -halfWheelBase, -0.4f), // Front Left (-Y)
+            JPH::Vec3( halfTrackWidth, -halfWheelBase, -0.4f), // Front Right (-Y)
+            JPH::Vec3(-halfTrackWidth,  halfWheelBase, -0.4f), // Rear Left (+Y)
+            JPH::Vec3( halfTrackWidth,  halfWheelBase, -0.4f)  // Rear Right (+Y)
         };
 
         for (int i = 0; i < 4; i++) {

@@ -57,7 +57,7 @@ public:
     bool visible = true;
 
     // [BSDF DEFAULTS]
-    float roughness = 0.5f;
+    float roughness = 0.0f;
     float metallic = 0.0f;
     float emission = 0.0f;
     float normalStrength = 0.0f; // default to 0 to assume no normal map

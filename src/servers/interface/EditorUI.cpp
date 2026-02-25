@@ -1,3 +1,4 @@
+#include "IO/SceneSerializer.hpp"
 #include "modules/gltf/AssetLoader.hpp"
 #include "EditorUI.hpp"
 #include "imgui.h"
@@ -7,6 +8,7 @@
 #include "backends/imgui_impl_sdl2.h"
 #include "backends/imgui_impl_vulkan.h"
 #include "include/portable-file-dialogs.h" 
+#include "IO/SceneSerializer.hpp"
 #include <iostream>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -273,6 +275,39 @@ namespace Crescendo {
                         Crescendo::AssetLoader::loadModel(rendererRef, path, scene);
                     }
                 }
+
+                // Save Project
+                if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
+                    // Open a native save dialog
+                    auto destination = pfd::save_file("Save Project", ".", { "JSON Map Files", "*json" }).result();
+                    if (!destination.empty()) {
+                        // Ensure it ends in json
+                        if (destination.find("json") == std::string::npos) destination += ".json";
+
+                        SceneSerializer serializer(scene);
+                        serializer.Serialize(destination);
+                    }
+                }
+
+                // Load Project
+                if (ImGui::MenuItem("Load Project", "Ctrl+O")) {
+                    // Same as above
+                    auto selection = pfd::open_file("Load Project", ".", { "JSON Map Files", "*.json" }).result();
+                    if (!selection.empty()) {
+                        SceneSerializer serializer(scene);
+                        serializer.Deserialize(selection[0]);
+                    }
+                }
+
+                ImGui::Separator();
+
+                // Clear Scene
+                if (ImGui::MenuItem("Clear Scene")) {
+                    if (scene) scene->Clear();
+                }
+
+                ImGui::Separator();
+
                 if (ImGui::MenuItem("Exit", "Alt+F4")) {
                     SDL_Event quit_event; quit_event.type = SDL_QUIT; SDL_PushEvent(&quit_event);
                 }
