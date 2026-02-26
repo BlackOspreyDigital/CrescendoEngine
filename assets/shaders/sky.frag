@@ -5,10 +5,17 @@ layout (location = 0) out vec4 outColor;
 
 layout (binding = 1) uniform sampler2D skyTexture; 
 
-layout(set = 0, binding = 3) uniform GlobalUniforms{
+struct PointLight {
+    vec4 positionAndRadius;
+    vec4 colorAndIntensity;
+};
+
+layout(set = 0, binding = 3) uniform GlobalUniforms {
     mat4 viewProj;
     mat4 view;
     mat4 proj;
+    mat4 lightSpaceMatrices[4];
+    vec4 cascadeSplits;
     vec4 cameraPos;
     vec4 sunDirection;
     vec4 sunColor;
@@ -17,13 +24,15 @@ layout(set = 0, binding = 3) uniform GlobalUniforms{
     vec4 fogParams;
     vec4 skyColor;
     vec4 groundColor;
-    vec4 lightSpaceMatrices[4];
-    vec4 cascadeSplits;
+    
+    // --- POINT LIGHTS ---
+    vec4 pointLightParams; // x = count
+    PointLight pointLights[16];
 } global;
 
 vec2 EquirectangularUV(vec3 v) {
-    // Z is now the vertical axis (asin), and Y/X form the horizontal plane (atan)
-    vec2 uv = vec2(atan(v.y, v.x), asin(v.z)); 
+    // [FIX] Invert v.z so the sky maps to the top (V=0) of the Vulkan texture
+    vec2 uv = vec2(atan(v.y, v.x), asin(-v.z)); 
     uv *= vec2(0.1591, 0.3183);
     uv += 0.5;
     return uv;

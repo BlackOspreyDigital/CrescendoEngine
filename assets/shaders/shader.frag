@@ -30,10 +30,17 @@ layout(std430, set = 0, binding = 2) readonly buffer ObjectBuffer {
     EntityData entities[];
 };
 
+struct PointLight {
+    vec4 positionAndRadius;
+    vec4 colorAndIntensity;
+};
+
 layout(set = 0, binding = 3) uniform GlobalUniforms {
     mat4 viewProj;
     mat4 view;
     mat4 proj;
+    mat4 lightSpaceMatrices[4];
+    vec4 cascadeSplits;
     vec4 cameraPos;
     vec4 sunDirection;
     vec4 sunColor;
@@ -42,8 +49,10 @@ layout(set = 0, binding = 3) uniform GlobalUniforms {
     vec4 fogParams;
     vec4 skyColor;
     vec4 groundColor;
-    mat4 lightSpaceMatrices[4]; // Added to match C++
-    vec4 cascadeSplits;         // Added to match C++
+    
+    // --- POINT LIGHTS ---
+    vec4 pointLightParams; // x = count (No stray 'int' variables here!)
+    PointLight pointLights[16];
 } global;
 
 // Exponential Height Fog MATH

@@ -27,15 +27,29 @@ layout(std430, set = 0, binding = 2) readonly buffer ObjectBuffer {
     EntityData entities[];
 };
 
-// --- GLOBAL UNIFORMS (Binding 3) ---
+struct PointLight {
+    vec4 positionAndRadius;
+    vec4 colorAndIntensity;
+};
+
 layout(set = 0, binding = 3) uniform GlobalUniforms {
     mat4 viewProj;
     mat4 view;
     mat4 proj;
+    mat4 lightSpaceMatrices[4];
+    vec4 cascadeSplits;
     vec4 cameraPos;
     vec4 sunDirection;
     vec4 sunColor;
-    vec4 params; // x=time
+    vec4 params;
+    vec4 fogColor;
+    vec4 fogParams;
+    vec4 skyColor;
+    vec4 groundColor;
+    
+    // --- POINT LIGHTS ---
+    vec4 pointLightParams; // x = count
+    PointLight pointLights[16];
 } global;
 
 layout(push_constant) uniform Constants {

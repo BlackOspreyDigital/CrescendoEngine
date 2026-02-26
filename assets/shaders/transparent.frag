@@ -30,11 +30,17 @@ layout(std430, set = 0, binding = 2) readonly buffer ObjectBuffer {
     EntityData entities[];
 };
 
-// [FIX] Updated to match C++ struct exactly!
+struct PointLight {
+    vec4 positionAndRadius;
+    vec4 colorAndIntensity;
+};
+
 layout(set = 0, binding = 3) uniform GlobalUniforms {
     mat4 viewProj;
     mat4 view;
     mat4 proj;
+    mat4 lightSpaceMatrices[4];
+    vec4 cascadeSplits;
     vec4 cameraPos;
     vec4 sunDirection;
     vec4 sunColor;
@@ -43,13 +49,16 @@ layout(set = 0, binding = 3) uniform GlobalUniforms {
     vec4 fogParams;
     vec4 skyColor;
     vec4 groundColor;
-    mat4 lightSpaceMatrices[4]; 
-    vec4 cascadeSplits;         
+    
+    // --- POINT LIGHTS ---
+    vec4 pointLightParams; // x = count (No stray 'int' variables here!)
+    PointLight pointLights[16];
 } global;
 
 // --- Z-UP SPHERICAL MAPPING ---
 vec2 EquirectangularUV(vec3 v) {
-    vec2 uv = vec2(atan(v.y, v.x), asin(v.z));
+    // [FIX] Invert v.z so the sky maps to the top (V=0) of the Vulkan texture
+    vec2 uv = vec2(atan(v.y, v.x), asin(-v.z)); 
     uv *= vec2(0.1591, 0.3183);
     uv += 0.5;
     return uv;
@@ -65,7 +74,9 @@ vec3 ApplyFog(vec3 rgb, float dist, float worldZ) {
 
     float d = max(dist - fogStart, 0.0);
     float distFactor = exp(-d * fogDensity);
-    float heightFactor = exp(-fogFalloff * (worldZ - fogHeight));
+
+    float fogDepth = max(fogHeight - worldZ, 0.0); 
+    float heightFactor = exp(-fogFalloff * fogDepth);
     
     float fogFactor = clamp(distFactor * heightFactor, 1.0 - maxOpacity, 1.0);
     return mix(global.fogColor.rgb, rgb, fogFactor);
@@ -87,7 +98,8 @@ void main() {
     vec3 N = normalize(fragNormal);
     float normalStr = ent.pbrParams.w;
     int normalTexID = int(ent.volumeColor.a);
-    if (normalStr > 0.0) {
+    
+    if (normalStr > 0.0 && normalTexID > 0) {
         vec3 mapNormal = texture(texSampler[normalTexID], fragTexCoord).rgb;
         mapNormal = mapNormal * 2.0 - 1.0;
         mapNormal.xy *= normalStr;

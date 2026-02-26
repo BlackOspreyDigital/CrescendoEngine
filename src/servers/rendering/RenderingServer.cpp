@@ -1,3 +1,4 @@
+#include <cstdint>
 #define STB_IMAGE_IMPLEMENTATION
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #ifndef GLM_ENABLE_EXPERIMENTAL
@@ -116,6 +117,7 @@ namespace Crescendo {
         if (!createGraphicsPipeline()) return false;
         if (!createWaterPipeline()) return false;        
         if (!createTransparentPipeline()) return false;
+        if (!createOpaquePipeline()) return false;
         if (!createBloomPipeline()) return false;
         if (!createCompositePipeline()) return false;
         if (!createShadowPipeline()) return false;
@@ -483,6 +485,71 @@ namespace Crescendo {
         
         return true;
         }
+
+    void RenderingServer::calculateCascades(Scene* scene, Camera& camera, float aspectRatio, GlobalUniforms& globalData) {
+        // Define where our 4 cascades split (in meters/units)
+        std::array<float, 5> cascadeLevels = { camera.nearClip, 15.0f, 50.0f, 150.0f, camera.farClip };
+
+        globalData.cascadeSplits = glm::vec4(cascadeLevels[1], cascadeLevels[2], cascadeLevels[3], cascadeLevels[4]);
+
+        glm::vec3 lightDir = glm::normalize(glm::vec3(scene->environment.sunDirection));
+
+        for (uint32_t i = 0; i < 4; i++) {
+            float nearPlane = cascadeLevels[i];
+            float farPlane  = cascadeLevels[i+ 1];
+
+            glm::mat4 proj = glm::perspective(glm::radians(camera.fov), aspectRatio, nearPlane, farPlane);
+            glm::mat4 view = camera.GetViewMatrix();
+            glm::mat4 invCam = glm::inverse(proj * view);
+
+            std::vector<glm::vec3> frustumCorners;
+            for (int x = 0; x < 2; ++x) {
+                for (int y = 0; y < 2; ++y) {
+                    for (int z = 0; z < 2; ++z) {
+                        glm::vec4 pt = invCam * glm::vec4(2.0f * x - 1.0f, 2.0f * y - 1.0f, 2.0f * z - 1.0f, 1.0f);
+                        frustumCorners.push_back(glm::vec3(pt) / pt.w);
+                    }
+                }
+            }
+
+            glm::vec3 center = glm::vec3(0.0f);
+            for (const auto& v : frustumCorners) {
+                center += v;
+            }
+            center /= frustumCorners.size();
+
+            glm::mat4 lightView = glm::lookAt(center - lightDir, center, glm::vec3(0.0f, 0.0f, 1.0f));
+
+            float minX = std::numeric_limits<float>::max();
+            float maxX = std::numeric_limits<float>::lowest();
+            float minY = std::numeric_limits<float>::max();
+            float maxY = std::numeric_limits<float>::lowest();
+            float minZ = std::numeric_limits<float>::max();
+            float maxZ = std::numeric_limits<float>::lowest();
+
+            for (const auto& v : frustumCorners) {
+                glm::vec4 trf = lightView * glm::vec4(v, 1.0f);
+                minX = std::min(minX, trf.x);
+                maxX = std::max(maxX, trf.x);
+                minY = std::min(minY, trf.y);
+                maxY = std::max(maxY, trf.y);
+                minZ = std::min(minZ, trf.z);
+                maxZ = std::max(maxZ, trf.z);
+            }
+
+            // Pad the z depth slightly to prevent clipping objects behind cameras
+            constexpr float zMult = 10.0f;
+            if ( minZ < 0) minZ *= zMult;
+            else minZ /= zMult;
+            if ( maxZ < 0) maxZ /= zMult;
+            else maxZ *= zMult;
+            
+
+            glm::mat4 lightProj = glm::ortho(minX, maxX, minY, maxY, minZ, maxZ);
+
+            globalData.lightSpaceMatrices[i] = lightProj * lightView;
+        }
+    }
 
     VulkanImage RenderingServer::UploadTexture(void* pixels, int width, int height, VkFormat format) {
         VkDeviceSize imageSize = width * height * 4;
@@ -1174,7 +1241,7 @@ namespace Crescendo {
         VkPipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
         multisampling.sampleShadingEnable = VK_FALSE;
-        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        multisampling.rasterizationSamples = msaaSamples;
 
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -1360,7 +1427,7 @@ namespace Crescendo {
         VkPipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
         multisampling.sampleShadingEnable = VK_FALSE;
-        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        multisampling.rasterizationSamples = msaaSamples;
 
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -1410,6 +1477,113 @@ namespace Crescendo {
         vkDestroyShaderModule(device, fragShaderModule, nullptr);
         vkDestroyShaderModule(device, vertShaderModule, nullptr);
 
+        return true;
+    }
+
+    bool RenderingServer::createOpaquePipeline() {
+        // --- 1. SHADER MODULES ---
+        auto vertShaderCode = readFile("assets/shaders/shader.vert.spv");
+        auto fragShaderCode = readFile("assets/shaders/opaque.frag.spv"); 
+        
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+        VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertShaderStageInfo.module = vertShaderModule;
+        vertShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageInfo.module = fragShaderModule;
+        fragShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+
+        // --- 2. VERTEX INPUT ---
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+        VkViewport viewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
+        VkRect2D scissor{{0, 0}, swapChainExtent};
+
+        VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        viewportState.viewportCount = 1;
+        viewportState.pViewports = &viewport;
+        viewportState.scissorCount = 1;
+        viewportState.pScissors = &scissor;
+
+        // --- 3. RASTERIZER ---
+        VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rasterizer.depthClampEnable = VK_FALSE;
+        rasterizer.rasterizerDiscardEnable = VK_FALSE;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_BACK_BIT; 
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+        // --- 4. MULTISAMPLING & DEPTH ---
+        VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        multisampling.sampleShadingEnable = VK_FALSE;
+        multisampling.rasterizationSamples = msaaSamples;
+
+        VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        depthStencil.depthTestEnable = VK_TRUE; 
+        depthStencil.depthWriteEnable = VK_TRUE; 
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+
+        // --- 5. COLOR BLENDING ---
+        VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
+        colorBlendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachments[0].blendEnable = VK_FALSE; 
+
+        colorBlendAttachments[1] = colorBlendAttachments[0]; // Normal G-Buffer
+
+        VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        colorBlending.logicOpEnable = VK_FALSE;
+        colorBlending.attachmentCount = 2;
+        colorBlending.pAttachments = colorBlendAttachments;
+
+        std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+        dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+        dynamicState.pDynamicStates = dynamicStates.data();
+
+        // --- 6. PIPELINE CREATION ---
+        VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.layout = pipelineLayout; 
+        pipelineInfo.renderPass = viewportRenderPass; 
+        pipelineInfo.subpass = 0;
+
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &opaquePipeline) != VK_SUCCESS) {
+            return false;
+        }
+
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
+        
         return true;
     }
 
@@ -1477,7 +1651,7 @@ namespace Crescendo {
         VkPipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
         multisampling.sampleShadingEnable = VK_FALSE;
-        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        multisampling.rasterizationSamples = msaaSamples;
 
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -1504,21 +1678,6 @@ namespace Crescendo {
         colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
         colorBlending.attachmentCount = 2; 
         colorBlending.pAttachments = colorBlendAttachments;
-
-        /*
-        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutInfo.setLayoutCount = 1;
-        pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout; 
-        
-        VkPushConstantRange pushConstantRange{};
-        pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        pushConstantRange.offset = 0;
-        
-        // [FIX] Change from sizeof(PushConsts) to 128
-        // This covers both the tiny ID (4 bytes) and the Skybox Matrix (64 bytes)
-        pushConstantRange.size = 128;
-        */
 
         VkGraphicsPipelineCreateInfo pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -2123,11 +2282,89 @@ namespace Crescendo {
         globalData.skyColor    = glm::vec4(scene->environment.skyColor, 1.0f);
         globalData.groundColor = glm::vec4(scene->environment.groundColor, 1.0f);
         
-        // We haven't set up CSM math yet, so these will stay zeroed out for now
-        // globalData.lightSpaceMatrices and cascadeSplits are already zero-init by {}
+        // --- NEW: EXTRACT POINT LIGHTS ---
+        globalData.pointLightParams.x = 0; // Reset count
+        for (auto* ent : scene->entities) {
+            if (ent && ent->className == "light_point" && globalData.pointLightParams.x < 16) {
+                int idx = globalData.pointLightParams.x; // Current array index
+                globalData.pointLights[idx].positionAndRadius = glm::vec4(ent->origin, ent->scale.x);
+                globalData.pointLights[idx].colorAndIntensity = glm::vec4(ent->albedoColor, ent->emission);
+                globalData.pointLightParams.x++;
+            }
+        }
+
+        calculateCascades(scene, mainCamera, aspectRatio, globalData);
 
         // Upload to GPU (Binding 3)
         memcpy(globalUniformBufferMapped, &globalData, sizeof(GlobalUniforms));
+
+        // ---> 2. THE PASTED ENTITY SORTING BLOCK <---
+        std::vector<CBaseEntity*> opaqueList;
+        std::vector<std::pair<float, CBaseEntity*>> transPairs;
+        glm::vec3 camPos = mainCamera.GetPosition();
+
+        for (auto* ent : scene->entities) {
+            if (!ent || ent->modelIndex >= meshes.size() || ent->className == "prop_water") continue;
+            if (ent->transmission > 0.0f) {
+                float distSq = glm::dot(ent->origin - camPos, ent->origin - camPos);
+                transPairs.push_back({distSq, ent});
+            } else {
+                opaqueList.push_back(ent);
+            }
+        }
+        std::sort(transPairs.begin(), transPairs.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        std::vector<CBaseEntity*> transparentList;
+        for (auto& p : transPairs) transparentList.push_back(p.second);
+
+        // =========================================================
+        // PASS 0: CASCADED SHADOW MAPS (Depth Only)
+        // =========================================================
+        vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
+        vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+
+        // Loop through all 4 shadow slices
+        for (uint32_t i = 0; i < SHADOW_CASCADES; i++) {
+            VkRenderPassBeginInfo shadowPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+            shadowPassInfo.renderPass = shadowRenderPass;
+            shadowPassInfo.framebuffer = shadowFramebuffers[i];
+            shadowPassInfo.renderArea.extent = {SHADOW_DIM, SHADOW_DIM};
+            
+            VkClearValue clearDepth;
+            clearDepth.depthStencil = {1.0f, 0};
+            shadowPassInfo.clearValueCount = 1;
+            shadowPassInfo.pClearValues = &clearDepth;
+
+            vkCmdBeginRenderPass(commandBuffers[currentFrame], &shadowPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+            VkViewport viewport{0.0f, 0.0f, (float)SHADOW_DIM, (float)SHADOW_DIM, 0.0f, 1.0f};
+            vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &viewport);
+            
+            VkRect2D scissor{{0, 0}, {SHADOW_DIM, SHADOW_DIM}};
+            vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
+
+            // Parameters: commandBuffer, constantFactor, clamp, slopeFactor
+            vkCmdSetDepthBias(commandBuffers[currentFrame], 1.25f, 0.0f, 1.75f);
+
+            // Draw all OPAQUE entities into the shadow map
+            for (auto* ent : opaqueList) {
+                MeshResource& mesh = meshes[ent->modelIndex];
+                if (mesh.vertexBuffer.handle == VK_NULL_HANDLE) continue;
+
+                VkBuffer vBuffers[] = { mesh.vertexBuffer.handle };
+                VkDeviceSize offsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
+                vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
+                                    
+                ShadowPushConsts push{};
+                push.lightSpaceMatrix = globalData.lightSpaceMatrices[i]; // The specific math for this slice!
+                push.entityIndex = entityGPUIndices[ent];
+                
+                vkCmdPushConstants(commandBuffers[currentFrame], shadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShadowPushConsts), &push);
+                vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
+            }
+
+            vkCmdEndRenderPass(commandBuffers[currentFrame]);
+        }
 
         // =========================================================
         // PASS 1: OFFSCREEN SCENE (HDR) -> viewportFramebuffer
@@ -2137,15 +2374,17 @@ namespace Crescendo {
         viewportPassInfo.framebuffer = viewportFramebuffer;
         viewportPassInfo.renderArea.extent = swapChainExtent;
         
-        std::array<VkClearValue, 3> clearValues{};
-        clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};  // Scene Color
-        clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // Normal G-Buffer
-        clearValues[2].depthStencil = {1.0f, 0};            // Depth Buffer
-        viewportPassInfo.clearValueCount = 3;
-        viewportPassInfo.pClearValues = clearValues.data();
+        // [FIX] Expand to 6 clear values to match the new MSAA Framebuffer layout
+        std::array<VkClearValue, 6> clearValues{};
+        clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};      // 0: MSAA Color Target
+        clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      // 1: MSAA Normal Target
+        clearValues[2].depthStencil = {1.0f, 0};                         // 2: MSAA Depth Target
+        clearValues[3].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      // 3: Resolve Color (Ignored, but required)
+        clearValues[4].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      // 4: Resolve Normal (Ignored, but required)
+        clearValues[5].depthStencil = {1.0f, 0};                         // 5: Resolve Depth (Ignored, but required)
         
-        // Transition image for writing
-        //transitionImageLayout(viewportImage.handle, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        viewportPassInfo.clearValueCount = 6; 
+        viewportPassInfo.pClearValues = clearValues.data();
         
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &viewportPassInfo, VK_SUBPASS_CONTENTS_INLINE);
             
@@ -2180,10 +2419,7 @@ namespace Crescendo {
             // -----------------------------------------------------------------
             // 1. SEPARATE AND SORT DRAW ENTITIES
             // -----------------------------------------------------------------
-            std::vector<CBaseEntity*> opaqueList;
-            std::vector<std::pair<float, CBaseEntity*>> transPairs;
-            glm::vec3 camPos = mainCamera.GetPosition();
-
+            
             for (auto* ent : scene->entities) {
                 if (!ent || ent->modelIndex >= meshes.size() || ent->className == "prop_water") continue;
                 if (ent->transmission > 0.0f) {
@@ -2197,7 +2433,6 @@ namespace Crescendo {
             // Sort transparent objects back-to-front
             std::sort(transPairs.begin(), transPairs.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
             
-            std::vector<CBaseEntity*> transparentList;
             for (auto& p : transPairs) transparentList.push_back(p.second);
 
             // Generic Draw Helper
@@ -2221,7 +2456,7 @@ namespace Crescendo {
             // -----------------------------------------------------------------
             // 2. DRAW OPAQUE
             // -----------------------------------------------------------------
-            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, opaquePipeline);
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
             
             DrawList(opaqueList);
@@ -2828,53 +3063,93 @@ namespace Crescendo {
         uint32_t width = swapChainExtent.width;
         uint32_t height = swapChainExtent.height;
         refractionMipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1;
-
-        // =========================================================
-        // 1. CREATE MISSING RENDER PASSES
-        // =========================================================
         
-        // Cleanup if they already exist (safe for resize)
         if (viewportRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, viewportRenderPass, nullptr);
         if (compositeRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, compositeRenderPass, nullptr);
 
-        // --- Viewport Render Pass (HDR Scene + Depth) ---
+        // --- Viewport Render Pass (HDR Scene + Depth + MSAA) ---
         {
-            VkAttachmentDescription colorAttachment{};
-            colorAttachment.format = VK_FORMAT_R16G16B16A16_SFLOAT; // HDR Format
-            colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-            colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-            colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL; // Ready for sampling
+            // 1. MSAA ATTACHMENTS (The "Fat" Memory)
+            VkAttachmentDescription2 colorMSAA{VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2};
+            colorMSAA.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            colorMSAA.samples = msaaSamples;
+            colorMSAA.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            colorMSAA.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            colorMSAA.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            colorMSAA.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-            VkAttachmentDescription depthAttachment{};
-            depthAttachment.format = VK_FORMAT_D32_SFLOAT;
-            depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-            depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-            depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            VkAttachmentDescription2 normalMSAA = colorMSAA;
 
-            VkAttachmentDescription normalAttachment = colorAttachment; // Normals use the exact same config as color!
+            VkAttachmentDescription2 depthMSAA{VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2};
+            depthMSAA.format = VK_FORMAT_D32_SFLOAT;
+            depthMSAA.samples = msaaSamples;
+            depthMSAA.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            depthMSAA.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            depthMSAA.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            depthMSAA.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-            VkAttachmentReference colorRefs[2] = {
-                {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}, // Location 0: Color
-                {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}  // Location 1: Normals
-            };
-            VkAttachmentReference depthRef{2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL}; // Location 2: Depth
+            // 2. RESOLVE ATTACHMENTS (The 1x Textures for Post-Processing)
+            VkAttachmentDescription2 colorResolve{VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2};
+            colorResolve.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            colorResolve.samples = VK_SAMPLE_COUNT_1_BIT;
+            colorResolve.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            colorResolve.storeOp = VK_ATTACHMENT_STORE_OP_STORE; 
+            colorResolve.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            colorResolve.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-            VkSubpassDescription subpass{};
+            VkAttachmentDescription2 normalResolve = colorResolve;
+
+            VkAttachmentDescription2 depthResolve{VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2};
+            depthResolve.format = VK_FORMAT_D32_SFLOAT;
+            depthResolve.samples = VK_SAMPLE_COUNT_1_BIT;
+            depthResolve.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            depthResolve.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            depthResolve.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            depthResolve.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+            // 3. REFERENCES (Using Vulkan 1.2 Structs)
+            VkAttachmentReference2 colorRefs[2] = {};
+            colorRefs[0].sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
+            colorRefs[0].attachment = 0;
+            colorRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            colorRefs[1].sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
+            colorRefs[1].attachment = 1;
+            colorRefs[1].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+            VkAttachmentReference2 depthRef{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2};
+            depthRef.attachment = 2;
+            depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            
+            VkAttachmentReference2 resolveRefs[2] = {};
+            resolveRefs[0].sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
+            resolveRefs[0].attachment = 3;
+            resolveRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            resolveRefs[1].sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
+            resolveRefs[1].attachment = 4;
+            resolveRefs[1].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+            VkAttachmentReference2 depthResolveRef{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2};
+            depthResolveRef.attachment = 5;
+            depthResolveRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+            // 4. DEPTH RESOLVE STRUCT
+            VkSubpassDescriptionDepthStencilResolve depthResolveInfo{};
+            depthResolveInfo.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE;
+            depthResolveInfo.depthResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+            depthResolveInfo.stencilResolveMode = VK_RESOLVE_MODE_NONE;
+            depthResolveInfo.pDepthStencilResolveAttachment = &depthResolveRef;
+
+            // 5. SUBPASS (Vulkan 1.2)
+            VkSubpassDescription2 subpass{VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2};
+            subpass.pNext = &depthResolveInfo; // Valid now!
             subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-            subpass.colorAttachmentCount = 2; // We now have 2 color targets!
+            subpass.colorAttachmentCount = 2;
             subpass.pColorAttachments = colorRefs;
             subpass.pDepthStencilAttachment = &depthRef;
+            subpass.pResolveAttachments = resolveRefs; 
 
-            std::array<VkSubpassDependency, 2> dependencies = {};
-
+            std::array<VkSubpassDependency2, 2> dependencies = {};
+            dependencies[0].sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
             dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
             dependencies[0].dstSubpass = 0;
             dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
@@ -2883,6 +3158,7 @@ namespace Crescendo {
             dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
             dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
+            dependencies[1].sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
             dependencies[1].srcSubpass = 0;
             dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
             dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -2891,8 +3167,12 @@ namespace Crescendo {
             dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
-            std::array<VkAttachmentDescription, 3> attachments = {colorAttachment, normalAttachment, depthAttachment};
-            VkRenderPassCreateInfo rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+            std::array<VkAttachmentDescription2, 6> attachments = {
+                colorMSAA, normalMSAA, depthMSAA, 
+                colorResolve, normalResolve, depthResolve
+            };
+
+            VkRenderPassCreateInfo2 rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2};
             rpInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
             rpInfo.pAttachments = attachments.data();
             rpInfo.subpassCount = 1;
@@ -2900,36 +3180,36 @@ namespace Crescendo {
             rpInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
             rpInfo.pDependencies = dependencies.data();
 
-            if (vkCreateRenderPass(device, &rpInfo, nullptr, &viewportRenderPass) != VK_SUCCESS) {
-                std::cerr << "Failed to create Viewport RenderPass!" << std::endl;
+            // [FIX] Use vkCreateRenderPass2
+            if (vkCreateRenderPass2(device, &rpInfo, nullptr, &viewportRenderPass) != VK_SUCCESS) {
                 return false;
             }
 
             // =========================================================
-            // --- NEW: TRANSPARENT RENDER PASS (INSIDE THE SCOPE) ---
+            // --- TRANSPARENT RENDER PASS ---
             // =========================================================
-            VkAttachmentDescription colorLoad = colorAttachment;
-            colorLoad.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-            colorLoad.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkAttachmentDescription2 colorLoadMSAA = colorMSAA;
+            colorLoadMSAA.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            colorLoadMSAA.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-            VkAttachmentDescription normalLoad = normalAttachment;
-            normalLoad.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-            normalLoad.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkAttachmentDescription2 normalLoadMSAA = colorLoadMSAA;
 
-            VkAttachmentDescription depthLoad = depthAttachment;
-            depthLoad.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-            depthLoad.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            VkAttachmentDescription2 depthLoadMSAA = depthMSAA;
+            depthLoadMSAA.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            depthLoadMSAA.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-            std::array<VkAttachmentDescription, 3> loadAttachments = {colorLoad, normalLoad, depthLoad};
+            std::array<VkAttachmentDescription2, 6> loadAttachments = {
+                colorLoadMSAA, normalLoadMSAA, depthLoadMSAA,
+                colorResolve, normalResolve, depthResolve 
+            };
 
-            VkRenderPassCreateInfo transRpInfo = rpInfo; // Re-uses the info we just built
+            VkRenderPassCreateInfo2 transRpInfo = rpInfo; 
             transRpInfo.pAttachments = loadAttachments.data();
 
-            if (vkCreateRenderPass(device, &transRpInfo, nullptr, &transparentRenderPass) != VK_SUCCESS) {
-                std::cerr << "Failed to create Transparent RenderPass!" << std::endl;
+            if (vkCreateRenderPass2(device, &transRpInfo, nullptr, &transparentRenderPass) != VK_SUCCESS) {
                 return false;
             }
-        } 
+        }
 
         // --- Composite Render Pass (Final Output LDR) ---
         {
@@ -2971,10 +3251,24 @@ namespace Crescendo {
             }
         }
 
-        
+        // 0. MSAA IMAGES (The Fat Targets)
+        colorImageMSAA = VulkanImage(allocator, device, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, 
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT, msaaSamples);
+            
+        normalImageMSAA = VulkanImage(allocator, device, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, 
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT, msaaSamples);
+            
+        depthImageMSAA = VulkanImage(allocator, device, width, height, VK_FORMAT_D32_SFLOAT,
+            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, msaaSamples);
+
+        // 1. SCENE IMAGE (HDR Resolve Target 1x)
+        viewportImage = VulkanImage(allocator, device, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, 
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 
+            VK_IMAGE_ASPECT_COLOR_BIT); // Defaults to 1_BIT!
+
 
         // =========================================================
-        // 2. CREATE IMAGES (Existing Code)
+        // 2. CREATE IMAGES 
         // =========================================================
 
         // 1. SCENE IMAGE (HDR)
@@ -3045,10 +3339,14 @@ namespace Crescendo {
             VK_IMAGE_ASPECT_DEPTH_BIT);
 
         // 5. FRAMEBUFFERS
-        std::array<VkImageView, 3> fbAttachments = { viewportImage.view, viewportNormalImage.view, viewportDepthImage.view };
+        std::array<VkImageView, 6> fbAttachments = { 
+            colorImageMSAA.view, normalImageMSAA.view, depthImageMSAA.view, // MSAA Views
+            viewportImage.view, viewportNormalImage.view, viewportDepthImage.view // 1x Views
+        };
+        
         VkFramebufferCreateInfo fbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
         fbInfo.renderPass = viewportRenderPass; 
-        fbInfo.attachmentCount = 3;
+        fbInfo.attachmentCount = static_cast<uint32_t>(fbAttachments.size()); // <--- Changed to 6!
         fbInfo.pAttachments = fbAttachments.data();
         fbInfo.width = width;
         fbInfo.height = height;
@@ -3346,6 +3644,12 @@ namespace Crescendo {
         viewportImage.destroy();
         viewportNormalImage.destroy();
         viewportDepthImage.destroy();
+
+        // --- CLEAN UP MSAA IMAGES ---
+        colorImageMSAA.destroy();
+        normalImageMSAA.destroy();
+        depthImageMSAA.destroy();
+
         bloomBrightImage.destroy();
         finalImage.destroy();
         ssrImage.destroy();
@@ -3380,6 +3684,7 @@ namespace Crescendo {
             if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, skyPipeline, nullptr);
             if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, graphicsPipeline, nullptr);
             if (transparentPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, transparentPipeline, nullptr);
+            if (opaquePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, opaquePipeline, nullptr);
             if (waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, waterPipeline, nullptr);
             if (bloomPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bloomPipeline, nullptr);
             if (compositePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, compositePipeline, nullptr);

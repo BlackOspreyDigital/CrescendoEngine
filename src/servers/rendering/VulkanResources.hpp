@@ -88,7 +88,7 @@ namespace Crescendo {
 
         VulkanImage() = default;
 
-        VulkanImage(VmaAllocator allocator, VkDevice device, uint32_t width, uint32_t height, VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect) 
+        VulkanImage(VmaAllocator allocator, VkDevice device, uint32_t width, uint32_t height, VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect, VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT) 
             : allocator(allocator), device(device) {
             
             // A. Create Image
@@ -104,7 +104,7 @@ namespace Crescendo {
             imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
             imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             imageInfo.usage = usage;
-            imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+            imageInfo.samples = samples;
             imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
             VmaAllocationCreateInfo allocInfo = {};

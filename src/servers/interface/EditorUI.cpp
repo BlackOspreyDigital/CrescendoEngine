@@ -215,6 +215,8 @@ namespace Crescendo {
         ImGui_ImplVulkan_Init(&init_info);
     }
 
+    
+
     void EditorUI::Shutdown(VkDevice device) {
         vkDeviceWaitIdle(device);
         ImGui_ImplVulkan_Shutdown();
@@ -258,6 +260,51 @@ namespace Crescendo {
                  if (ImGui::IsKeyDown(ImGuiKey_Q)) camera.Position += camera.WorldUp * moveSpeed; 
                  if (ImGui::IsKeyDown(ImGuiKey_E)) camera.Position -= camera.WorldUp * moveSpeed; 
              }
+        }
+
+        // --- CTRL+A ADD MENU ---
+        if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_A)) {
+            ImGui::OpenPopup("AddEntityPopup");
+        }
+
+        if (ImGui::BeginPopup("AddEntityPopup")) {
+            ImGui::TextDisabled("Add Entity...");
+            ImGui::Separator();
+            
+            if (ImGui::MenuItem("Empty Prop")) {
+                CBaseEntity* ent = scene->CreateEntity("prop_dynamic");
+                ent->targetName = "New Prop";
+                ent->origin = camera.Position + camera.Front * 5.0f; // Spawn 5 units in front of camera
+                selectedObjectIndex = scene->entities.size() - 1;    // Auto-select it
+            }
+
+            if (ImGui::MenuItem("Point Light")) {
+                CBaseEntity* point = scene->CreateEntity("light_point");
+                point->targetName = "Point Light";
+                point->origin = camera.Position + camera.Front * 5.0f; // Spawn in front of you
+                point->albedoColor = glm::vec3(1.0f, 0.4f, 0.1f);      // Warm fire orange
+                point->emission = 25.0f;  // Intensity
+                point->scale.x = 15.0f;   // RADIUS: How far the light reaches!
+                selectedObjectIndex = scene->entities.size() - 1;
+            }
+            
+            if (ImGui::MenuItem("Directional Light (Sun)")) {
+                CBaseEntity* sun = scene->CreateEntity("light_directional");
+                sun->targetName = "Sun Light";
+                sun->angles = glm::vec3(45.0f, -30.0f, 0.0f);
+                sun->albedoColor = glm::vec3(1.0f, 0.95f, 0.9f); // Warm sunlight
+                sun->emission = 5.0f; // Intensity
+                selectedObjectIndex = scene->entities.size() - 1;
+            }
+            
+            if (ImGui::MenuItem("Atmosphere (Skybox)")) {
+                CBaseEntity* sky = scene->CreateEntity("env_sky");
+                sky->targetName = "Sky Environment";
+                selectedObjectIndex = scene->entities.size() - 1;
+            }
+            
+
+            ImGui::EndPopup();
         }
 
         // 2. DOCKSPACE & MENU
@@ -487,21 +534,7 @@ namespace Crescendo {
                 // 0.0 = Flat, 1.0 = Default, >1.0 = Deep/Exaggerated
                 ImGui::SliderFloat("Strength", &ent->normalStrength, 0.0f, 5.0f);
 
-                // Inside your entity inspector loop
-                if (ent->className == "env_sky") { // [FIX] Changed selectedEntity to ent
-                    ImGui::SeparatorText("Atmosphere Settings");
-                
-                    // These link directly back to the Scene's environment struct
-                    ImGui::ColorEdit3("Sun Color", &scene->environment.sunColor.x);
-                    ImGui::SliderFloat("Sun Intensity", &scene->environment.sunIntensity, 0.0f, 10.0f);
-                
-                    if (ImGui::CollapsingHeader("Fog & GI")) {
-                        ImGui::ColorEdit4("Fog Color/Density", &scene->environment.fogColor.x);
-                        ImGui::SliderFloat("Fog Falloff", &scene->environment.fogParams.x, 0.0f, 1.0f);
-                        ImGui::SliderFloat("Fog Height", &scene->environment.fogParams.w, -50.0f, 50.0f);
-                    }
-                }
-
+                // --- UNIFIED ATMOSPHERE SETTINGS ---
                 if (ent->className == "env_sky") { 
                     ImGui::SeparatorText("Atmosphere Settings");
                 
@@ -515,38 +548,78 @@ namespace Crescendo {
 
                     ImGui::Spacing();
 
-                    // Context panels
+                    // 2. CONTEXT SENSITIVE PANELS
                     if (scene->environment.skyType == SkyType::SolidColor) {
                         ImGui::TextDisabled("Basic unlit background");
-                        ImGui::ColorEdit3("Background Color", glm::value_ptr(scene->environment.skyColor));
+                        
+                        // [FIX] Edit the entity directly so it saves and syncs!
+                        ImGui::ColorEdit3("Background Color", glm::value_ptr(ent->albedoColor));
                     }
                     else if (scene->environment.skyType == SkyType::Procedural) {
                         ImGui::TextDisabled("Sun-driven atmospheric scattering.");
-                        ImGui::ColorEdit3("Zenith  (Top) Color", glm::value_ptr(scene->environment.skyColor));
-                        ImGui::ColorEdit3("Horizon (Bottom) Color", glm::value_ptr(scene->environment.groundColor));
+                        
+                        // [FIX] Edit the entity directly so it saves and syncs!
+                        ImGui::ColorEdit3("Zenith  (Top) Color", glm::value_ptr(ent->albedoColor));
+                        ImGui::ColorEdit3("Horizon (Bottom) Color", glm::value_ptr(ent->attenuationColor));
+                        
                         ImGui::ColorEdit3("Sun Color", glm::value_ptr(scene->environment.sunColor));
                         ImGui::SliderFloat("Sun Intensity", &scene->environment.sunIntensity, 0.0f, 10.0f);
                     }
                     else if (scene->environment.skyType == SkyType::HDRMap) {
                         ImGui::TextDisabled("Image-based lighting.");
-                                        
+
                         if (ImGui::Button("Load New HDR...")) {
-                            // Trigger the portable-file-dialogs window
                             auto selection = pfd::open_file("Select HDR", ".", {"HDR Files", "*.hdr"}).result();
-                            
-                            // If the user didn't hit 'Cancel'
                             if (!selection.empty()) {
-                                // Pass the selected file path directly to the GPU hot-swap function
                                 rendererRef->loadSkybox(selection[0]);
                             }
                         }
                     }
-                    // FOG is always visible it applies to all sky types.
+                    
+                    // 3. FOG SETTINGS (Always Visible)
                     if (ImGui::CollapsingHeader("Fog & Global Illumination")) {
                         ImGui::ColorEdit4("Fog Color/Density", glm::value_ptr(scene->environment.fogColor));
                         ImGui::SliderFloat("Fog Falloff", &scene->environment.fogParams.x, 0.0f, 1.0f);
                         ImGui::SliderFloat("Fog Height", &scene->environment.fogParams.w, -50.0f, 50.0f);  
                     }
+                }
+                // --- END ATMOSPHERE SETTINGS ---
+
+                // --- DIRECTIONAL LIGHT SETTINGS ---
+                if (ent->className == "light_directional") {
+                    ImGui::SeparatorText("Sun & Shadow Settings");
+                    
+                    ImGui::ColorEdit3("Light Color", glm::value_ptr(ent->albedoColor));
+                    ImGui::SliderFloat("Intensity", &ent->emission, 0.0f, 20.0f);
+                    
+                    ImGui::Spacing();
+                    ImGui::TextDisabled("Use the Rotation Gizmo in the viewport\nto change the sun/shadow direction!");
+                    
+                    // Sync the engine's global sun to this entity!
+                    // This converts the entity's Euler angles (XYZ) into a forward Direction Vector
+                    glm::mat4 rotMat = glm::mat4(1.0f);
+                    rotMat = glm::rotate(rotMat, glm::radians(ent->angles.z), glm::vec3(0, 0, 1));
+                    rotMat = glm::rotate(rotMat, glm::radians(ent->angles.y), glm::vec3(0, 1, 0));
+                    rotMat = glm::rotate(rotMat, glm::radians(ent->angles.x), glm::vec3(1, 0, 0));
+                    
+                    // Forward vector in OpenGL/Vulkan is generally -Z or +X depending on your setup. 
+                    // We'll use the matrix's forward vector.
+                    glm::vec3 forward = glm::normalize(glm::vec3(rotMat * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f)));
+                    
+                    scene->environment.sunDirection = forward;
+                    scene->environment.sunColor = ent->albedoColor;
+                    scene->environment.sunIntensity = ent->emission;
+                }
+
+                // --- POINT LIGHT SETTINGS ---
+                if (ent->className == "light_point") {
+                    ImGui::SeparatorText("Point Light Settings");
+                    ImGui::ColorEdit3("Light Color", glm::value_ptr(ent->albedoColor));
+                    ImGui::SliderFloat("Intensity", &ent->emission, 0.0f, 100.0f);
+                    ImGui::SliderFloat("Radius", &ent->scale.x, 1.0f, 100.0f); 
+                    
+                    ImGui::Spacing();
+                    ImGui::TextDisabled("Use the Translate Gizmo to move the light!");
                 }
             }
         } 
@@ -598,9 +671,9 @@ namespace Crescendo {
         // --- ABOUT WINDOW ---
         if (showAboutWindow) {
             ImGui::Begin("About", &showAboutWindow, ImGuiWindowFlags_AlwaysAutoResize);
-            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.0f, 1.0f), "Black Osprey Engine (Bravo Build)");
+            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.0f, 1.0f), "Osprey Engine (Bravo Build)");
             ImGui::Separator();
-            ImGui::Text("Developed by Bryan");
+            ImGui::Text("Developed by Yan Nett");
             ImGui::Text("Powered by Vulkan & SDL2");
             ImGui::Spacing();
             ImGui::TextWrapped("A lightweight, high-performance 3D engine built for scalability.");

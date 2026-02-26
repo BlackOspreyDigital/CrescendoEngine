@@ -61,6 +61,7 @@ set(SHADER_FILES
     assets/shaders/shader.vert
     assets/shaders/shader.frag
     assets/shaders/transparent.frag
+    assets/shaders/opaque.frag
     assets/shaders/sky.vert
     assets/shaders/sky.frag
     assets/shaders/water.vert

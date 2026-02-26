@@ -2,7 +2,6 @@
 
 #include <cstdint>
 
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE 
 #include "servers/rendering/Vertex.hpp"
 #include "Material.hpp"
 #include "tiny_obj_loader.h"
@@ -85,20 +84,29 @@ namespace Crescendo {
         glm::vec4 volumeColor;
     };
 
+    struct PointLight {
+        glm::vec4 positionAndRadius;
+        glm::vec4 colorAndIntensity;
+    };
+
     struct GlobalUniforms {
         glm::mat4 viewProj;
         glm::mat4 view;
         glm::mat4 proj;
+        glm::mat4 lightSpaceMatrices[4];
+        glm::vec4 cascadeSplits;
         glm::vec4 cameraPos;
-        glm::vec4 sunDirection;
+        glm::vec4 sunDirection; 
         glm::vec4 sunColor;
         glm::vec4 params;
         glm::vec4 fogColor;
         glm::vec4 fogParams;
         glm::vec4 skyColor;
         glm::vec4 groundColor;
-        glm::mat4 lightSpaceMatrices[4]; // One matrix per cascade
-        glm::vec4 cascadeSplits;         // Split distances
+        
+        // --- POINT LIGHTS ---
+        glm::vec4 pointLightParams; 
+        PointLight pointLights[16]; 
     };
 
     struct PushConsts {
@@ -106,7 +114,7 @@ namespace Crescendo {
     };
 
     struct ShadowPushConsts {
-        glm::mat4 lightVP;
+        glm::mat4 lightSpaceMatrix;
         uint32_t entityIndex;
     };
 
@@ -169,6 +177,14 @@ namespace Crescendo {
             1.0f, // bloomStrength
             1.0f   // bloomThreshold
         };
+
+        // --- MSAA CONFIG & RESOURCES ---
+
+        VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_4_BIT;
+
+        VulkanImage colorImageMSAA;
+        VulkanImage normalImageMSAA;
+        VulkanImage depthImageMSAA;
 
         RenderSettings renderSettings;
         
@@ -234,6 +250,7 @@ namespace Crescendo {
         VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
         VkPipeline graphicsPipeline = VK_NULL_HANDLE;
         VkPipeline transparentPipeline = VK_NULL_HANDLE;
+        VkPipeline opaquePipeline = VK_NULL_HANDLE;
         VkPipeline skyPipeline = VK_NULL_HANDLE;
         VkPipeline waterPipeline = VK_NULL_HANDLE;
         
@@ -339,8 +356,9 @@ namespace Crescendo {
         bool createGraphicsPipeline();
         bool createSSRResources();
         bool createSSRPipeline();
-        void updateSSRDescriptors(); // bind our G-Buffer
+        void updateSSRDescriptors();
         bool createTransparentPipeline();
+        bool createOpaquePipeline();
         bool createWaterPipeline();
         bool createTextureImage();        
         bool createTextureImage(const std::string& path, VulkanImage& outImage);
@@ -362,8 +380,9 @@ namespace Crescendo {
         
         void updateUniformBuffer(uint32_t currentImage, Scene* scene);
 
+        void calculateCascades(Scene* scene, Camera& camera, float aspectRatio, GlobalUniforms& globalData);
+
         // --- SHADOW RESOURCES ---
-        // Shadows are complex; we keep the RAII image but manual views for the array layers
         VulkanImage shadowImage; 
         VkImageView shadowImageView = VK_NULL_HANDLE; // Array View (for sampling)
         std::vector<VkImageView> shadowCascadeViews;  // Individual Layer Views (for rendering)
