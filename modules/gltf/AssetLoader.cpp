@@ -6,6 +6,7 @@
 #include "servers/rendering/RenderingServer.hpp"
 #include "servers/physics/PhysicsServer.hpp"
 #include "tiny_gltf.h"
+#include "deps/xatlas.h"
 #include <iostream>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -34,6 +35,60 @@ namespace Crescendo {
             else result += uri[i];
         }
         return result;
+    }
+
+    static void GenerateLightmapUVs(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
+        xatlas::Atlas* atlas = xatlas::Create();
+
+        // 1. Describe our mesh memory layout to xatlas
+        xatlas::MeshDecl meshDecl;
+        meshDecl.vertexCount = vertices.size();
+        meshDecl.vertexPositionData = &vertices[0].pos;
+        meshDecl.vertexPositionStride = sizeof(Vertex);
+
+        meshDecl.indexCount = indices.size();
+        meshDecl.indexData = indices.data();
+        meshDecl.indexFormat = xatlas::IndexFormat::UInt32;
+
+        // 2. Add and Generate
+        xatlas::AddMeshError error = xatlas::AddMesh(atlas, meshDecl, 1);
+        if (error != xatlas::AddMeshError::Success) {
+            std::cerr <<"[Lightmapper] Error adding mesht to xatlas!" << std::endl;
+            xatlas::Destroy(atlas);
+            return;
+        }
+
+        xatlas::Generate(atlas);
+
+        // 3. Extract the flattened geometry
+        std::vector<Vertex> newVertices;
+        std::vector<uint32_t> newIndices;
+
+        const xatlas::Mesh& outMesh = atlas->meshes[0];
+        newVertices.resize(outMesh.vertexCount);
+        newIndices.resize(outMesh.indexCount);
+
+        for (uint32_t i = 0; i < outMesh.indexCount; i++) {
+            newIndices[i] = outMesh.indexArray[i];
+        }
+
+        for (uint32_t i = 0; i < outMesh.vertexCount; i++) {
+            const xatlas::Vertex& v = outMesh.vertexArray[i];
+
+            newVertices[i] = vertices[v.xref]; // copy original data
+
+            newVertices[i].lightmapUV.x = v.uv[0] / (float)atlas->width;
+            newVertices[i].lightmapUV.y = v.uv[1] / (float)atlas->height;
+        }
+
+        // 4. Overwrite the original vectors
+        vertices = std::move(newVertices);
+        indices = std::move(newIndices);
+
+        std::cout << "[Lightmapper] Atlas generated. Size : " << atlas->width << "x" << atlas->height<< std::endl;
+
+        xatlas::Destroy(atlas);
+
     }
 
     void AssetLoader::loadModel(RenderingServer* renderer, const std::string& filePath, Scene* scene) {
@@ -149,6 +204,14 @@ namespace Crescendo {
                 }
 
                 if (vertices.empty() || indices.empty()) continue;
+                
+                // =========================================================
+                // XATLAS INJECTION
+                // Flatten the mesh right before it hits the GPU
+                // =========================================================
+                
+                std::cout << "[AssetLoader] Flattening UVs for lightmap..." << std::endl;
+                GenerateLightmapUVs(vertices, indices);
 
                 std::string meshKey = baseDir + "_mesh_" + std::to_string(i) + "_" + std::to_string(j);
 

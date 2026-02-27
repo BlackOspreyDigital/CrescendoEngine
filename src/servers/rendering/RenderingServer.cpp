@@ -136,7 +136,11 @@ namespace Crescendo {
         if (!createCompositePipeline()) return false;
         if (!createShadowPipeline()) return false;
         if (!createSSRPipeline()) return false;
-
+        // --- Bakerline ---
+        if (!createBakeRenderPass()) return false;
+        if (!createBakeFramebuffer()) return false;
+        if (!createBakePipeline()) return false;
+        //-------------------
         if (!createFramebuffers()) return false;
 
         // --- Assets ---
@@ -1150,7 +1154,6 @@ namespace Crescendo {
         return newIndex;
     }
 
-    // [FIX] Updated acquireTexture to match Old Logic (Use UNORM)
     int RenderingServer::acquireTexture(const std::string& path) {
         if (cache.textures.find(path) != cache.textures.end()) {
             return cache.textures[path];
@@ -2075,6 +2078,145 @@ namespace Crescendo {
         return result == VK_SUCCESS;
     }
 
+    bool RenderingServer::createBakePipeline() {
+        //1. Load the compiled SPIR-V shaders
+        auto vertShaderCode = readFile("assets/shaders/bake.vert.spv");
+        auto fragShaderCode = readFile("assets/shaders/bake.frag.spv");
+
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+        VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertShaderStageInfo.module = vertShaderModule;
+        vertShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageInfo.module = fragShaderModule;
+        fragShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+
+        // 2. Vertex Input ( Must match vertex struct)
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+        // 3. Viewport and Scissor (Locked to our Lightmap Size)
+        VkViewport viewport{};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = (float)LIGHTMAP_SIZE;
+        viewport.height = (float)LIGHTMAP_SIZE;
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+
+        VkRect2D scissor{};
+        scissor.offset = {0, 0};
+        scissor.extent = {LIGHTMAP_SIZE, LIGHTMAP_SIZE};
+
+        VkPipelineViewportStateCreateInfo viewportState{};
+        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;
+        viewportState.pViewports = &viewport;
+        viewportState.scissorCount = 1;
+        viewportState.pScissors = &scissor;
+
+        // 4. Rasterizer (CRITICAL: Disable culling for baking!)
+        VkPipelineRasterizationStateCreateInfo rasterizer{};
+        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizer.depthClampEnable = VK_FALSE;
+        rasterizer.rasterizerDiscardEnable = VK_FALSE;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE; // Capture everything
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterizer.depthBiasEnable = VK_FALSE;
+
+        VkPipelineMultisampleStateCreateInfo multisampling{};
+        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampling.sampleShadingEnable = VK_FALSE;
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        // 5. Dual Color Blending (One for Position, One for Normal)
+        // We disable blending completely because we just want to overwrite the pixels with raw data.
+        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachment.blendEnable = VK_FALSE;
+
+        // We have TWO attachments in our bake render pass
+        VkPipelineColorBlendAttachmentState blendAttachments[] = { colorBlendAttachment, colorBlendAttachment };
+
+        VkPipelineColorBlendStateCreateInfo colorBlending{};
+        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlending.logicOpEnable = VK_FALSE;
+        colorBlending.attachmentCount = 2;
+        colorBlending.pAttachments = blendAttachments;
+
+        // 6. Push Constants (To pass the modelMatrix)
+        VkPushConstantRange pushConstantRange{};
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        pushConstantRange.offset = 0;
+        pushConstantRange.size = sizeof(glm::mat4);
+
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 0; // No textures/descriptors needed for the bake pass!
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
+
+        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &bakePipelineLayout) != VK_SUCCESS) {
+            std::cerr << "Failed to create bake pipeline layout!" << std::endl;
+            return false;
+        }
+
+        // 7. Depth Testing Disabled
+        VkPipelineDepthStencilStateCreateInfo depthStencil{};
+        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depthStencil.depthTestEnable = VK_FALSE; 
+        depthStencil.depthWriteEnable = VK_FALSE;
+
+        // 8. Build the actual Pipeline
+        VkGraphicsPipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.layout = bakePipelineLayout;
+        pipelineInfo.renderPass = bakeRenderPass;
+        pipelineInfo.subpass = 0;
+
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &bakePipeline) != VK_SUCCESS) {
+            std::cerr << "Failed to create bake graphics pipeline!" << std::endl;
+            return false;
+        }
+
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
+
+        return true;
+    }
+
     //===============================================
     // RENDER STAGING
     //===============================================
@@ -2293,6 +2435,105 @@ namespace Crescendo {
         if (vmaMapMemory(allocator, entityStorageBuffer.allocation, &entityStorageBufferMapped) != VK_SUCCESS) {
             throw std::runtime_error("Failed to map Entity Storage Buffer memory!");
         }
+    }
+
+    // --------------------------------------------------------------------
+    // TOOLING (OFFSCREEN)
+    // --------------------------------------------------------------------
+
+    bool RenderingServer::createBakeRenderPass() {
+        VkAttachmentDescription attachments[2] = {};
+
+        // Attachment 0: World Position (32-bit floats)
+        attachments[0].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+        attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        // Attachment 1: World Normal (32-bit floats)
+        attachments[1].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+        attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachments[1].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkAttachmentReference posRef{};
+        posRef.attachment = 0;
+        posRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        VkAttachmentReference normRef{};
+        normRef.attachment = 1;
+        normRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        VkAttachmentReference colorReferences[2] = { posRef, normRef };
+
+        VkSubpassDescription subpass = {};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 2;
+        subpass.pColorAttachments = colorReferences;
+
+        VkSubpassDependency dependency = {};
+        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependency.dstSubpass = 0;
+        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.srcAccessMask = 0;
+        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        VkRenderPassCreateInfo renderPassInfo = {};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        renderPassInfo.attachmentCount = 2;
+        renderPassInfo.pAttachments = attachments;
+        renderPassInfo.subpassCount = 1;
+        renderPassInfo.pSubpasses = &subpass;
+        renderPassInfo.dependencyCount = 1;
+        renderPassInfo.pDependencies = &dependency;
+
+        if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &bakeRenderPass) != VK_SUCCESS) {
+            std::cerr << "Failed to create bake render pass!" << std::endl;
+            return false;
+        }
+        return true;
+    }
+
+    bool RenderingServer::createBakeFramebuffer() {
+    
+        // 1. The usage flags: Render to it (Attachment) and Read from it later (Sampled)
+        VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+
+        // 2. Allocate Images and Views in ONE line using your custom RAII constructor!
+        positionBakeImage = VulkanImage(allocator, device, LIGHTMAP_SIZE, LIGHTMAP_SIZE, 
+                                        VK_FORMAT_R32G32B32A32_SFLOAT, usage, VK_IMAGE_ASPECT_COLOR_BIT);
+
+        normalBakeImage = VulkanImage(allocator, device, LIGHTMAP_SIZE, LIGHTMAP_SIZE, 
+                                      VK_FORMAT_R32G32B32A32_SFLOAT, usage, VK_IMAGE_ASPECT_COLOR_BIT);
+
+        // 3. Tie them together into the Framebuffer
+        // Notice we access the view using the `.view` property of your wrapper
+        VkImageView attachments[2] = { positionBakeImage.view, normalBakeImage.view };
+
+        VkFramebufferCreateInfo fbInfo = {};
+        fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fbInfo.renderPass = bakeRenderPass;
+        fbInfo.attachmentCount = 2;
+        fbInfo.pAttachments = attachments; // This fixes the 'undeclared identifier' typo too!
+        fbInfo.width = LIGHTMAP_SIZE;
+        fbInfo.height = LIGHTMAP_SIZE;
+        fbInfo.layers = 1;
+
+        if (vkCreateFramebuffer(device, &fbInfo, nullptr, &bakeFramebuffer) != VK_SUCCESS) {
+            std::cerr << "Failed to create Bake Framebuffer!" << std::endl;
+            return false;
+        }
+
+        return true;
     }
 
     // --------------------------------------------------------------------
@@ -3750,6 +3991,11 @@ namespace Crescendo {
             
             textureBank.clear();
             textureMap.clear();
+
+            vkDestroyPipeline(device, bakePipeline, nullptr);
+            vkDestroyPipelineLayout(device, bakePipelineLayout, nullptr);
+            vkDestroyFramebuffer(device, bakeFramebuffer, nullptr);
+            vkDestroyRenderPass(device, bakeRenderPass, nullptr);
             
             // 6. Cleanup Samplers
             if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(device, textureSampler, nullptr);
@@ -3770,8 +4016,6 @@ namespace Crescendo {
             }
             entityStorageBuffer.destroy();
             globalUniformBuffer.destroy();
-
-            
                 
             // 9. Cleanup Swapchain
             cleanupSwapChain();

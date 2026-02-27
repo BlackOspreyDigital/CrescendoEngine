@@ -310,6 +310,11 @@ namespace Crescendo {
         std::vector<TextureResource> textureBank;
         std::unordered_map<std::string, int> textureMap;
 
+        VkPipelineLayout bakePipelineLayout;
+        VkPipeline bakePipeline;
+
+        bool createBakePipeline();
+
         // Viewport (HDR)
         VulkanImage viewportImage;
         VulkanImage viewportNormalImage; // G-Buffer for Normal (RGB) & Roughness (A)
@@ -324,6 +329,19 @@ namespace Crescendo {
         
         // Bloom
         VulkanImage bloomBrightImage;
+
+        // --- LIGHTMAP BAKING RESOURCES ---
+        const uint32_t LIGHTMAP_SIZE = 2048; 
+
+        // Look how much cleaner this is!
+        VulkanImage positionBakeImage;
+        VulkanImage normalBakeImage;
+
+        VkRenderPass bakeRenderPass;
+        VkFramebuffer bakeFramebuffer;
+        
+        bool createBakeRenderPass();
+        bool createBakeFramebuffer();
         
         // Final Composite (LDR)
         VulkanImage finalImage;

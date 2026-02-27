@@ -19,6 +19,7 @@ struct Vertex {
     glm::vec2 texCoord1; // Second UV Channel
     glm::vec3 tangent;
     glm::vec3 bitangent;
+    glm::vec2 lightmapUV;
 
     // 1. Equality Operator (Needed for deduplication) 
     bool operator ==(const Vertex& other) const {
@@ -47,7 +48,7 @@ struct Vertex {
         attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
         attributeDescriptions[0].offset = offsetof(Vertex, pos);
 
-        // Color (Location 1) - THIS WAS LIKELY MISSING OR SWAPPED
+        // Color (Location 1) 
         attributeDescriptions[1].binding = 0;
         attributeDescriptions[1].location = 1;
         attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;

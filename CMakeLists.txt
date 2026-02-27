@@ -39,6 +39,7 @@ file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.c")
 # Explicitly add the controller so CMake never misses it
 list(APPEND SOURCES "src/controllers/VehicleController.cpp")
 list(APPEND SOURCES "src/IO/ConfigManager.cpp")
+list(APPEND SOURCES "deps/xatlas.cpp")
 
 file(GLOB_RECURSE JOLT_SOURCES "modules/Jolt/JoltPhysics/Jolt/*.cpp")
 file(GLOB_RECURSE MODULE_SOURCES "modules/gltf/*.cpp")
@@ -72,6 +73,8 @@ set(SHADER_FILES
     assets/shaders/ssr.frag  
     assets/shaders/ssao.frag 
     assets/shaders/shadow.vert 
+    assets/shaders/bake.vert 
+    assets/shaders/bake.frag 
 
 )
 
