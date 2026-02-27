@@ -89,6 +89,14 @@ namespace Crescendo {
         glm::vec4 colorAndIntensity;
     };
 
+    struct AreaLight {
+
+    };
+
+    struct DirectionalLight {
+
+    };
+
     struct GlobalUniforms {
         glm::mat4 viewProj;
         glm::mat4 view;
@@ -146,7 +154,6 @@ namespace Crescendo {
         bool halfResSSR = false;
     };
 
-
     class RenderingServer {   
     public:
         friend class AssetLoader;
@@ -155,6 +162,11 @@ namespace Crescendo {
         void shutdown();
         // Update this signature to take the state by reference
         void render(Scene* scene, EngineState& engineState);
+
+        void SetMSAASamples(VkSampleCountFlagBits newSamples);
+
+        VkSampleCountFlagBits pendingMsaaSamples = VK_SAMPLE_COUNT_4_BIT;
+        bool msaaNeedsRebuild = false;
 
         // Asset Management
         int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
@@ -169,7 +181,6 @@ namespace Crescendo {
         VkImageView createImageView(VkImage image, VkFormat format, VkImageAspectFlags aspectFlags);
 
         bool isPlayMode = false;
-        
         
         PostProcessPushConstants postProcessSettings{ 
             0.0f,  // exposure
@@ -191,7 +202,7 @@ namespace Crescendo {
         Camera mainCamera;
         std::vector<MeshResource> meshes;
         int waterTextureID = 0;
-        Console gameConsole;
+        
 
         // Constants
         const uint32_t SHADOW_DIM = 2048; 

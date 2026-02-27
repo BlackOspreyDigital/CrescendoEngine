@@ -13,6 +13,7 @@
 
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
+#include <vulkan/vulkan_core.h>
 
 namespace Crescendo {
 
@@ -552,13 +553,13 @@ namespace Crescendo {
                     if (scene->environment.skyType == SkyType::SolidColor) {
                         ImGui::TextDisabled("Basic unlit background");
                         
-                        // [FIX] Edit the entity directly so it saves and syncs!
+                        // Edit the entity directly so it saves and syncs!
                         ImGui::ColorEdit3("Background Color", glm::value_ptr(ent->albedoColor));
                     }
                     else if (scene->environment.skyType == SkyType::Procedural) {
                         ImGui::TextDisabled("Sun-driven atmospheric scattering.");
                         
-                        // [FIX] Edit the entity directly so it saves and syncs!
+                        // Edit the entity directly so it saves and syncs!
                         ImGui::ColorEdit3("Zenith  (Top) Color", glm::value_ptr(ent->albedoColor));
                         ImGui::ColorEdit3("Horizon (Bottom) Color", glm::value_ptr(ent->attenuationColor));
                         
@@ -578,12 +579,29 @@ namespace Crescendo {
                     
                     // 3. FOG SETTINGS (Always Visible)
                     if (ImGui::CollapsingHeader("Fog & Global Illumination")) {
-                        ImGui::ColorEdit4("Fog Color/Density", glm::value_ptr(scene->environment.fogColor));
-                        ImGui::SliderFloat("Fog Falloff", &scene->environment.fogParams.x, 0.0f, 1.0f);
-                        ImGui::SliderFloat("Fog Height", &scene->environment.fogParams.w, -50.0f, 50.0f);  
+                        ImGui::Checkbox("Enable Fog", &scene->environment.enableFog);
+                        
+                        if (scene->environment.enableFog) {
+                            ImGui::ColorEdit4("Fog Color/Density", glm::value_ptr(scene->environment.fogColor));
+                            ImGui::SliderFloat("Fog Falloff", &scene->environment.fogParams.x, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Fog Height", &scene->environment.fogParams.w, -50.0f, 50.0f);  
+                        }
                     }
                 }
                 // --- END ATMOSPHERE SETTINGS ---
+
+                // --- SHADOW SETTINGS TAB ---
+                if (ImGui::CollapsingHeader("Cascaded Shadows")) {
+                    ImGui::Spacing();
+
+                    // We use DragFloat instead of SliderFloat so you aren't artificially capped 
+                    // if you need a really high or low value for a specific scene scale.
+                    ImGui::DragFloat("Bias Constant", &scene->environment.shadowBiasConstant, 0.05f, 0.0f, 10.0f, "%.3f");
+                    ImGui::DragFloat("Bias Slope", &scene->environment.shadowBiasSlope, 0.05f, 0.0f, 10.0f, "%.3f");
+
+                    ImGui::Spacing();
+                    ImGui::TextDisabled("Tweak these if you see black stripes\n(shadow acne) or disconnected shadows.");
+                }
 
                 // --- DIRECTIONAL LIGHT SETTINGS ---
                 if (ent->className == "light_directional") {
@@ -643,7 +661,7 @@ namespace Crescendo {
 
         ImGui::End(); // Safely closes the "Inspector" window
 
-        // --- ENGINE SETTINGS WINDOW ---
+        // --- ENGINE GRAPHICS SETTINGS ---
         if (showSettingsWindow) {
             ImGui::Begin("Engine Settings", &showSettingsWindow);
             
@@ -664,6 +682,35 @@ namespace Crescendo {
                     ImGui::Checkbox("Half-Resolution SSR", &rendererRef->renderSettings.halfResSSR);
                     ImGui::Unindent();
                 }
+            }
+
+            // --- ENGINE GRAPHICS SETTINGS ---
+            if (ImGui::CollapsingHeader("Engine Graphics")) {
+                ImGui::Spacing();
+
+                const char* msaaItems[] = { "Off (1x)", "2x", "4x", "8x" };
+
+                // Use rendererRef instead of renderer
+                int currentMSAA = 0;
+                if (rendererRef->msaaSamples == VK_SAMPLE_COUNT_2_BIT) currentMSAA = 1;
+                if (rendererRef->msaaSamples == VK_SAMPLE_COUNT_4_BIT) currentMSAA = 2;
+                if (rendererRef->msaaSamples == VK_SAMPLE_COUNT_8_BIT) currentMSAA = 3;
+
+                if (ImGui::Combo("Anti-Aliasing", &currentMSAA, msaaItems, IM_ARRAYSIZE(msaaItems))) {
+                    VkSampleCountFlagBits newMSAA = VK_SAMPLE_COUNT_1_BIT;
+
+                    if (currentMSAA == 0) newMSAA = VK_SAMPLE_COUNT_1_BIT;
+                    if (currentMSAA == 1) newMSAA = VK_SAMPLE_COUNT_2_BIT;
+                    if (currentMSAA == 2) newMSAA = VK_SAMPLE_COUNT_4_BIT;
+                    if (currentMSAA == 3) newMSAA = VK_SAMPLE_COUNT_8_BIT;
+
+                    // Trigger the rebuild using rendererRef!
+                    rendererRef->pendingMsaaSamples = newMSAA; 
+                    rendererRef->msaaNeedsRebuild = true;
+                }
+
+                ImGui::Spacing();
+                ImGui::TextDisabled("Changing MSAA recompiles pipelines.");
             }
             ImGui::End();
         }

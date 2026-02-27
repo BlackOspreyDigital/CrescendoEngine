@@ -1296,7 +1296,10 @@ namespace Crescendo {
         pipelineLayoutInfo.pushConstantRangeCount = 1;
         pipelineLayoutInfo.pPushConstantRanges = &pushConstant;
         
-        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) return false;
+        // --- ONLY CREATE IF IT DOESN'T EXIST YET ---
+        if (pipelineLayout == VK_NULL_HANDLE) {
+            if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) return false;
+        }
 
         VkGraphicsPipelineCreateInfo pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -2181,6 +2184,12 @@ namespace Crescendo {
     void RenderingServer::render(Scene* scene, EngineState& engineState) {
         if (!scene) return;
             
+        // --- SAFELY REBUILD PIPELINES BEFORE THE FRAME STARTS ---
+        if (msaaNeedsRebuild) {
+            SetMSAASamples(pendingMsaaSamples);
+            msaaNeedsRebuild = false;
+        }
+            
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
         
         uint32_t imageIndex;
@@ -2277,7 +2286,10 @@ namespace Crescendo {
         globalData.sunColor = glm::vec4(sunColor, 1.0f);
         float skyTypeFloat = static_cast<float>(scene->environment.skyType);
         globalData.params = glm::vec4(SDL_GetTicks() / 1000.0f, skyTypeFloat, viewportSize.x, viewportSize.y);
-        globalData.fogColor    = scene->environment.fogColor;
+        globalData.fogColor = scene->environment.fogColor;
+        if (!scene->environment.enableFog) {
+            globalData.fogColor.w = 0.0f; // Force density to exactly 0 to turn it off!
+        }
         globalData.fogParams   = scene->environment.fogParams;
         globalData.skyColor    = glm::vec4(scene->environment.skyColor, 1.0f);
         globalData.groundColor = glm::vec4(scene->environment.groundColor, 1.0f);
@@ -2342,8 +2354,11 @@ namespace Crescendo {
             VkRect2D scissor{{0, 0}, {SHADOW_DIM, SHADOW_DIM}};
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
 
-            // Parameters: commandBuffer, constantFactor, clamp, slopeFactor
-            vkCmdSetDepthBias(commandBuffers[currentFrame], 1.25f, 0.0f, 1.75f);
+            // Because we use a 32-bit Float depth buffer, the constant factor must be 
+            // massively scaled up to make any mathematical difference.
+            float scaledConstantBias = scene->environment.shadowBiasConstant * 10000.0f;
+            
+            vkCmdSetDepthBias(commandBuffers[currentFrame], scaledConstantBias, 0.0f, scene->environment.shadowBiasSlope);
 
             // Draw all OPAQUE entities into the shadow map
             for (auto* ent : opaqueList) {
@@ -2373,17 +2388,26 @@ namespace Crescendo {
         viewportPassInfo.renderPass = viewportRenderPass;
         viewportPassInfo.framebuffer = viewportFramebuffer;
         viewportPassInfo.renderArea.extent = swapChainExtent;
-        
-        // [FIX] Expand to 6 clear values to match the new MSAA Framebuffer layout
-        std::array<VkClearValue, 6> clearValues{};
-        clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};      // 0: MSAA Color Target
-        clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      // 1: MSAA Normal Target
-        clearValues[2].depthStencil = {1.0f, 0};                         // 2: MSAA Depth Target
-        clearValues[3].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      // 3: Resolve Color (Ignored, but required)
-        clearValues[4].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      // 4: Resolve Normal (Ignored, but required)
-        clearValues[5].depthStencil = {1.0f, 0};                         // 5: Resolve Depth (Ignored, but required)
-        
-        viewportPassInfo.clearValueCount = 6; 
+
+        bool useMSAA = msaaSamples != VK_SAMPLE_COUNT_1_BIT;
+        std::vector<VkClearValue> clearValues;
+
+        if (useMSAA) {
+            clearValues.resize(6);
+            clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};      // 0: MSAA Color Target
+            clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      // 1: MSAA Normal Target
+            clearValues[2].depthStencil = {1.0f, 0};                         // 2: MSAA Depth Target
+            clearValues[3].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      // 3: Resolve Color
+            clearValues[4].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      // 4: Resolve Normal
+            clearValues[5].depthStencil = {1.0f, 0};                         // 5: Resolve Depth
+        } else {
+            clearValues.resize(3);
+            clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};      // 0: 1x Color Target
+            clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      // 1: 1x Normal Target
+            clearValues[2].depthStencil = {1.0f, 0};                         // 2: 1x Depth Target
+        }
+
+        viewportPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
         viewportPassInfo.pClearValues = clearValues.data();
         
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &viewportPassInfo, VK_SUBPASS_CONTENTS_INLINE);
@@ -2723,6 +2747,7 @@ namespace Crescendo {
         swapChainPassInfo.framebuffer = swapChainFramebuffers[imageIndex]; 
         swapChainPassInfo.renderArea.extent = swapChainExtent;
         swapChainPassInfo.clearValueCount = 2; 
+        std::array<VkClearValue, 2> scClearValues{};
         swapChainPassInfo.pClearValues = clearValues.data();
             
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &swapChainPassInfo, VK_SUBPASS_CONTENTS_INLINE);
@@ -3063,37 +3088,56 @@ namespace Crescendo {
         uint32_t width = swapChainExtent.width;
         uint32_t height = swapChainExtent.height;
         refractionMipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(width, height)))) + 1;
-        
+
         if (viewportRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, viewportRenderPass, nullptr);
+        if (transparentRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, transparentRenderPass, nullptr);
         if (compositeRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, compositeRenderPass, nullptr);
 
-        // --- Viewport Render Pass (HDR Scene + Depth + MSAA) ---
-        {
-            // 1. MSAA ATTACHMENTS (The "Fat" Memory)
-            VkAttachmentDescription2 colorMSAA{VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2};
-            colorMSAA.format = VK_FORMAT_R16G16B16A16_SFLOAT;
-            colorMSAA.samples = msaaSamples;
-            colorMSAA.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            colorMSAA.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            colorMSAA.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            colorMSAA.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        bool useMSAA = msaaSamples != VK_SAMPLE_COUNT_1_BIT;
 
-            VkAttachmentDescription2 normalMSAA = colorMSAA;
+        // --- 1. Viewport Render Pass (Dynamic MSAA/1x) ---
+        VkAttachmentDescription2 colorTarget{VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2};
+        colorTarget.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        colorTarget.samples = msaaSamples;
+        colorTarget.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorTarget.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        colorTarget.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        colorTarget.finalLayout = useMSAA ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-            VkAttachmentDescription2 depthMSAA{VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2};
-            depthMSAA.format = VK_FORMAT_D32_SFLOAT;
-            depthMSAA.samples = msaaSamples;
-            depthMSAA.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            depthMSAA.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            depthMSAA.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            depthMSAA.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        VkAttachmentDescription2 normalTarget = colorTarget;
 
-            // 2. RESOLVE ATTACHMENTS (The 1x Textures for Post-Processing)
+        VkAttachmentDescription2 depthTarget{VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2};
+        depthTarget.format = VK_FORMAT_D32_SFLOAT;
+        depthTarget.samples = msaaSamples;
+        depthTarget.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthTarget.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        depthTarget.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        depthTarget.finalLayout = useMSAA ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+        VkAttachmentReference2 colorRefs[2] = {};
+        colorRefs[0] = {VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, nullptr, 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0};
+        colorRefs[1] = {VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, nullptr, 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0};
+
+        VkAttachmentReference2 depthRef{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, nullptr, 2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0};
+
+        std::vector<VkAttachmentDescription2> attachments = { colorTarget, normalTarget, depthTarget };
+
+        VkSubpassDescription2 subpass{VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 2;
+        subpass.pColorAttachments = colorRefs;
+        subpass.pDepthStencilAttachment = &depthRef;
+
+        VkAttachmentReference2 resolveRefs[2] = {};
+        VkAttachmentReference2 depthResolveRef{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2};
+        VkSubpassDescriptionDepthStencilResolve depthResolveInfo{VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE};
+
+        if (useMSAA) {
             VkAttachmentDescription2 colorResolve{VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2};
             colorResolve.format = VK_FORMAT_R16G16B16A16_SFLOAT;
             colorResolve.samples = VK_SAMPLE_COUNT_1_BIT;
             colorResolve.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-            colorResolve.storeOp = VK_ATTACHMENT_STORE_OP_STORE; 
+            colorResolve.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             colorResolve.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             colorResolve.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -3107,203 +3151,131 @@ namespace Crescendo {
             depthResolve.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             depthResolve.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
-            // 3. REFERENCES (Using Vulkan 1.2 Structs)
-            VkAttachmentReference2 colorRefs[2] = {};
-            colorRefs[0].sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
-            colorRefs[0].attachment = 0;
-            colorRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            colorRefs[1].sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
-            colorRefs[1].attachment = 1;
-            colorRefs[1].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            attachments.push_back(colorResolve);
+            attachments.push_back(normalResolve);
+            attachments.push_back(depthResolve);
 
-            VkAttachmentReference2 depthRef{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2};
-            depthRef.attachment = 2;
-            depthRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            
-            VkAttachmentReference2 resolveRefs[2] = {};
-            resolveRefs[0].sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
-            resolveRefs[0].attachment = 3;
-            resolveRefs[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            resolveRefs[1].sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
-            resolveRefs[1].attachment = 4;
-            resolveRefs[1].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            resolveRefs[0] = {VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, nullptr, 3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0};
+            resolveRefs[1] = {VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, nullptr, 4, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0};
+            depthResolveRef = {VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, nullptr, 5, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, 0};
 
-            VkAttachmentReference2 depthResolveRef{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2};
-            depthResolveRef.attachment = 5;
-            depthResolveRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-            // 4. DEPTH RESOLVE STRUCT
-            VkSubpassDescriptionDepthStencilResolve depthResolveInfo{};
-            depthResolveInfo.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE;
             depthResolveInfo.depthResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
             depthResolveInfo.stencilResolveMode = VK_RESOLVE_MODE_NONE;
             depthResolveInfo.pDepthStencilResolveAttachment = &depthResolveRef;
 
-            // 5. SUBPASS (Vulkan 1.2)
-            VkSubpassDescription2 subpass{VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2};
-            subpass.pNext = &depthResolveInfo; // Valid now!
-            subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-            subpass.colorAttachmentCount = 2;
-            subpass.pColorAttachments = colorRefs;
-            subpass.pDepthStencilAttachment = &depthRef;
-            subpass.pResolveAttachments = resolveRefs; 
-
-            std::array<VkSubpassDependency2, 2> dependencies = {};
-            dependencies[0].sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
-            dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-            dependencies[0].dstSubpass = 0;
-            dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            dependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-            dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
-
-            dependencies[1].sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
-            dependencies[1].srcSubpass = 0;
-            dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-            dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-            dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
-
-            std::array<VkAttachmentDescription2, 6> attachments = {
-                colorMSAA, normalMSAA, depthMSAA, 
-                colorResolve, normalResolve, depthResolve
-            };
-
-            VkRenderPassCreateInfo2 rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2};
-            rpInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-            rpInfo.pAttachments = attachments.data();
-            rpInfo.subpassCount = 1;
-            rpInfo.pSubpasses = &subpass;
-            rpInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
-            rpInfo.pDependencies = dependencies.data();
-
-            // [FIX] Use vkCreateRenderPass2
-            if (vkCreateRenderPass2(device, &rpInfo, nullptr, &viewportRenderPass) != VK_SUCCESS) {
-                return false;
-            }
-
-            // =========================================================
-            // --- TRANSPARENT RENDER PASS ---
-            // =========================================================
-            VkAttachmentDescription2 colorLoadMSAA = colorMSAA;
-            colorLoadMSAA.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-            colorLoadMSAA.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-            VkAttachmentDescription2 normalLoadMSAA = colorLoadMSAA;
-
-            VkAttachmentDescription2 depthLoadMSAA = depthMSAA;
-            depthLoadMSAA.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-            depthLoadMSAA.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-            std::array<VkAttachmentDescription2, 6> loadAttachments = {
-                colorLoadMSAA, normalLoadMSAA, depthLoadMSAA,
-                colorResolve, normalResolve, depthResolve 
-            };
-
-            VkRenderPassCreateInfo2 transRpInfo = rpInfo; 
-            transRpInfo.pAttachments = loadAttachments.data();
-
-            if (vkCreateRenderPass2(device, &transRpInfo, nullptr, &transparentRenderPass) != VK_SUCCESS) {
-                return false;
-            }
+            subpass.pResolveAttachments = resolveRefs;
+            subpass.pNext = &depthResolveInfo;
         }
 
-        // --- Composite Render Pass (Final Output LDR) ---
-        {
-            VkAttachmentDescription colorAttachment{};
-            colorAttachment.format = VK_FORMAT_R8G8B8A8_SRGB; // Final LDR Format
-            colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-            colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-            colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        std::array<VkSubpassDependency2, 2> dependencies = {};
+        dependencies[0].sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
+        dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[0].dstSubpass = 0;
+        dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
-            VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-            VkSubpassDescription subpass{};
-            subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-            subpass.colorAttachmentCount = 1;
-            subpass.pColorAttachments = &colorRef;
+        dependencies[1].sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
+        dependencies[1].srcSubpass = 0;
+        dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
 
-            VkSubpassDependency dependency{};
-            dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-            dependency.dstSubpass = 0;
-            dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            dependency.srcAccessMask = 0;
-            dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        VkRenderPassCreateInfo2 rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2};
+        rpInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+        rpInfo.pAttachments = attachments.data();
+        rpInfo.subpassCount = 1;
+        rpInfo.pSubpasses = &subpass;
+        rpInfo.dependencyCount = static_cast<uint32_t>(dependencies.size());
+        rpInfo.pDependencies = dependencies.data();
 
-            VkRenderPassCreateInfo rpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
-            rpInfo.attachmentCount = 1;
-            rpInfo.pAttachments = &colorAttachment;
-            rpInfo.subpassCount = 1;
-            rpInfo.pSubpasses = &subpass;
-            rpInfo.dependencyCount = 1;
-            rpInfo.pDependencies = &dependency;
+        if (vkCreateRenderPass2(device, &rpInfo, nullptr, &viewportRenderPass) != VK_SUCCESS) return false;
 
-            if (vkCreateRenderPass(device, &rpInfo, nullptr, &compositeRenderPass) != VK_SUCCESS) {
-                std::cerr << "Failed to create Composite RenderPass!" << std::endl;
-                return false;
-            }
+        // --- 2. Transparent Render Pass ---
+        std::vector<VkAttachmentDescription2> loadAttachments = attachments;
+        loadAttachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        loadAttachments[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        loadAttachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        loadAttachments[1].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        loadAttachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        loadAttachments[2].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+        VkRenderPassCreateInfo2 transRpInfo = rpInfo;
+        transRpInfo.pAttachments = loadAttachments.data();
+
+        if (vkCreateRenderPass2(device, &transRpInfo, nullptr, &transparentRenderPass) != VK_SUCCESS) return false;
+
+        // --- 3. Composite Render Pass (Final Output LDR) ---
+        VkAttachmentDescription colorAttachment{};
+        colorAttachment.format = VK_FORMAT_R8G8B8A8_SRGB;
+        colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        colorAttachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkAttachmentReference colorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription compositeSubpass{};
+        compositeSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        compositeSubpass.colorAttachmentCount = 1;
+        compositeSubpass.pColorAttachments = &colorRef;
+
+        VkSubpassDependency compositeDependency{};
+        compositeDependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+        compositeDependency.dstSubpass = 0;
+        compositeDependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        compositeDependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        compositeDependency.srcAccessMask = 0;
+        compositeDependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+        VkRenderPassCreateInfo compositeRpInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        compositeRpInfo.attachmentCount = 1;
+        compositeRpInfo.pAttachments = &colorAttachment;
+        compositeRpInfo.subpassCount = 1;
+        compositeRpInfo.pSubpasses = &compositeSubpass;
+        compositeRpInfo.dependencyCount = 1;
+        compositeRpInfo.pDependencies = &compositeDependency;
+
+        if (vkCreateRenderPass(device, &compositeRpInfo, nullptr, &compositeRenderPass) != VK_SUCCESS) return false;
+
+        // --- 4. Allocate Images ---
+        if (useMSAA) {
+            colorImageMSAA = VulkanImage(allocator, device, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT, msaaSamples);
+            normalImageMSAA = VulkanImage(allocator, device, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT, msaaSamples);
+            depthImageMSAA = VulkanImage(allocator, device, width, height, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, msaaSamples);
         }
 
-        // 0. MSAA IMAGES (The Fat Targets)
-        colorImageMSAA = VulkanImage(allocator, device, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, 
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT, msaaSamples);
-            
-        normalImageMSAA = VulkanImage(allocator, device, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, 
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT, msaaSamples);
-            
-        depthImageMSAA = VulkanImage(allocator, device, width, height, VK_FORMAT_D32_SFLOAT,
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, msaaSamples);
+        // Scene Images (HDR 1x)
+        viewportImage = VulkanImage(allocator, device, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+        viewportNormalImage = VulkanImage(allocator, device, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
 
-        // 1. SCENE IMAGE (HDR Resolve Target 1x)
-        viewportImage = VulkanImage(allocator, device, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, 
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 
-            VK_IMAGE_ASPECT_COLOR_BIT); // Defaults to 1_BIT!
+        // Refraction Map (Mipped)
+        VkImageCreateInfo refInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        refInfo.imageType = VK_IMAGE_TYPE_2D;
+        refInfo.extent.width = width;
+        refInfo.extent.height = height;
+        refInfo.extent.depth = 1;
+        refInfo.mipLevels = refractionMipLevels;
+        refInfo.arrayLayers = 1;
+        refInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        refInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        refInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        refInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        refInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        refInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-
-        // =========================================================
-        // 2. CREATE IMAGES 
-        // =========================================================
-
-        // 1. SCENE IMAGE (HDR)
-        viewportImage = VulkanImage(allocator, device, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, 
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 
-            VK_IMAGE_ASPECT_COLOR_BIT);
-
-        // 1.5 G-BUFFER NORMALS (HDR)
-        viewportNormalImage = VulkanImage(allocator, device, width, height, VK_FORMAT_R16G16B16A16_SFLOAT, 
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
-            VK_IMAGE_ASPECT_COLOR_BIT);
-
-        // 2. REFRACTION (Custom Mips)
-        {
-            VkImageCreateInfo refInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-            refInfo.imageType = VK_IMAGE_TYPE_2D;
-            refInfo.extent.width = width;
-            refInfo.extent.height = height;
-            refInfo.extent.depth = 1;
-            refInfo.mipLevels = refractionMipLevels;
-            refInfo.arrayLayers = 1;
-            refInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
-            refInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-            refInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            refInfo.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-            refInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-            refInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-            VmaAllocationCreateInfo allocInfo = {};
-            allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-
-            refractionImage.allocator = allocator;
-            refractionImage.device = device;
-            if (vmaCreateImage(allocator, &refInfo, &allocInfo, &refractionImage.handle, &refractionImage.allocation, nullptr) != VK_SUCCESS) return false;
-        }
+        VmaAllocationCreateInfo allocInfo = {};
+        allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        refractionImage.allocator = allocator;
+        refractionImage.device = device;
+        if (vmaCreateImage(allocator, &refInfo, &allocInfo, &refractionImage.handle, &refractionImage.allocation, nullptr) != VK_SUCCESS) return false;
 
         VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         viewInfo.image = refractionImage.handle;
@@ -3319,34 +3291,29 @@ namespace Crescendo {
         VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         samplerInfo.magFilter = VK_FILTER_LINEAR;
         samplerInfo.minFilter = VK_FILTER_LINEAR;
-        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR; 
+        samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
         samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         samplerInfo.maxLod = (float)refractionMipLevels;
         vkCreateSampler(device, &samplerInfo, nullptr, &refractionSampler);
 
-        // 3. FINAL IMAGE (LDR)
-        finalImage = VulkanImage(allocator, device, width, height, VK_FORMAT_R8G8B8A8_SRGB, 
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
-            VK_IMAGE_ASPECT_COLOR_BIT);
-        
+        finalImage = VulkanImage(allocator, device, width, height, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
         transitionImageLayout(finalImage.handle, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        // 4. DEPTH IMAGE
-        viewportDepthImage = VulkanImage(allocator, device, width, height, VK_FORMAT_D32_SFLOAT,
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            VK_IMAGE_ASPECT_DEPTH_BIT);
+        viewportDepthImage = VulkanImage(allocator, device, width, height, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
 
-        // 5. FRAMEBUFFERS
-        std::array<VkImageView, 6> fbAttachments = { 
-            colorImageMSAA.view, normalImageMSAA.view, depthImageMSAA.view, // MSAA Views
-            viewportImage.view, viewportNormalImage.view, viewportDepthImage.view // 1x Views
-        };
-        
+        // --- 5. FRAMEBUFFERS ---
+        std::vector<VkImageView> fbAttachments;
+        if (useMSAA) {
+            fbAttachments = { colorImageMSAA.view, normalImageMSAA.view, depthImageMSAA.view, viewportImage.view, viewportNormalImage.view, viewportDepthImage.view };
+        } else {
+            fbAttachments = { viewportImage.view, viewportNormalImage.view, viewportDepthImage.view };
+        }
+
         VkFramebufferCreateInfo fbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
-        fbInfo.renderPass = viewportRenderPass; 
-        fbInfo.attachmentCount = static_cast<uint32_t>(fbAttachments.size()); // <--- Changed to 6!
+        fbInfo.renderPass = viewportRenderPass;
+        fbInfo.attachmentCount = static_cast<uint32_t>(fbAttachments.size());
         fbInfo.pAttachments = fbAttachments.data();
         fbInfo.width = width;
         fbInfo.height = height;
@@ -3354,7 +3321,6 @@ namespace Crescendo {
 
         if (vkCreateFramebuffer(device, &fbInfo, nullptr, &viewportFramebuffer) != VK_SUCCESS) return false;
 
-        // NOTE: compositeRenderPass is now valid!
         VkFramebufferCreateInfo compositeFbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
         compositeFbInfo.renderPass = compositeRenderPass;
         compositeFbInfo.attachmentCount = 1;
@@ -3366,7 +3332,7 @@ namespace Crescendo {
         if (vkCreateFramebuffer(device, &compositeFbInfo, nullptr, &finalFramebuffer) != VK_SUCCESS) return false;
 
         VkSamplerCreateInfo vSamplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-        vSamplerInfo.magFilter = VK_FILTER_LINEAR; 
+        vSamplerInfo.magFilter = VK_FILTER_LINEAR;
         vSamplerInfo.minFilter = VK_FILTER_LINEAR;
         vSamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         vSamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -3596,14 +3562,18 @@ namespace Crescendo {
         // 3. Recreate Base Swapchain
         createSwapChain();
         createImageViews();
+        createDepthResources();
         // (RenderPass is usually not destroyed in cleanupSwapChain, so we reuse it)
         createFramebuffers();
 
         // 4. Recreate Custom Offscreen Resources (HDR, Bloom, Final)
         createViewportResources();
+        createSSRResources();    
+        createBloomResources();  
+        updateSSRDescriptors();       
+        updateCompositeDescriptors(); 
 
         // 5. Update ImGui Descriptor
-        // Since we destroyed the 'finalImageView', the old descriptor set is invalid.
         // We  must create a new one pointing to the NEW finalImageView.
         if (finalImage.view != VK_NULL_HANDLE) {
             viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(
@@ -3673,6 +3643,29 @@ namespace Crescendo {
         if (compositeRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, compositeRenderPass, nullptr); compositeRenderPass = VK_NULL_HANDLE; }
         if (bloomRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, bloomRenderPass, nullptr); bloomRenderPass = VK_NULL_HANDLE; }
         if (ssrRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, ssrRenderPass, nullptr); ssrRenderPass = VK_NULL_HANDLE; } 
+    }
+
+    void RenderingServer::SetMSAASamples(VkSampleCountFlagBits newSamples) {
+
+        if (msaaSamples == newSamples) return;
+
+        vkDeviceWaitIdle(device);
+        msaaSamples = newSamples;
+
+        if (graphicsPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, graphicsPipeline,nullptr); graphicsPipeline = VK_NULL_HANDLE; }
+        if (skyPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, skyPipeline, nullptr); skyPipeline = VK_NULL_HANDLE; }
+        if (opaquePipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, opaquePipeline, nullptr);opaquePipeline = VK_NULL_HANDLE; }
+        if (transparentPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, transparentPipeline, nullptr); transparentPipeline = VK_NULL_HANDLE; }
+        if (waterPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, waterPipeline, nullptr); waterPipeline = VK_NULL_HANDLE; }
+
+        recreateSwapChain(window);
+
+        createGraphicsPipeline();
+        createOpaquePipeline();
+        createTransparentPipeline();
+        createWaterPipeline();
+
+        std::cout << "[Engine] MSAA successfully changed to " << newSamples << " samples." << std::endl;
     }
 
     void RenderingServer::shutdown() {
