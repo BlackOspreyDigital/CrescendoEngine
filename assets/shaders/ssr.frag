@@ -8,16 +8,18 @@ layout(binding = 0) uniform sampler2D sceneColorTex;
 layout(binding = 1) uniform sampler2D normalRoughnessTex;
 layout(binding = 2) uniform sampler2D depthTex;
 
-// Update the Push Constants block
+// Updated Push Constants block with full 256 bytes
 layout(push_constant) uniform PushConsts {
     mat4 proj;
-    mat4 view; // Match the C++ side
+    mat4 view;
+    mat4 invProj;
+    mat4 invView;
 } params;
 
-// Update the helper function to invert the matrix on the fly
+// Use the pre-calculated inverse projection matrix
 vec3 reconstructViewPos(vec2 uv, float depth) {
     vec4 clipSpace = vec4(uv * 2.0 - 1.0, depth, 1.0);
-    vec4 viewSpace = inverse(params.proj) * clipSpace; // Natively calculate inverse here!
+    vec4 viewSpace = params.invProj * clipSpace;
     return viewSpace.xyz / viewSpace.w;
 }
 
@@ -27,7 +29,7 @@ void main() {
     vec3 worldNormal = normRough.xyz;
     float roughness = normRough.a;
 
-    // If it's too rough, don't waste GPU cycles raymarching!
+    // If it's too rough, don't waste GPU cycles raymarching
     if (roughness > 0.6 || length(worldNormal) < 0.1) {
         outReflection = vec4(0.0);
         return;
@@ -54,7 +56,6 @@ void main() {
 
     vec3 rayPos = viewPos;
     vec3 rayDir = reflectDir * resolution;
-
     vec4 hitColor = vec4(0.0);
     bool hit = false;
 
@@ -66,12 +67,12 @@ void main() {
         vec4 projPos = params.proj * vec4(rayPos, 1.0);
         projPos.xyz /= projPos.w;
         vec2 sampleUV = projPos.xy * 0.5 + 0.5;
-
+        
         if (sampleUV.x < 0.0 || sampleUV.x > 1.0 || sampleUV.y < 0.0 || sampleUV.y > 1.0) break;
-
+        
         float sampledDepth = texture(depthTex, sampleUV).r;
         vec3 sampledViewPos = reconstructViewPos(sampleUV, sampledDepth);
-
+        
         // Check if our ray is behind the geometry, but not TOO far behind (thickness check)
         float depthDiff = rayPos.z - sampledViewPos.z;
         if (depthDiff > 0.0 && depthDiff < 1.5) {
@@ -84,7 +85,6 @@ void main() {
     if (hit) {
         for (int i = 0; i < binarySteps; i++) {
             rayDir *= 0.5;
-            
             vec4 projPos = params.proj * vec4(rayPos, 1.0);
             projPos.xyz /= projPos.w;
             vec2 sampleUV = projPos.xy * 0.5 + 0.5;
@@ -104,14 +104,13 @@ void main() {
         vec4 projPos = params.proj * vec4(rayPos, 1.0);
         projPos.xyz /= projPos.w;
         vec2 finalUV = projPos.xy * 0.5 + 0.5;
-
+        
         // Fade out at the edges of the screen
         vec2 edgeFade = smoothstep(0.0, 0.1, finalUV) * smoothstep(1.0, 0.9, finalUV);
         float totalFade = edgeFade.x * edgeFade.y;
 
         // Fade based on roughness
         float roughFade = 1.0 - (roughness / 0.6);
-
         hitColor = vec4(texture(sceneColorTex, finalUV).rgb, totalFade * roughFade);
     }
 

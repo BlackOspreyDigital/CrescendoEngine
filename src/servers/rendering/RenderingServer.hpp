@@ -18,6 +18,7 @@
 
 #include "servers/interface/EditorUI.hpp"
 #include "core/EngineState.hpp"
+#include "IO/ConfigManager.hpp"
 
 struct VmaAllocator_T;
 typedef struct VmaAllocator_T* VmaAllocator;
@@ -128,14 +129,15 @@ namespace Crescendo {
 
     struct SSRPushConstants {
         glm::mat4 proj;
-        glm::mat4 view; // I swapped invProj for view!
-    }; // Exactly 128 bytes
-
-    // Nvidia is fine for 256 bytes of push, but for intel iGPU we need to lower to 128bytes.
+        glm::mat4 view;
+        glm::mat4 invProj;
+        glm::mat4 invView;
+    }; // Exactly 256 bytes total
 
     struct SkyboxPushConsts {
         glm::mat4 invViewProj;  
     };
+    
     
     struct PostProcessPushConstants {
        float exposure;
@@ -158,6 +160,8 @@ namespace Crescendo {
     public:
         friend class AssetLoader;
         RenderingServer();
+        
+        
         bool initialize(DisplayServer* display);
         void shutdown();
         // Update this signature to take the state by reference
@@ -198,6 +202,7 @@ namespace Crescendo {
         VulkanImage depthImageMSAA;
 
         RenderSettings renderSettings;
+        EngineConfig config;
         
         Camera mainCamera;
         std::vector<MeshResource> meshes;

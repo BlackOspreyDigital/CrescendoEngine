@@ -13,6 +13,7 @@ layout(location = 0) out vec4 outColor;
 
 layout(binding = 0) uniform sampler2D texSampler[100];
 layout(binding = 1) uniform sampler2D skyTexture;
+layout(binding = 4) uniform sampler2DArrayShadow shadowMap; // ADDED THIS
 layout(binding = 5) uniform sampler2D refractionTexture;
 
 struct EntityData {
@@ -21,8 +22,8 @@ struct EntityData {
     vec4 scale;
     vec4 sphereBounds;
     vec4 albedoTint;
-    vec4 pbrParams;    // x=Roughness, y=Metallic, z=Emission, w=NormalStrength
-    vec4 volumeParams; // x=Transmission, y=Thickness, z=AttDist, w=IOR
+    vec4 pbrParams;
+    vec4 volumeParams;
     vec4 volumeColor;
 };
 
@@ -49,22 +50,59 @@ layout(set = 0, binding = 3) uniform GlobalUniforms {
     vec4 fogParams;
     vec4 skyColor;
     vec4 groundColor;
-    
-    // --- POINT LIGHTS ---
-    vec4 pointLightParams; // x = count (No stray 'int' variables here!)
+    vec4 pointLightParams;
     PointLight pointLights[16];
 } global;
 
-// --- Z-UP SPHERICAL MAPPING ---
 vec2 EquirectangularUV(vec3 v) {
-    // [FIX] Invert v.z so the sky maps to the top (V=0) of the Vulkan texture
-    vec2 uv = vec2(atan(v.y, v.x), asin(-v.z)); 
+    vec2 uv = vec2(atan(v.y, v.x), asin(-v.z));
     uv *= vec2(0.1591, 0.3183);
     uv += 0.5;
     return uv;
 }
 
-// --- HEIGHT FOG ---
+// PCF, Normal Bias, and Bounding-Box Cascade Selection
+float CalculateShadow(vec3 worldPos, vec3 normal, float viewDepth) {
+    // Reduced bias to prevent light leaking (Peter Panning)
+    vec3 bias = normal * 0.015; 
+    
+    int cascadeIndex = 3;
+    vec3 projCoords = vec3(0.0);
+    
+    // Find the tightest, highest-res cascade that actually contains this pixel
+    for (int i = 0; i < 4; i++) {
+        vec4 fragPosLightSpace = global.lightSpaceMatrices[i] * vec4(worldPos + bias, 1.0);
+        vec3 coords = fragPosLightSpace.xyz / fragPosLightSpace.w;
+        coords.xy = coords.xy * 0.5 + 0.5;
+        
+        // Check if we are safely inside the shadow map bounds 
+        // (We use 0.01 to 0.99 to give a 1% margin for the PCF blurring so it doesn't sample the edge)
+        if (coords.x > 0.01 && coords.x < 0.99 && 
+            coords.y > 0.01 && coords.y < 0.99 && 
+            coords.z > 0.0 && coords.z < 1.0) {
+            
+            cascadeIndex = i;
+            projCoords = coords;
+            break;
+        }
+    }
+
+    // If somehow behind the light's far plane, don't shadow
+    if (projCoords.z > 1.0) return 1.0;
+
+    // PCF (Percentage Closer Filtering) 3x3 Grid
+    float shadow = 0.0;
+    vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0).xy);
+    
+    for(int x = -1; x <= 1; ++x) {
+        for(int y = -1; y <= 1; ++y) {
+            shadow += texture(shadowMap, vec4(projCoords.xy + vec2(x, y) * texelSize, float(cascadeIndex), projCoords.z));
+        }
+    }
+    
+    return shadow / 9.0;
+}
+
 vec3 ApplyFog(vec3 rgb, float dist, float worldZ) {
     float fogDensity = global.fogColor.a;
     float fogFalloff = global.fogParams.x;
@@ -74,8 +112,7 @@ vec3 ApplyFog(vec3 rgb, float dist, float worldZ) {
 
     float d = max(dist - fogStart, 0.0);
     float distFactor = exp(-d * fogDensity);
-
-    float fogDepth = max(fogHeight - worldZ, 0.0); 
+    float fogDepth = max(fogHeight - worldZ, 0.0);
     float heightFactor = exp(-fogFalloff * fogDepth);
     
     float fogFactor = clamp(distFactor * heightFactor, 1.0 - maxOpacity, 1.0);
@@ -86,7 +123,7 @@ void main() {
     EntityData ent = entities[inEntityIndex];
     int texID = int(ent.albedoTint.w);
     vec3 baseColor = ent.albedoTint.rgb;
-    
+
     vec4 albedoSample = texture(texSampler[texID], fragTexCoord);
     if (ent.volumeParams.x <= 0.0 && albedoSample.a < 0.5) {
         discard;
@@ -94,11 +131,10 @@ void main() {
 
     vec3 albedo = albedoSample.rgb * baseColor * fragColor;
 
-    // --- NORMAL MAPPING ---
     vec3 N = normalize(fragNormal);
     float normalStr = ent.pbrParams.w;
     int normalTexID = int(ent.volumeColor.a);
-    
+
     if (normalStr > 0.0 && normalTexID > 0) {
         vec3 mapNormal = texture(texSampler[normalTexID], fragTexCoord).rgb;
         mapNormal = mapNormal * 2.0 - 1.0;
@@ -113,7 +149,6 @@ void main() {
         }
     }
     
-    // --- LIGHTING VECTORS ---
     vec3 V = normalize(global.cameraPos.xyz - fragPos);
     vec3 L = normalize(vec3(0.5, 1.0, 0.5));
     if (length(global.sunDirection.xyz) > 0.01) L = normalize(global.sunDirection.xyz);
@@ -122,13 +157,11 @@ void main() {
     float roughness = ent.pbrParams.x;
     float metallic  = ent.pbrParams.y;
     float emission  = ent.pbrParams.z;
-    float transmission = ent.volumeParams.x; 
+    float transmission = ent.volumeParams.x;
 
-    // --- HEMISPHERE GI ---
-    float skyWeight = N.z * 0.5 + 0.5; 
+    float skyWeight = N.z * 0.5 + 0.5;
     vec3 hemiAmbient = mix(global.groundColor.rgb, global.skyColor.rgb, skyWeight) * albedo * 0.15;
 
-    // --- PBR MATH ---
     float NdotL = max(dot(N, L), 0.0);
     float shininess = (1.0 - roughness) * (1.0 - roughness) * 128.0; 
     float NdotH = max(dot(N, H), 0.0);
@@ -136,13 +169,16 @@ void main() {
     
     vec3 kS = vec3(spec) * (1.0 - roughness);
     vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
-    kD *= (1.0 - transmission); // Light passes THROUGH transmissive materials
+    kD *= (1.0 - transmission);
 
-    vec3 directLight = (kD * albedo / 3.14159 + kS) * 1.0 * NdotL * global.sunColor.rgb;
+    // Apply Soft Shadows
+    float viewDist = length(global.cameraPos.xyz - fragPos);
+    float shadowFactor = CalculateShadow(fragPos, N, viewDist); 
+
+    vec3 directLight = (kD * albedo / 3.14159 + kS) * shadowFactor * NdotL * global.sunColor.rgb;
     vec3 emissive = albedo * emission;
     vec3 finalColor = directLight + hemiAmbient + emissive;
 
-    // --- GLASS REFRACTION LOGIC ---
     float thickness     = max(ent.volumeParams.y, 1.0);
     float densitySlider = ent.volumeParams.z;
     float ior           = max(ent.volumeParams.w, 1.0);
@@ -156,20 +192,15 @@ void main() {
     if (transmission > 0.0) {
         vec2 screenUV = gl_FragCoord.xy / vec2(global.params.z, global.params.w);
         vec2 distortion = (N.xy * (1.0 - (1.0 / ior))) * 0.1;
-        
         float maxLod = 10.0;
         float blurLevel = roughness * maxLod;
-
         vec3 sceneRefr = textureLod(refractionTexture, screenUV + distortion, blurLevel).rgb;
-        
-        float density = densitySlider * 5.0; 
+        float density = densitySlider * 5.0;
         vec3 absorption = -log(tintColor) * density;
         vec3 transmittance = exp(-absorption * thickness);
-        
-        transmissionColor = sceneRefr * transmittance; 
+        transmissionColor = sceneRefr * transmittance;
     }
     
-    // --- DYNAMIC SKYBOX REFLECTION ---
     vec3 R = reflect(-V, N);
     vec3 skyRefl = vec3(0.0);
     int skyType = int(global.params.y);
@@ -190,12 +221,10 @@ void main() {
     skyRefl *= (1.0 - roughness);
     vec3 finalReflection = skyRefl * (kS + fresnel);
 
-    // --- FINAL ATMOSPHERIC PASS ---
     float dist = length(global.cameraPos.xyz - fragPos);
     vec3 finalOutput;
 
     if (transmission > 0.0) {
-        // Output Alpha 1.0 so we don't accidentally double-blend with the background
         finalOutput = transmissionColor + finalColor + finalReflection;
         finalOutput = ApplyFog(finalOutput, dist, fragPos.z);
         outColor = vec4(finalOutput, 1.0); 

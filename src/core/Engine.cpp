@@ -33,7 +33,7 @@ namespace Crescendo {
         skyEnt->targetName = "Procedural Sky";
         skyEnt->angles = glm::vec3(45.0f, -30.0f, 0.0f);
         skyEnt->albedoColor = glm::vec3(0.5f, 0.7f, 1.0f);      // Zenith
-        skyEnt->attenuationColor = glm::vec3(0.2f, 0.1f, 0.0f); // Horizon
+        skyEnt->attenuationColor = glm::vec3(0.0f, 0.0f, 0.0f); // Horizon
                 
         isRunning = true;
         return true;

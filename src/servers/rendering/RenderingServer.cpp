@@ -33,6 +33,7 @@
 #include "servers/display/DisplayServer.hpp"
 #include "servers/rendering/RenderingServer.hpp"
 #include "Vertex.hpp"
+#include "IO/ConfigManager.hpp"
 
 
 namespace Crescendo {
@@ -55,6 +56,19 @@ namespace Crescendo {
     bool RenderingServer::initialize(DisplayServer* display) {
         this->display_ref = display;
         this->window = display->get_window(); 
+
+        // 1. Load configuration from the conf folder!
+        this->config = ConfigManager::loadConfig("conf/engine_settings.toml");
+
+        // 2. Apply it to your existing states
+        this->renderSettings.enableSSAO = this->config.enableSSAO;
+        this->renderSettings.enableSSR = this ->config.enableSSR;
+        
+        // Map MSAA int back to Vulkan Enum
+        if (this->config.msaaSamples == 2) this->msaaSamples = VK_SAMPLE_COUNT_2_BIT;
+        else if (this->config.msaaSamples == 4) this->msaaSamples = VK_SAMPLE_COUNT_4_BIT;
+        else if (this->config.msaaSamples == 8) this->msaaSamples = VK_SAMPLE_COUNT_8_BIT;
+        else this->msaaSamples =VK_SAMPLE_COUNT_1_BIT;
 
         postProcessSettings.exposure = 1.0f;
         postProcessSettings.gamma = 1.0f;
@@ -487,16 +501,31 @@ namespace Crescendo {
         }
 
     void RenderingServer::calculateCascades(Scene* scene, Camera& camera, float aspectRatio, GlobalUniforms& globalData) {
-        // Define where our 4 cascades split (in meters/units)
-        std::array<float, 5> cascadeLevels = { camera.nearClip, 15.0f, 50.0f, 150.0f, camera.farClip };
+        
+        // 1. Read the exact distances from our TOML Config
+        float nearClip = camera.nearClip;
+        float farClip = this->config.shadowDistance; 
+        float clipRange = farClip - nearClip;
+        
+        float lambda = this->config.cascadeSplitLambda; 
+        
+        // 2. Mathematically generate perfect split distances
+        std::array<float, 5> cascadeLevels;
+        for (uint32_t i = 0; i < 5; i++) {
+            float p = (float)i / 4.0f; // 4 is SHADOW_CASCADES
+            float logSplit = nearClip * std::pow(farClip / nearClip, p);
+            float uniformSplit = nearClip + clipRange * p;
+            cascadeLevels[i] = lambda * logSplit + (1.0f - lambda) * uniformSplit;
+        }
 
+        // Pass splits to GPU (for shader selection)
         globalData.cascadeSplits = glm::vec4(cascadeLevels[1], cascadeLevels[2], cascadeLevels[3], cascadeLevels[4]);
 
         glm::vec3 lightDir = glm::normalize(glm::vec3(scene->environment.sunDirection));
 
         for (uint32_t i = 0; i < 4; i++) {
             float nearPlane = cascadeLevels[i];
-            float farPlane  = cascadeLevels[i+ 1];
+            float farPlane  = cascadeLevels[i + 1];
 
             glm::mat4 proj = glm::perspective(glm::radians(camera.fov), aspectRatio, nearPlane, farPlane);
             glm::mat4 view = camera.GetViewMatrix();
@@ -537,14 +566,18 @@ namespace Crescendo {
                 maxZ = std::max(maxZ, trf.z);
             }
 
-            // Pad the z depth slightly to prevent clipping objects behind cameras
-            constexpr float zMult = 10.0f;
-            if ( minZ < 0) minZ *= zMult;
-            else minZ /= zMult;
-            if ( maxZ < 0) maxZ /= zMult;
-            else maxZ *= zMult;
-            
+            // 3. Texel snapping to stabilize the shadow map edges
+            float worldUnitsPerTexel = (maxX - minX) / SHADOW_DIM;
+            minX = std::floor(minX / worldUnitsPerTexel) * worldUnitsPerTexel;
+            maxX = std::floor(maxX / worldUnitsPerTexel) * worldUnitsPerTexel;
+            minY = std::floor(minY / worldUnitsPerTexel) * worldUnitsPerTexel;
+            maxY = std::floor(maxY / worldUnitsPerTexel) * worldUnitsPerTexel;
 
+            // 4. Brute-force the light frustum depth to catch ALL shadow casters!
+            // This completely fixes the shadows popping out when you look down.
+            minZ -= 2000.0f;
+            maxZ += 2000.0f;
+            
             glm::mat4 lightProj = glm::ortho(minX, maxX, minY, maxY, minZ, maxZ);
 
             globalData.lightSpaceMatrices[i] = lightProj * lightView;
@@ -1959,8 +1992,93 @@ namespace Crescendo {
         return result == VK_SUCCESS;
     }
 
+    bool RenderingServer::createBloomPipeline() {
+        auto vertShaderCode = readFile("assets/shaders/fullscreen_vert.vert.spv");
+        auto fragShaderCode = readFile("assets/shaders/bloom_bright.frag.spv");
+
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+        VkPipelineShaderStageCreateInfo stages[2] = {};
+        stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertShaderModule, "main", nullptr};
+        stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragShaderModule, "main", nullptr};
+
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, nullptr, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE};
+        VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, nullptr, 0, 1, nullptr, 1, nullptr};
+        
+        VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rasterizer.depthClampEnable = VK_FALSE;
+        rasterizer.rasterizerDiscardEnable = VK_FALSE;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE;
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+        VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, nullptr, 0, VK_SAMPLE_COUNT_1_BIT};
+        VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+
+        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachment.blendEnable = VK_FALSE;
+
+        VkPipelineColorBlendStateCreateInfo colorBlending{};
+        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlending.logicOpEnable = VK_FALSE;
+        colorBlending.logicOp = VK_LOGIC_OP_COPY;
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &colorBlendAttachment;
+        colorBlending.blendConstants[0] = 0.0f;
+
+        std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0, (uint32_t)dynamicStates.size(), dynamicStates.data()};
+
+        // [FIX] Ensure Layout has Push Constants (even if unused by Bloom)
+        // This makes it compatible with the Composite Pass which DOES use them.
+        if (compositePipelineLayout == VK_NULL_HANDLE) {
+            VkPushConstantRange pushConstantRange{};
+            pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            pushConstantRange.offset = 0;
+            pushConstantRange.size = sizeof(PostProcessPushConstants);
+
+            VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+            layoutInfo.setLayoutCount = 1;
+            layoutInfo.pSetLayouts = &postProcessLayout;
+            layoutInfo.pushConstantRangeCount = 1; 
+            layoutInfo.pPushConstantRanges = &pushConstantRange;
+
+            if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &compositePipelineLayout) != VK_SUCCESS) {
+                return false;
+            }
+        }
+
+        VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = stages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.layout = compositePipelineLayout;
+        pipelineInfo.renderPass = bloomRenderPass;
+        pipelineInfo.subpass = 0;
+
+        VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &bloomPipeline);
+
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
+
+        return result == VK_SUCCESS;
+    }
+
     //===============================================
-    
+    // RENDER STAGING
+    //===============================================
+
     bool RenderingServer::createRenderPass() {
         VkAttachmentDescription colorAttachment{};
         colorAttachment.format = swapChainImageFormat;
@@ -2183,7 +2301,7 @@ namespace Crescendo {
 
     void RenderingServer::render(Scene* scene, EngineState& engineState) {
         if (!scene) return;
-            
+                    
         // --- SAFELY REBUILD PIPELINES BEFORE THE FRAME STARTS ---
         if (msaaNeedsRebuild) {
             SetMSAASamples(pendingMsaaSamples);
@@ -2354,9 +2472,8 @@ namespace Crescendo {
             VkRect2D scissor{{0, 0}, {SHADOW_DIM, SHADOW_DIM}};
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
 
-            // Because we use a 32-bit Float depth buffer, the constant factor must be 
-            // massively scaled up to make any mathematical difference.
-            float scaledConstantBias = scene->environment.shadowBiasConstant * 10000.0f;
+            // [FIX] Lower the multiplier so the UI sliders don't rip the shadows off the models
+            float scaledConstantBias = scene->environment.shadowBiasConstant * 100.0f;
             
             vkCmdSetDepthBias(commandBuffers[currentFrame], scaledConstantBias, 0.0f, scene->environment.shadowBiasSlope);
 
@@ -2678,7 +2795,9 @@ namespace Crescendo {
 
                 SSRPushConstants ssrPush{};
                 ssrPush.proj = proj;
-                ssrPush.view = view; // Pass the view matrix here
+                ssrPush.view = view;
+                ssrPush.invProj = glm::inverse(proj);
+                ssrPush.invView = glm::inverse(view);
 
                 vkCmdPushConstants(commandBuffers[currentFrame], ssrPipelineLayout,
                                    VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SSRPushConstants), &ssrPush);
@@ -2747,7 +2866,7 @@ namespace Crescendo {
         swapChainPassInfo.framebuffer = swapChainFramebuffers[imageIndex]; 
         swapChainPassInfo.renderArea.extent = swapChainExtent;
         swapChainPassInfo.clearValueCount = 2; 
-        std::array<VkClearValue, 2> scClearValues{};
+        
         swapChainPassInfo.pClearValues = clearValues.data();
             
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &swapChainPassInfo, VK_SUBPASS_CONTENTS_INLINE);
@@ -3409,89 +3528,6 @@ namespace Crescendo {
         }
 
         vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-    }
-
-    bool RenderingServer::createBloomPipeline() {
-        auto vertShaderCode = readFile("assets/shaders/fullscreen_vert.vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/bloom_bright.frag.spv");
-
-        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
-        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
-
-        VkPipelineShaderStageCreateInfo stages[2] = {};
-        stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertShaderModule, "main", nullptr};
-        stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragShaderModule, "main", nullptr};
-
-        VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-        VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, nullptr, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_FALSE};
-        VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, nullptr, 0, 1, nullptr, 1, nullptr};
-        
-        VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-        rasterizer.depthClampEnable = VK_FALSE;
-        rasterizer.rasterizerDiscardEnable = VK_FALSE;
-        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-        rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_NONE;
-        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-
-        VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, nullptr, 0, VK_SAMPLE_COUNT_1_BIT};
-        VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-
-        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        colorBlendAttachment.blendEnable = VK_FALSE;
-
-        VkPipelineColorBlendStateCreateInfo colorBlending{};
-        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        colorBlending.logicOpEnable = VK_FALSE;
-        colorBlending.logicOp = VK_LOGIC_OP_COPY;
-        colorBlending.attachmentCount = 1;
-        colorBlending.pAttachments = &colorBlendAttachment;
-        colorBlending.blendConstants[0] = 0.0f;
-
-        std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-        VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0, (uint32_t)dynamicStates.size(), dynamicStates.data()};
-
-        // [FIX] Ensure Layout has Push Constants (even if unused by Bloom)
-        // This makes it compatible with the Composite Pass which DOES use them.
-        if (compositePipelineLayout == VK_NULL_HANDLE) {
-            VkPushConstantRange pushConstantRange{};
-            pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-            pushConstantRange.offset = 0;
-            pushConstantRange.size = sizeof(PostProcessPushConstants);
-
-            VkPipelineLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-            layoutInfo.setLayoutCount = 1;
-            layoutInfo.pSetLayouts = &postProcessLayout;
-            layoutInfo.pushConstantRangeCount = 1; 
-            layoutInfo.pPushConstantRanges = &pushConstantRange;
-
-            if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &compositePipelineLayout) != VK_SUCCESS) {
-                return false;
-            }
-        }
-
-        VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-        pipelineInfo.stageCount = 2;
-        pipelineInfo.pStages = stages;
-        pipelineInfo.pVertexInputState = &vertexInputInfo;
-        pipelineInfo.pInputAssemblyState = &inputAssembly;
-        pipelineInfo.pViewportState = &viewportState;
-        pipelineInfo.pRasterizationState = &rasterizer;
-        pipelineInfo.pMultisampleState = &multisampling;
-        pipelineInfo.pDepthStencilState = &depthStencil;
-        pipelineInfo.pColorBlendState = &colorBlending;
-        pipelineInfo.pDynamicState = &dynamicState;
-        pipelineInfo.layout = compositePipelineLayout;
-        pipelineInfo.renderPass = bloomRenderPass;
-        pipelineInfo.subpass = 0;
-
-        VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &bloomPipeline);
-
-        vkDestroyShaderModule(device, fragShaderModule, nullptr);
-        vkDestroyShaderModule(device, vertShaderModule, nullptr);
-
-        return result == VK_SUCCESS;
     }
 
     bool RenderingServer::createBloomResources() {

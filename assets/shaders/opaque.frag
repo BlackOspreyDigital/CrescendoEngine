@@ -14,9 +14,6 @@ layout(location = 1) out vec4 outNormal;
 
 layout(binding = 0) uniform sampler2D texSampler[100];
 layout(binding = 1) uniform sampler2D skyTexture;
-
-
-
 layout(binding = 4) uniform sampler2DArrayShadow shadowMap;
 
 struct EntityData {
@@ -53,34 +50,57 @@ layout(set = 0, binding = 3) uniform GlobalUniforms {
     vec4 fogParams;
     vec4 skyColor;
     vec4 groundColor;
-    
-    // --- POINT LIGHTS ---
-    vec4 pointLightParams; // x = count (No stray 'int' variables here!)
+    vec4 pointLightParams;
     PointLight pointLights[16];
 } global;
 
 vec2 EquirectangularUV(vec3 v) {
-    // [FIX] Invert v.z so the sky maps to the top (V=0) of the Vulkan texture
-    vec2 uv = vec2(atan(v.y, v.x), asin(-v.z)); 
+    vec2 uv = vec2(atan(v.y, v.x), asin(-v.z));
     uv *= vec2(0.1591, 0.3183);
     uv += 0.5;
     return uv;
 }
 
-// Cascaded Shadow Map Math
-float CalculateShadow(vec3 worldPos, float viewDepth) {
+// PCF, Normal Bias, and Bounding-Box Cascade Selection
+float CalculateShadow(vec3 worldPos, vec3 normal, float viewDepth) {
+    // Reduced bias to prevent light leaking (Peter Panning)
+    vec3 bias = normal * 0.015; 
+    
     int cascadeIndex = 3;
-    if (viewDepth < global.cascadeSplits.x) cascadeIndex = 0;
-    else if (viewDepth < global.cascadeSplits.y) cascadeIndex = 1;
-    else if (viewDepth < global.cascadeSplits.z) cascadeIndex = 2;
+    vec3 projCoords = vec3(0.0);
+    
+    // Find the tightest, highest-res cascade that actually contains this pixel
+    for (int i = 0; i < 4; i++) {
+        vec4 fragPosLightSpace = global.lightSpaceMatrices[i] * vec4(worldPos + bias, 1.0);
+        vec3 coords = fragPosLightSpace.xyz / fragPosLightSpace.w;
+        coords.xy = coords.xy * 0.5 + 0.5;
+        
+        // Check if we are safely inside the shadow map bounds 
+        // (We use 0.01 to 0.99 to give a 1% margin for the PCF blurring so it doesn't sample the edge)
+        if (coords.x > 0.01 && coords.x < 0.99 && 
+            coords.y > 0.01 && coords.y < 0.99 && 
+            coords.z > 0.0 && coords.z < 1.0) {
+            
+            cascadeIndex = i;
+            projCoords = coords;
+            break;
+        }
+    }
 
-    vec4 fragPosLightSpace = global.lightSpaceMatrices[cascadeIndex] * vec4(worldPos, 1.0);
-    vec3 projCoords = fragPosLightSpace.xyz / fragPosLightSpace.w;
-    projCoords.xy = projCoords.xy * 0.5 + 0.5;
-
+    // If somehow behind the light's far plane, don't shadow
     if (projCoords.z > 1.0) return 1.0;
 
-    return texture(shadowMap, vec4(projCoords.xy, float(cascadeIndex), projCoords.z));
+    // PCF (Percentage Closer Filtering) 3x3 Grid
+    float shadow = 0.0;
+    vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0).xy);
+    
+    for(int x = -1; x <= 1; ++x) {
+        for(int y = -1; y <= 1; ++y) {
+            shadow += texture(shadowMap, vec4(projCoords.xy + vec2(x, y) * texelSize, float(cascadeIndex), projCoords.z));
+        }
+    }
+    
+    return shadow / 9.0;
 }
 
 vec3 ApplyFog(vec3 rgb, float dist, float worldZ) {
@@ -130,7 +150,7 @@ void main() {
     }
 
     // Output to Normal G-Buffer (For SSR)
-    outNormal = vec4(N, ent.pbrParams.x); // Normal + Roughness
+    outNormal = vec4(N, ent.pbrParams.x);
 
     // Lighting Vectors
     vec3 V = normalize(global.cameraPos.xyz - fragPos);
@@ -143,7 +163,7 @@ void main() {
     float emission  = ent.pbrParams.z;
 
     // Hemisphere GI
-    float skyWeight = N.z * 0.5 + 0.5; 
+    float skyWeight = N.z * 0.5 + 0.5;
     vec3 hemiAmbient = mix(global.groundColor.rgb, global.skyColor.rgb, skyWeight) * albedo * 0.15;
 
     // PBR Lighting
@@ -157,13 +177,13 @@ void main() {
 
     // --- 1. SHADOWS & DIRECTIONAL LIGHT ---
     float viewDist = length(global.cameraPos.xyz - fragPos);
-    float shadowFactor = CalculateShadow(fragPos, viewDist);
+    float shadowFactor = CalculateShadow(fragPos, N, viewDist); // Apply PCF and Bias here!
     vec3 directLight = (kD * albedo / 3.14159 + kS) * shadowFactor * NdotL * global.sunColor.rgb;
-    
+
     // --- 2. ACCUMULATE POINT LIGHTS ---
     vec3 pointLightAccum = vec3(0.0);
-        int pLightCount = int(global.pointLightParams.x);
-        for(int i = 0; i < pLightCount; i++) {
+    int pLightCount = int(global.pointLightParams.x);
+    for(int i = 0; i < pLightCount; i++) {
         vec3 lightPos = global.pointLights[i].positionAndRadius.xyz;
         float radius = global.pointLights[i].positionAndRadius.w;
         vec3 lightColor = global.pointLights[i].colorAndIntensity.xyz;
@@ -173,7 +193,6 @@ void main() {
         float dist_pt = length(L_pt);
         L_pt = normalize(L_pt);
 
-        // Attenuation (fades out over distance)
         float attenuation = clamp(1.0 - (dist_pt * dist_pt) / (radius * radius), 0.0, 1.0);
         attenuation *= attenuation; 
 
@@ -216,14 +235,13 @@ void main() {
     float f0 = mix(0.04, 1.0, metallic);
     float fresnel = f0 + (1.0 - f0) * pow(1.0 - NdotV, 5.0);
     
-    vec3 finalReflection = skyRefl * (kS + fresnel) * metallic; // Opaque reflection heavily relies on metallic
+    vec3 finalReflection = skyRefl * (kS + fresnel) * metallic;
     
     vec3 finalOutput = finalColor + finalReflection;
-    
+
     // Fog Integration
     float dist = length(global.cameraPos.xyz - fragPos);
     finalOutput = ApplyFog(finalOutput, dist, fragPos.z);
 
-    // Opaque always outputs 1.0 alpha
     outColor = vec4(finalOutput, 1.0);
 }
