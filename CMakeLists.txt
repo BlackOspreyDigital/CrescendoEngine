@@ -75,6 +75,8 @@ set(SHADER_FILES
     assets/shaders/shadow.vert 
     assets/shaders/bake.vert 
     assets/shaders/bake.frag 
+    assets/shaders/equirect2cube.comp 
+    
 
 )
 
@@ -106,6 +108,7 @@ target_include_directories(crescendo_engine PRIVATE
     ${CMAKE_SOURCE_DIR}/deps/imgui
     ${CMAKE_SOURCE_DIR}/deps/imgui/backends
     ${CMAKE_SOURCE_DIR}/modules/gltf 
+    ${CMAKE_SOURCE_DIR}/deps/gli 
     ${joltphysics_SOURCE_DIR} # <--- REPLACE YOUR OLD JOLT PATH WITH THIS
     ${SDL2_INCLUDE_DIRS}
     ${Vulkan_INCLUDE_DIRS}

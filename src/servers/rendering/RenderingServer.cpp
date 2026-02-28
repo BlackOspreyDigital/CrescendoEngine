@@ -28,6 +28,7 @@
 #include <glm/gtx/intersect.hpp>       
 #include <glm/gtx/matrix_decompose.hpp> 
 #include "backends/imgui_impl_vulkan.h"
+#include <deps/gli/gli/gli.hpp>
   
 #include <vulkan/vulkan_core.h>  
 #include "servers/display/DisplayServer.hpp"
@@ -113,8 +114,13 @@ namespace Crescendo {
         createGlobalUniformBuffer();
         if (!createShadowResources()) return false; 
         if (!createTextureImage()) return false; 
-        if (createHDRImage("assets/hdr/sky_cloudy2.hdr", skyImage)) {
-             // Skybox Loaded
+    
+        TextureResource skyCubemap = loadKTXCubemap("assets/hdr/sky_cloudy2.ktx");
+        if (skyCubemap.image.handle != VK_NULL_HANDLE) {
+             // Transfer ownership of the RAII image into our global skyImage
+             skyImage = std::move(skyCubemap.image);
+        } else {
+             std::cerr << "[Warning] Failed to load skybox KTX!" << std::endl;
         }
         if (!createViewportResources()) return false;
         if (!createDescriptorSets()) return false; 
@@ -141,6 +147,8 @@ namespace Crescendo {
         if (!createBakeFramebuffer()) return false;
         if (!createBakePipeline()) return false;
         //-------------------
+
+        if (!createComputePipelines()) return false;
         if (!createFramebuffers()) return false;
 
         // --- Assets ---
@@ -741,10 +749,10 @@ namespace Crescendo {
     void RenderingServer::loadSkybox(const std::string& path) {
         vkDeviceWaitIdle(device); 
 
-        VulkanImage newSky;
-        if (createHDRImage(path, newSky)) {
+        TextureResource newSky = loadKTXCubemap(path);
+        if (newSky.image.handle != VK_NULL_HANDLE) {
             skyImage.destroy(); 
-            skyImage = std::move(newSky);
+            skyImage = std::move(newSky.image);
 
             VkDescriptorImageInfo skyInfo{};
             skyInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -763,7 +771,7 @@ namespace Crescendo {
             std::cout << "[Engine] Successfully loaded new HDR: " << path << std::endl;
         }
     }
-
+    
     bool RenderingServer::createTextureSampler() {
         VkSamplerCreateInfo samplerInfo{};
         samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -2217,6 +2225,60 @@ namespace Crescendo {
         return true;
     }
 
+    bool RenderingServer::createComputePipelines() {
+        // 1. Create the Descriptor Set Layout
+        // Binding 0: Sampler2D (Input)
+        VkDescriptorSetLayoutBinding inputBinding{};
+        inputBinding.binding = 0;
+        inputBinding.descriptorCount = 1;
+        inputBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        inputBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        // Binding 1: ImageCube (Output/Storage)
+        VkDescriptorSetLayoutBinding outputBinding{};
+        outputBinding.binding = 1;
+        outputBinding.descriptorCount = 1;
+        outputBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        outputBinding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
+        std::array<VkDescriptorSetLayoutBinding, 2> bindings = { inputBinding, outputBinding };
+
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+        layoutInfo.pBindings = bindings.data();
+
+        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &computeDescriptorLayout) != VK_SUCCESS) return false;
+
+        // 2. Create the Pipeline Layout
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &computeDescriptorLayout;
+
+        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &computePipelineLayout) != VK_SUCCESS) return false;
+
+        // 3. Load the Shader & Build the Pipeline
+        auto compShaderCode = readFile("assets/shaders/equirect2cube.comp.spv");
+        VkShaderModule compShaderModule = createShaderModule(compShaderCode);
+
+        VkComputePipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipelineInfo.layout = computePipelineLayout;
+        pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        pipelineInfo.stage.module = compShaderModule;
+        pipelineInfo.stage.pName = "main";
+
+        if (vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &equirectToCubePipeline) != VK_SUCCESS) {
+            std::cerr << "Failed to create Compute Pipeline!" << std::endl;
+            return false;
+        }
+
+        vkDestroyShaderModule(device, compShaderModule, nullptr);
+        return true;
+    }
+
     //===============================================
     // RENDER STAGING
     //===============================================
@@ -3181,6 +3243,137 @@ namespace Crescendo {
         vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
     }
 
+    // The 7-Argument Overload for Cubemaps
+    void RenderingServer::transitionImageLayout(VkCommandBuffer cmd, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t layerCount) {
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.oldLayout = oldLayout;
+        barrier.newLayout = newLayout;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = image;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.baseMipLevel = 0;
+        barrier.subresourceRange.levelCount = mipLevels;
+        barrier.subresourceRange.baseArrayLayer = 0;
+        barrier.subresourceRange.layerCount = layerCount; // <--- The magic 6 faces!
+
+        VkPipelineStageFlags sourceStage;
+        VkPipelineStageFlags destinationStage;
+
+        if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        } else {
+            throw std::invalid_argument("unsupported layout transition!");
+        }
+
+        vkCmdPipelineBarrier(cmd, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    }
+
+    // The KTX Loader
+    TextureResource RenderingServer::loadKTXCubemap(const std::string& filePath) {
+        TextureResource resource{};
+
+        // 1. Load the raw file safely
+        gli::texture rawTex = gli::load(filePath);
+        if (rawTex.empty()) {
+            std::cerr << "[GLI Error] File missing or invalid: " << filePath << std::endl;
+            return resource; // Safely back out!
+        }
+        
+        // 2. Ensure the artist actually provided a Cubemap and not a 2D image
+        if (rawTex.target() != gli::TARGET_CUBE) {
+            std::cerr << "[GLI Error] Texture is not a 6-sided cubemap: " << filePath << std::endl;
+            return resource;
+        }
+
+        // 3. Now it is 100% safe to cast
+        gli::texture_cube tex(rawTex);
+
+        uint32_t width = static_cast<uint32_t>(tex.extent().x);
+        uint32_t height = static_cast<uint32_t>(tex.extent().y);
+        uint32_t mipLevels = static_cast<uint32_t>(tex.levels());
+        VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT; 
+
+        VkDeviceSize imageSize = tex.size();
+        VulkanBuffer stagingBuffer(allocator, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+
+        void* data;
+        vmaMapMemory(allocator, stagingBuffer.allocation, &data);
+        memcpy(data, tex.data(), imageSize);
+        vmaUnmapMemory(allocator, stagingBuffer.allocation);
+
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.format = format;
+        imageInfo.extent = {width, height, 1};
+        imageInfo.mipLevels = mipLevels;
+        imageInfo.arrayLayers = 6;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+
+        VmaAllocationCreateInfo allocInfo = {};
+        allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+
+        if (vmaCreateImage(allocator, &imageInfo, &allocInfo, &resource.image.handle, &resource.image.allocation, nullptr) != VK_SUCCESS) {
+            std::cerr << "Failed to allocate Cubemap Image!" << std::endl;
+            return resource;
+        }
+
+        std::vector<VkBufferImageCopy> bufferCopyRegions;
+        size_t offset = 0;
+
+        for (uint32_t face = 0; face < 6; face++) {
+            for (uint32_t level = 0; level < mipLevels; level++) {
+                VkBufferImageCopy region{};
+                region.bufferOffset = offset;
+                region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                region.imageSubresource.mipLevel = level;
+                region.imageSubresource.baseArrayLayer = face;
+                region.imageSubresource.layerCount = 1;
+                region.imageExtent.width = static_cast<uint32_t>(tex[face][level].extent().x);
+                region.imageExtent.height = static_cast<uint32_t>(tex[face][level].extent().y);
+                region.imageExtent.depth = 1;
+
+                bufferCopyRegions.push_back(region);
+                offset += tex[face][level].size();
+            }
+        }
+
+        VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+        transitionImageLayout(commandBuffer, resource.image.handle, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mipLevels, 6);
+        vkCmdCopyBufferToImage(commandBuffer, stagingBuffer.handle, resource.image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<uint32_t>(bufferCopyRegions.size()), bufferCopyRegions.data());
+        transitionImageLayout(commandBuffer, resource.image.handle, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mipLevels, 6);
+        endSingleTimeCommands(commandBuffer);
+
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = resource.image.handle;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+        viewInfo.format = format;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = mipLevels;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 6;
+
+        vkCreateImageView(device, &viewInfo, nullptr, &resource.image.view);
+
+        std::cout << "[Vulkan] KTX Cubemap Loaded: " << filePath << " (Mips: " << mipLevels << ")" << std::endl;
+        return resource;
+    }
+
     void RenderingServer::transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout) {
         VkCommandBuffer commandBuffer = beginSingleTimeCommands();
 
@@ -3951,27 +4144,15 @@ namespace Crescendo {
             editorUI.Shutdown(device);
         
             // 1. Destroy Pipelines & Layouts
-            if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, skyPipeline, nullptr);
-            if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, graphicsPipeline, nullptr);
-            if (transparentPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, transparentPipeline, nullptr);
-            if (opaquePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, opaquePipeline, nullptr);
-            if (waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, waterPipeline, nullptr);
-            if (bloomPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bloomPipeline, nullptr);
-            if (compositePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, compositePipeline, nullptr);
-            if (shadowPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, shadowPipeline, nullptr);
-            if (ssrPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, ssrPipeline, nullptr);
-
-            if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-            if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
-            if (shadowPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
-            if (ssrPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, ssrPipelineLayout, nullptr);
-
-            if (postProcessLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, postProcessLayout, nullptr);
-            if (ssrDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, ssrDescriptorLayout, nullptr);
-
-            // 2. Destroy RenderPasses
-            if (shadowRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, shadowRenderPass, nullptr);
-            if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
+        if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, skyPipeline, nullptr);
+        if (ssrPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, ssrPipeline, nullptr);
+        if (equirectToCubePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, equirectToCubePipeline, nullptr);
+        if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        if (ssrPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, ssrPipelineLayout, nullptr);
+        if (computePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, computePipelineLayout, nullptr);
+        if (postProcessLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, postProcessLayout, nullptr);
+        if (ssrDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, ssrDescriptorLayout, nullptr);
+        if (computeDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, computeDescriptorLayout, nullptr);
 
             // 3. Cleanup Shadow Resources
             for (auto fb : shadowFramebuffers) vkDestroyFramebuffer(device, fb, nullptr);

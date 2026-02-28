@@ -176,6 +176,7 @@ namespace Crescendo {
         int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
         int acquireTexture(const std::string& path);
         void loadSkybox(const std::string& path);
+        TextureResource loadKTXCubemap(const std::string& filePath);
 
         
         VulkanImage UploadTexture(void* pixels, int width, int height, VkFormat format);
@@ -427,9 +428,17 @@ namespace Crescendo {
         VkPipeline shadowPipeline = VK_NULL_HANDLE;    
         VkPipelineLayout shadowPipelineLayout = VK_NULL_HANDLE;
 
+        // Compute IBL
+        VkDescriptorSetLayout computeDescriptorLayout = VK_NULL_HANDLE;
+        VkPipelineLayout computePipelineLayout = VK_NULL_HANDLE;
+        VkPipeline equirectToCubePipeline = VK_NULL_HANDLE;
+
+        bool createComputePipelines();
+
         // Transitions
         void cmdTransitionImageLayout(VkCommandBuffer cmdbuffer, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
         void transitionImageLayout(VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout);
+        void transitionImageLayout(VkCommandBuffer cmd, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t layerCount);
         bool createShadowResources();
         bool createShadowPipeline();
         
