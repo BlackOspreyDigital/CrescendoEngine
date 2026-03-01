@@ -37,7 +37,7 @@ namespace Crescendo {
         return result;
     }
 
-    static void GenerateLightmapUVs(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
+    [[maybe_unused]] static void GenerateLightmapUVs(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
         xatlas::Atlas* atlas = xatlas::Create();
 
         // 1. Describe our mesh memory layout to xatlas
@@ -210,10 +210,12 @@ namespace Crescendo {
                 // Flatten the mesh right before it hits the GPU
                 // =========================================================
                 
+                /* 
                 std::cout << "[AssetLoader] Flattening UVs for lightmap..." << std::endl;
-                GenerateLightmapUVs(vertices, indices);
+                GenerateLightmapUVs(vertices, indices); 
+                */
 
-                std::string meshKey = baseDir + "_mesh_" + std::to_string(i) + "_" + std::to_string(j);
+                std::string meshKey = baseDir + "_mesh_" + std::to_string(i) + "_" + std::to_string(j); 
 
                 // --- VMA UPLOAD ---
                 MeshResource newMesh{};
@@ -232,17 +234,19 @@ namespace Crescendo {
 
         const auto& gltfScene = model.scenes[model.defaultScene > -1 ? model.defaultScene : 0];
         for (int nodeIdx : gltfScene.nodes) {
-            // --- FIX: Pass 'rawMeshes' here ---
-            processGLTFNode(renderer, model, model.nodes[nodeIdx], nullptr, baseDir, scene, glm::mat4(1.0f), rawMeshes);
+            // stop fucking breaking god damnit
+            processGLTFNode(renderer, model, model.nodes[nodeIdx], nullptr, baseDir, filePath, scene, glm::mat4(1.0f), rawMeshes);
         }
     }
 
-    void AssetLoader::processGLTFNode(RenderingServer* renderer, tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene, glm::mat4 parentMatrix, RawMeshMap& rawMeshes) {
+    void AssetLoader::processGLTFNode(RenderingServer* renderer, tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, const std::string& filePath, Scene* scene, glm::mat4 parentMatrix, RawMeshMap& rawMeshes) {
         if (!scene) return; 
 
         CBaseEntity* newEnt = scene->CreateEntity("prop_static"); 
         newEnt->targetName = node.name; 
         newEnt->textureID = 0; 
+        
+        newEnt->modelPath = filePath;
 
         // Classic Hierarchy Parenting
         if (parent) {
@@ -370,8 +374,8 @@ namespace Crescendo {
         }
 
         for (int childId : node.children) {
-            // --- FIX: Pass 'rawMeshes' to children ---
-            processGLTFNode(renderer, model, model.nodes[childId], newEnt, baseDir, scene, glm::mat4(1.0f), rawMeshes);
+            // --- FIX: Add filePath to the recursive call ---
+            processGLTFNode(renderer, model, model.nodes[childId], newEnt, baseDir, filePath, scene, glm::mat4(1.0f), rawMeshes);
         }
     }
 }

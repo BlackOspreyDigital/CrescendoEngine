@@ -11,7 +11,8 @@ layout(binding = 1, rgba16f) uniform writeonly imageCube outputCube;
 
 // Convert 3D direction to spherical 2D UV (Z-Up mapped)
 vec2 SampleSphericalMap(vec3 v) {
-    vec2 uv = vec2(atan(v.y, v.x), asin(v.z));
+    // Add the negative sign to v.z right here!
+    vec2 uv = vec2(atan(v.y, v.x), asin(-v.z));
     uv *= vec2(0.1591, 0.3183);
     uv += 0.5;
     return uv;

@@ -114,16 +114,29 @@ namespace Crescendo {
         createGlobalUniformBuffer();
         if (!createShadowResources()) return false; 
         if (!createTextureImage()) return false; 
-    
-        TextureResource skyCubemap = loadKTXCubemap("assets/hdr/sky_cloudy2.ktx");
+
+        // ---------------------------------------------------------
+        // 1. BUILD COMPUTE PIPELINES FIRST
+        // ---------------------------------------------------------
+        if (!createComputePipelines()) return false;
+
+        // ---------------------------------------------------------
+        // 2. FIRE THE LASER (Bake the Cubemap so skyImage exists!)
+        // ---------------------------------------------------------
+        TextureResource skyCubemap = generateCubemapFromHDR("assets/hdr/sky_cloudy2.hdr");
         if (skyCubemap.image.handle != VK_NULL_HANDLE) {
-             // Transfer ownership of the RAII image into our global skyImage
              skyImage = std::move(skyCubemap.image);
         } else {
-             std::cerr << "[Warning] Failed to load skybox KTX!" << std::endl;
+             std::cerr << "[Fatal] Engine could not generate sky cubemap!" << std::endl;
+             return false;
         }
+
+        // ---------------------------------------------------------
+        // 3. NOW BUILD DESCRIPTORS (Because skyImage is ready to be bound)
+        // ---------------------------------------------------------
         if (!createViewportResources()) return false;
         if (!createDescriptorSets()) return false; 
+        
         // --- UI & Viewport ---
         QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
         editorUI.Initialize(this, this->window, instance, physicalDevice, device, graphicsQueue, indices.graphicsFamily.value(), renderPass, static_cast<uint32_t>(swapChainImages.size()));
@@ -133,7 +146,7 @@ namespace Crescendo {
 
         viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(viewportSampler, finalImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-        // --- Pipelines ---
+        // --- Graphics Pipelines ---
         if (!createGraphicsPipeline()) return false;
         if (!createWaterPipeline()) return false;        
         if (!createTransparentPipeline()) return false;
@@ -142,19 +155,18 @@ namespace Crescendo {
         if (!createCompositePipeline()) return false;
         if (!createShadowPipeline()) return false;
         if (!createSSRPipeline()) return false;
+
         // --- Bakerline ---
         if (!createBakeRenderPass()) return false;
         if (!createBakeFramebuffer()) return false;
         if (!createBakePipeline()) return false;
         //-------------------
 
-        if (!createComputePipelines()) return false;
         if (!createFramebuffers()) return false;
 
         // --- Assets ---
         std::cout << "[4/5] Loading Assets..." << std::endl;
                
-
         std::cout << "[5/5] Finalizing Synchronization..." << std::endl;
         if (!createSyncObjects()) return false;
         if (!createCommandBuffers()) return false;
@@ -514,6 +526,7 @@ namespace Crescendo {
 
     void RenderingServer::calculateCascades(Scene* scene, Camera& camera, float aspectRatio, GlobalUniforms& globalData) {
         
+
         // 1. Read the exact distances from our TOML Config
         float nearClip = camera.nearClip;
         float farClip = this->config.shadowDistance; 
@@ -559,7 +572,15 @@ namespace Crescendo {
             }
             center /= frustumCorners.size();
 
-            glm::mat4 lightView = glm::lookAt(center - lightDir, center, glm::vec3(0.0f, 0.0f, 1.0f));
+            // --- THE FIX ---
+            // 1. Provide a safe "Up" vector so lookAt doesn't flip out when the sun is straight up
+            glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f);
+            if (std::abs(lightDir.z) > 0.999f) {
+                up = glm::vec3(0.0f, 1.0f, 0.0f); 
+            }
+
+            // 2. Position the camera AT the sun (+lightDir) looking DOWN at the center!
+            glm::mat4 lightView = glm::lookAt(center + lightDir, center, up);
 
             float minX = std::numeric_limits<float>::max();
             float maxX = std::numeric_limits<float>::lowest();
@@ -746,10 +767,56 @@ namespace Crescendo {
         return true;
     }
 
-    void RenderingServer::loadSkybox(const std::string& path) {
+    bool RenderingServer::extractHDRSunParams(const std::string& path, glm::vec3& outDir, glm::vec3& outColor, float& outIntensity) {
+        int width, height, channels;
+        float* data = stbi_loadf(path.c_str(), &width, &height, &channels, 3);
+        if (!data) return false;
+
+        float maxLuminance = -1.0f;
+        int maxIndex = 0;
+        int maxX = 0, maxY = 0;
+
+        for (int y = 0; y < height; ++y) {
+            for (int x = 0; x < width; ++x) {
+                int idx = (y * width + x) * 3;
+                float luminance = 0.2126f * data[idx] + 0.7152f * data[idx + 1] + 0.0722f * data[idx + 2]; 
+                if (luminance > maxLuminance) {
+                    maxLuminance = luminance;
+                    maxIndex = idx;
+                    maxX = x;
+                    maxY = y;
+                }
+            }
+        }
+
+        outIntensity = maxLuminance; 
+        if (outIntensity > 0.0f) {
+            outColor = glm::vec3(data[maxIndex], data[maxIndex + 1], data[maxIndex + 2]) / outIntensity;
+        } else {
+            outColor = glm::vec3(1.0f);
+        }
+
+        float u = (float)maxX / (float)width;
+        float v = (float)maxY / (float)height;
+
+        float theta = (u - 0.5f) * 2.0f * glm::pi<float>();
+        float phi = (v - 0.5f) * glm::pi<float>();
+
+        outDir.x = std::cos(phi) * std::cos(theta);
+        outDir.y = std::cos(phi) * std::sin(theta);
+        outDir.z = -std::sin(phi);
+        outDir = glm::normalize(outDir);
+
+        stbi_image_free(data);
+        return true;
+    }
+
+    void RenderingServer::loadSkybox(const std::string& path, Scene* scene) {
         vkDeviceWaitIdle(device); 
 
-        TextureResource newSky = loadKTXCubemap(path);
+        // Use the Compute GPU Baker!
+        TextureResource newSky = generateCubemapFromHDR(path);
+        
         if (newSky.image.handle != VK_NULL_HANDLE) {
             skyImage.destroy(); 
             skyImage = std::move(newSky.image);
@@ -768,7 +835,34 @@ namespace Crescendo {
             skyWrite.pImageInfo = &skyInfo;
 
             vkUpdateDescriptorSets(device, 1, &skyWrite, 0, nullptr);
-            std::cout << "[Engine] Successfully loaded new HDR: " << path << std::endl;
+            std::cout << "[Engine] Successfully generated and loaded new HDR Cubemap: " << path << std::endl;
+
+            // --- CPU SUN EXTRACTION ---
+            if (scene) {
+                glm::vec3 sunDir, sunColor;
+                float sunInt;
+                
+                if (extractHDRSunParams(path, sunDir, sunColor, sunInt)) {
+                    sunInt = std::clamp(sunInt, 1.0f, 10.0f); 
+
+                    scene->environment.sunDirection = sunDir;
+                    scene->environment.sunColor = sunColor;
+                    scene->environment.sunIntensity = sunInt;
+
+                    // Update UI Entity
+                    for (auto* ent : scene->entities) {
+                        if (ent && ent->className == "env_sky") {
+                            ent->albedoColor = sunColor;
+                            ent->emission = sunInt; 
+                            float pitch = std::asin(sunDir.z);
+                            float yaw = std::atan2(sunDir.y, sunDir.x);
+                            ent->angles = glm::degrees(glm::vec3(pitch, 0.0f, yaw));
+                            break;
+                        }
+                    }
+                    std::cout << "[Engine] HDR Sun Extracted -> Intensity: " << sunInt << std::endl;
+                }
+            }
         }
     }
     
@@ -947,15 +1041,14 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createDescriptorPool() {
-       // Merged duplicate types and increased counts
-       std::array<VkDescriptorPoolSize, 3> poolSizes{};
+       // UPGRADED to 4 to include Compute Storage Images
+       std::array<VkDescriptorPoolSize, 4> poolSizes{}; 
        
        // 1. Uniform Buffers (Global UBOs)
        poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
        poolSizes[0].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT * 10);
 
        // 2. Combined Image Samplers (Textures)
-       // Calculation: (Global Array (100) + Skybox (1)) * Frames + ImGui Viewport + ImGui Fonts + Buffer
        poolSizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
        poolSizes[1].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT * (MAX_TEXTURES + 10) + 100); 
 
@@ -963,20 +1056,15 @@ namespace Crescendo {
        poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
        poolSizes[2].descriptorCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT * 5);
 
+       // 4. STORAGE IMAGES (Compute Shader IBL Bakers)
+       poolSizes[3].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+       poolSizes[3].descriptorCount = 10; 
+
        VkDescriptorPoolCreateInfo poolInfo{};
        poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
        poolInfo.pPoolSizes = poolSizes.data();
-       
-       // [CRITICAL FIX] Increase Max Sets
-       // We need sets for:
-       // - Global Resources (1 per frame)
-       // - ImGui Fonts (1 total)
-       // - Viewport Texture (1 total)
-       // - Future post-process passes?
        poolInfo.maxSets = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT * 5 + 50); 
-
-       // [IMPORTANT] Allow sets to be freed (Required for ImGui and dynamic resizing)
        poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
 
        if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool) != VK_SUCCESS) {
@@ -2676,21 +2764,22 @@ namespace Crescendo {
         
         glm::mat4 vp = proj * view;
 
-        // 2. Sun Logic
-        glm::vec3 sunDirection = glm::normalize(glm::vec3(0.5f, 1.0f, 0.5f)); 
-        glm::vec3 sunColor = glm::vec3(1.0f, 1.0f, 1.0f);
-        float sunIntensity = 1.0f;
+        // 2. Sun Logic (Grab defaults from EditorUI/Scene Environment)
+        glm::vec3 sunDirection = glm::normalize(scene->environment.sunDirection);
+        glm::vec3 sunColor = scene->environment.sunColor;
+        float sunIntensity = scene->environment.sunIntensity;
         
         // Look for our environment entity to sync settings
         for (auto* ent : scene->entities) {
             if (ent && ent->className == "env_sky") {
                 // Sync GI Colors
-                scene->environment.skyColor = ent->albedoColor; // Use albedo as sky color
-                scene->environment.groundColor = ent->attenuationColor; // Use attenuation as ground
+                scene->environment.skyColor = ent->albedoColor; 
+                scene->environment.groundColor = ent->attenuationColor; 
                 
                 // Update Sun from this entity's rotation
                 glm::mat4 rotMat = glm::mat4_cast(glm::quat(glm::radians(ent->angles)));
-                scene->environment.sunDirection = glm::normalize(glm::vec3(rotMat * glm::vec4(0, 0, 1, 0)));
+                sunDirection = glm::normalize(glm::vec3(rotMat * glm::vec4(0, 0, 1, 0)));
+                scene->environment.sunDirection = sunDirection; 
                 break;
             }
         }
@@ -2703,6 +2792,8 @@ namespace Crescendo {
         globalData.view = view;
         globalData.proj = proj;
         globalData.cameraPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
+        
+        // Now the sliders will perfectly push into the shader!
         globalData.sunDirection = glm::vec4(sunDirection, sunIntensity);
         globalData.sunColor = glm::vec4(sunColor, 1.0f);
         float skyTypeFloat = static_cast<float>(scene->environment.skyType);
@@ -3266,10 +3357,16 @@ namespace Crescendo {
             barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
             destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        
+        } else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_GENERAL) {
+            barrier.srcAccessMask = 0;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            destinationStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_GENERAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            sourceStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
         } else {
             throw std::invalid_argument("unsupported layout transition!");
@@ -3371,6 +3468,115 @@ namespace Crescendo {
         vkCreateImageView(device, &viewInfo, nullptr, &resource.image.view);
 
         std::cout << "[Vulkan] KTX Cubemap Loaded: " << filePath << " (Mips: " << mipLevels << ")" << std::endl;
+        return resource;
+    }
+
+    TextureResource RenderingServer::generateCubemapFromHDR(const std::string& hdrPath) {
+        TextureResource resource{};
+        uint32_t cubeSize = 1024; // 1024x1024 pixels per face for a crisp skybox
+
+        // 1. Load the flat HDR using your existing function
+        VulkanImage flatHDR;
+        if (!createHDRImage(hdrPath, flatHDR)) {
+            std::cerr << "[Compute] Failed to load HDR for IBL: " << hdrPath << std::endl;
+            return resource;
+        }
+
+        // 2. Create the target Cubemap (Must have STORAGE_BIT for compute writing)
+        VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.format = format;
+        imageInfo.extent = {cubeSize, cubeSize, 1};
+        imageInfo.mipLevels = 1; 
+        imageInfo.arrayLayers = 6; // 6 faces!
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        imageInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+
+        VmaAllocationCreateInfo allocInfo = {};
+        allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+
+        if (vmaCreateImage(allocator, &imageInfo, &allocInfo, &resource.image.handle, &resource.image.allocation, nullptr) != VK_SUCCESS) {
+            return resource;
+        }
+        resource.image.allocator = allocator;
+        resource.image.device = device;
+
+        // Create the Cubemap View
+        VkImageViewCreateInfo viewInfo{};
+        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        viewInfo.image = resource.image.handle;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+        viewInfo.format = format;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.baseMipLevel = 0;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.baseArrayLayer = 0;
+        viewInfo.subresourceRange.layerCount = 6;
+        vkCreateImageView(device, &viewInfo, nullptr, &resource.image.view);
+
+        // 3. Map memory via Descriptor Set
+        VkDescriptorSetAllocateInfo allocSetInfo{};
+        allocSetInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocSetInfo.descriptorPool = descriptorPool;
+        allocSetInfo.descriptorSetCount = 1;
+        allocSetInfo.pSetLayouts = &computeDescriptorLayout;
+        
+        VkDescriptorSet computeSet;
+        vkAllocateDescriptorSets(device, &allocSetInfo, &computeSet);
+
+        VkDescriptorImageInfo inputInfo{};
+        inputInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        inputInfo.imageView = flatHDR.view;
+        inputInfo.sampler = skySampler; 
+
+        VkDescriptorImageInfo outputInfo{};
+        outputInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL; // Compute writing layout
+        outputInfo.imageView = resource.image.view;
+
+        std::array<VkWriteDescriptorSet, 2> writes{};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = computeSet;
+        writes[0].dstBinding = 0;
+        writes[0].descriptorCount = 1;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[0].pImageInfo = &inputInfo;
+
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = computeSet;
+        writes[1].dstBinding = 1;
+        writes[1].descriptorCount = 1;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[1].pImageInfo = &outputInfo;
+
+        vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+        // 4. FIRE THE LASER
+        VkCommandBuffer cmd = beginSingleTimeCommands();
+
+        // Transition target to GENERAL for writing
+        transitionImageLayout(cmd, resource.image.handle, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, 1, 6);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, equirectToCubePipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, computePipelineLayout, 0, 1, &computeSet, 0, nullptr);
+
+        // Spawn 64x64 grids of 16x16 worker blocks across 6 faces!
+        vkCmdDispatch(cmd, cubeSize / 16, cubeSize / 16, 6);
+
+        // Transition target to SHADER_READ_ONLY for the main render pass to sample
+        transitionImageLayout(cmd, resource.image.handle, format, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 1, 6);
+
+        endSingleTimeCommands(cmd);
+
+        // 5. Cleanup
+        flatHDR.destroy();
+        vkFreeDescriptorSets(device, descriptorPool, 1, &computeSet);
+
+        std::cout << "[Compute] HDR successfully baked to Cubemap: " << hdrPath << std::endl;
         return resource;
     }
 
@@ -4144,15 +4350,30 @@ namespace Crescendo {
             editorUI.Shutdown(device);
         
             // 1. Destroy Pipelines & Layouts
-        if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, skyPipeline, nullptr);
-        if (ssrPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, ssrPipeline, nullptr);
-        if (equirectToCubePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, equirectToCubePipeline, nullptr);
-        if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        if (ssrPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, ssrPipelineLayout, nullptr);
-        if (computePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, computePipelineLayout, nullptr);
-        if (postProcessLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, postProcessLayout, nullptr);
-        if (ssrDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, ssrDescriptorLayout, nullptr);
-        if (computeDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, computeDescriptorLayout, nullptr);
+            if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, skyPipeline, nullptr);
+            if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, graphicsPipeline, nullptr);
+            if (transparentPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, transparentPipeline, nullptr);
+            if (opaquePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, opaquePipeline, nullptr);
+            if (waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, waterPipeline, nullptr);
+            if (bloomPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bloomPipeline, nullptr);
+            if (compositePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, compositePipeline, nullptr);
+            if (shadowPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, shadowPipeline, nullptr);
+            if (ssrPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, ssrPipeline, nullptr);
+            if (equirectToCubePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, equirectToCubePipeline, nullptr);
+
+            if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+            if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
+            if (shadowPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
+            if (ssrPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, ssrPipelineLayout, nullptr);
+            if (computePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, computePipelineLayout, nullptr);
+
+            if (postProcessLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, postProcessLayout, nullptr);
+            if (ssrDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, ssrDescriptorLayout, nullptr);
+            if (computeDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, computeDescriptorLayout, nullptr);
+
+            // 2. Destroy Core Render Passes
+            if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
+            if (shadowRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, shadowRenderPass, nullptr);
 
             // 3. Cleanup Shadow Resources
             for (auto fb : shadowFramebuffers) vkDestroyFramebuffer(device, fb, nullptr);
@@ -4166,10 +4387,11 @@ namespace Crescendo {
             // 4. Cleanup RAII Images
             skyImage.destroy();
             textureImage.destroy();
+            positionBakeImage.destroy();
+            normalBakeImage.destroy();
             
             // 5. Cleanup Meshes & Textures
             meshes.clear(); 
-            
             textureBank.clear();
             textureMap.clear();
 

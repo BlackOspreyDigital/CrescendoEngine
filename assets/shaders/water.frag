@@ -10,7 +10,7 @@ layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outNormalRoughness; // [NEW] G-Buffer Output
 
 layout(binding = 0) uniform sampler2D texSampler[100];
-layout(binding = 1) uniform sampler2D skyTexture;
+layout(binding = 1) uniform samplerCube skyTexture;
 
 // --- SSBO ---
 struct EntityData {
@@ -80,8 +80,7 @@ void main() {
     vec3 V = normalize(fragPos - global.cameraPos.xyz); // Use Global Camera
     vec3 R = reflect(V, N); 
 
-    vec2 skyUV = SampleSphericalMap(normalize(R));
-    vec3 reflection = texture(skyTexture, skyUV).rgb;
+    vec3 reflection = texture(skyTexture, normalize(R)).rgb;
 
     vec3 finalColor = mix(textureColor.rgb, reflection, 0.5);
     outColor = vec4(finalColor, 0.8);

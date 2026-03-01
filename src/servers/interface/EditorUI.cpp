@@ -2,6 +2,7 @@
 #include "modules/gltf/AssetLoader.hpp"
 #include "EditorUI.hpp"
 #include "imgui.h"
+#include "scene/BaseEntity.hpp"
 #include "servers/rendering/RenderingServer.hpp"
 #include "scene/Scene.hpp"
 #include "servers/camera/Camera.hpp"
@@ -10,12 +11,48 @@
 #include "include/portable-file-dialogs.h" 
 #include "IO/SceneSerializer.hpp"
 #include <iostream>
+#include <streambuf>
+
 
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 #include <vulkan/vulkan_core.h>
 
 namespace Crescendo {
+
+    std::vector<ConsoleMessage> consoleLog;
+    std::unordered_map<std::string, float*> floatConVars;
+
+    void AddLog(const std::string& message, ImVec4 color) {
+        consoleLog.push_back({ message, color });
+    }
+
+    class ConsoleOutStream : public std::streambuf {
+    public:
+        ConsoleOutStream(std::streambuf* original) : originalStream(original) {}
+    protected:
+        virtual int_type overflow(int_type c) override {
+            if (c != traits_type::eof()) {
+                char ch = static_cast<char>(c);
+                if (ch == '\n') {
+                    AddLog(buffer, ImVec4(0.8f, 0.8f, 0.8f, 1.0f));
+                    buffer.clear();
+                } else {
+                    buffer += ch;
+                }
+                if (originalStream) originalStream->sputc(ch);
+            }
+            return c;
+        }
+    private:
+        std::string buffer;
+        std::streambuf* originalStream;
+
+    };
+
+    // Global pointers to hold our streams
+    static std::streambuf* g_OriginalCount = nullptr;
+    static ConsoleOutStream* g_ConsoleStream = nullptr;
 
     // --- HELPER FUNCTIONS ---
     static void check_vk_result(VkResult err) {
@@ -155,9 +192,13 @@ namespace Crescendo {
         style.PopupRounding  = 5.0f;
     }
 
-    // --- INITIALIZE (Restored for your specific ImGui version) ---
+    // --- GUI SHUTDOWN ---
     void EditorUI::Initialize(RenderingServer* renderer, SDL_Window* window, VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue graphicsQueue, uint32_t queueFamilyIndex, VkRenderPass renderPass, uint32_t imageCount) {
         this->rendererRef = renderer;
+        
+        g_OriginalCount = std::cout.rdbuf();
+        g_ConsoleStream = new ConsoleOutStream(g_OriginalCount);
+        std::cout.rdbuf(g_ConsoleStream);
 
         // 1. Create Descriptor Pool
         VkDescriptorPoolSize pool_sizes[] = {
@@ -227,6 +268,14 @@ namespace Crescendo {
             vkDestroyDescriptorPool(device, imguiPool, nullptr);
             imguiPool = VK_NULL_HANDLE;
         }
+
+        // RESTORE STD::COUT
+        if (g_OriginalCount) {
+            std::cout.rdbuf(g_OriginalCount);
+            delete g_ConsoleStream;
+            g_ConsoleStream = nullptr;
+            g_OriginalCount = nullptr;
+        }
     }
 
     
@@ -240,27 +289,66 @@ namespace Crescendo {
 
         ImGuiIO& io = ImGui::GetIO();
 
-        if (!io.WantCaptureKeyboard || ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-             if (io.MouseWheel != 0.0f) {
-                 camera.Zoom -= io.MouseWheel; 
-                 if (camera.Zoom < 1.0f) camera.Zoom = 1.0f;
-                 if (camera.Zoom > 120.0f) camera.Zoom = 120.0f;
-                 camera.fov = camera.Zoom; 
-             }
-             
-             if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-                 camera.Rotate(io.MouseDelta.x, -io.MouseDelta.y); 
-                 
-                 float moveSpeed = 5.0f * io.DeltaTime; 
-                 if (ImGui::IsKeyDown(ImGuiKey_LeftShift)) moveSpeed *= 3.0f; 
+        // --- LOCK IMGUI MOUSE WHEN PLAYING ---
+        // If we are actively playing, strip ImGui's ability to see the mouse 
+        // so you don't accidentally hover/click invisible UI elements!
+        if (engineState == EngineState::Playing) {
+            io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
+        } else {
+            io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
+        }
+        // -------------------------------------
 
-                 if (ImGui::IsKeyDown(ImGuiKey_W)) camera.Position += camera.Front * moveSpeed;
-                 if (ImGui::IsKeyDown(ImGuiKey_S)) camera.Position -= camera.Front * moveSpeed;
-                 if (ImGui::IsKeyDown(ImGuiKey_D)) camera.Position += camera.Right * moveSpeed;
-                 if (ImGui::IsKeyDown(ImGuiKey_A)) camera.Position -= camera.Right * moveSpeed;
-                 if (ImGui::IsKeyDown(ImGuiKey_Q)) camera.Position += camera.WorldUp * moveSpeed; 
-                 if (ImGui::IsKeyDown(ImGuiKey_E)) camera.Position -= camera.WorldUp * moveSpeed; 
-             }
+        // --- HOTKEYS & STATE MANAGEMENT ---
+        static bool showPauseMenu = false;
+
+        // Toggle Console with '~'
+        if (ImGui::IsKeyPressed(ImGuiKey_GraveAccent, false)) {
+            showConsole = !showConsole;
+            // Auto-pause if we open the console while playing
+            if (showConsole && engineState == EngineState::Playing) {
+                engineState = EngineState::Paused;
+            }
+        }
+
+        // Toggle Pause Menu with 'ESC'
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            if (engineState == EngineState::Playing) {
+                engineState = EngineState::Paused;
+                showPauseMenu = true;
+            } else if (engineState == EngineState::Paused) {
+                engineState = EngineState::Playing;
+                showPauseMenu = false;
+                showConsole = false; // Close console when resuming
+            }
+        }
+
+        // --- EDITOR CAMERA INPUT ---
+        // ONLY allow camera movement if we are actually in Editor Mode!
+        if (engineState == EngineState::Editor) {
+            if (!io.WantCaptureKeyboard || ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+                 if (io.MouseWheel != 0.0f) {
+                     camera.Zoom -= io.MouseWheel; 
+                     if (camera.Zoom < 1.0f) camera.Zoom = 1.0f;
+                     if (camera.Zoom > 120.0f) camera.Zoom = 120.0f;
+                     camera.fov = camera.Zoom; 
+                 }
+                 
+                 if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+                     // INVERTED MOUSE X HERE (-io.MouseDelta.x)
+                     camera.Rotate(-io.MouseDelta.x, -io.MouseDelta.y); 
+                     
+                     float moveSpeed = 5.0f * io.DeltaTime; 
+                     if (ImGui::IsKeyDown(ImGuiKey_LeftShift)) moveSpeed *= 3.0f; 
+
+                     if (ImGui::IsKeyDown(ImGuiKey_W)) camera.Position += camera.Front * moveSpeed;
+                     if (ImGui::IsKeyDown(ImGuiKey_S)) camera.Position -= camera.Front * moveSpeed;
+                     if (ImGui::IsKeyDown(ImGuiKey_D)) camera.Position += camera.Right * moveSpeed;
+                     if (ImGui::IsKeyDown(ImGuiKey_A)) camera.Position -= camera.Right * moveSpeed;
+                     if (ImGui::IsKeyDown(ImGuiKey_Q)) camera.Position += camera.WorldUp * moveSpeed; 
+                     if (ImGui::IsKeyDown(ImGuiKey_E)) camera.Position -= camera.WorldUp * moveSpeed; 
+                 }
+            }
         }
 
         // --- CTRL+A ADD MENU ---
@@ -303,8 +391,22 @@ namespace Crescendo {
                 sky->targetName = "Sky Environment";
                 selectedObjectIndex = scene->entities.size() - 1;
             }
-            
 
+            if (ImGui::MenuItem("Player Spawn Point")) {
+                size_t priorCount = scene->entities.size();
+
+                Crescendo::AssetLoader::loadModel(rendererRef, "assets/systemsymbols/playerspawner.glb", scene);
+
+                if (scene->entities.size() > priorCount) {
+                    CBaseEntity* spawner = scene->entities[priorCount];
+
+                    spawner->targetName = "SpawnPoint";
+                    spawner->origin = camera.Position + camera.Front * 5.0f;
+
+                    selectedObjectIndex = priorCount; // Auto-select in inspector
+                }
+            }
+            
             ImGui::EndPopup();
         }
 
@@ -332,7 +434,7 @@ namespace Crescendo {
                         // Ensure it ends in json
                         if (destination.find("json") == std::string::npos) destination += ".json";
 
-                        SceneSerializer serializer(scene);
+                        SceneSerializer serializer(scene, rendererRef);
                         serializer.Serialize(destination);
                     }
                 }
@@ -342,7 +444,7 @@ namespace Crescendo {
                     // Same as above
                     auto selection = pfd::open_file("Load Project", ".", { "JSON Map Files", "*.json" }).result();
                     if (!selection.empty()) {
-                        SceneSerializer serializer(scene);
+                        SceneSerializer serializer(scene, rendererRef);
                         serializer.Deserialize(selection[0]);
                     }
                 }
@@ -572,7 +674,8 @@ namespace Crescendo {
                         if (ImGui::Button("Load New HDR...")) {
                             auto selection = pfd::open_file("Select HDR", ".", {"HDR Files", "*.hdr"}).result();
                             if (!selection.empty()) {
-                                rendererRef->loadSkybox(selection[0]);
+                                // PASS THE SCENE HERE!
+                                rendererRef->loadSkybox(selection[0], scene);
                             }
                         }
                     }
@@ -588,8 +691,7 @@ namespace Crescendo {
                         }
                     }
                 }
-                // --- END ATMOSPHERE SETTINGS ---
-
+                
                 // --- SHADOW SETTINGS TAB ---
                 if (ImGui::CollapsingHeader("Cascaded Shadows")) {
                     ImGui::Spacing();
@@ -727,11 +829,106 @@ namespace Crescendo {
             ImGui::End();
         }
 
-        // --- CONSOLE (Updated to use the class-level flag) ---
+        // --- DEVELOPER CONSOLE WINDOW (rebuild2)
         if (showConsole) {
-            gameConsole.Draw("Console", &showConsole);
-        }
+            ImGui::SetNextWindowSize(ImVec2(520, 300), ImGuiCond_FirstUseEver);
+            
+            // Set opacity to 80% (0.0f is invisible, 1.0f is solid)
+            ImGui::SetNextWindowBgAlpha(0.8f); 
 
+            ImGui::Begin("Developer Console", &showConsole);
+
+            ImGui::BeginChild("ScrollingRegion", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()), false, ImGuiWindowFlags_HorizontalScrollbar);
+
+            for (const auto& msg : consoleLog) {
+                // Check if the message starts with a bracket
+                size_t startBracket = msg.text.find('[');
+                size_t endBracket = msg.text.find(']');
+
+                if (startBracket == 0 && endBracket != std::string::npos) {
+                    // Split the string into "[Tag]" and " The rest of the message"
+                    std::string tag = msg.text.substr(0, endBracket + 1);
+                    std::string rest = msg.text.substr(endBracket + 1);
+
+                    // Draw the bracketed tag in aggressive red
+                    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", tag.c_str());
+                    
+                    // Tell ImGui to stay on the same line (0 pixel offset)
+                    ImGui::SameLine(0.0f, 0.0f);
+                    
+                    // Draw the rest of the message in the originally assigned color
+                    ImGui::TextColored(msg.color, "%s", rest.c_str());
+                } else {
+                    // If there are no brackets, just draw the whole line normally
+                    ImGui::TextColored(msg.color, "%s", msg.text.c_str());
+                }
+            }
+
+            if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+                ImGui::SetScrollHereY(1.0f);
+            }
+            ImGui::EndChild();
+
+            ImGui::Separator();
+
+            static char inputBuf[256] = "";
+            bool reclaim_focus = false;
+
+            if (ImGui::InputText("##Input", inputBuf, IM_ARRAYSIZE(inputBuf), ImGuiInputTextFlags_EnterReturnsTrue)) {
+                std::string command = inputBuf;
+                if (!command.empty()) {
+                    // Echo the command in white
+                    AddLog("] " + command, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+
+                if (!command.empty()) {
+                    // Echo the command in white
+                    AddLog("] " + command, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+
+                    // --- COMMAND PARSING LOGIC ---
+                    size_t spacePos = command.find(" ");
+                    
+                    if (spacePos != std::string::npos) {
+                        // We have a space, meaning they are trying to SET a value (e.g., "sv_gravity -40")
+                        std::string cmdName = command.substr(0, spacePos);
+                        std::string cmdArg = command.substr(spacePos + 1);
+
+                        if (floatConVars.find(cmdName) != floatConVars.end()) {
+                            try {
+                                float newVal = std::stof(cmdArg);
+                                *floatConVars[cmdName] = newVal; // Update the actual game variable!
+                                AddLog(cmdName + " set to " + std::to_string(newVal), ImVec4(0.2f, 1.0f, 0.2f, 1.0f));
+                            } catch (...) {
+                                AddLog("Usage: " + cmdName + " <float>", ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+                            }
+                        } else {
+                            AddLog("Unknown command: " + cmdName, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
+                        }
+                    } else {
+                        // No space, meaning they are checking a value or running a single command
+                        if (command == "clear") {
+                            consoleLog.clear();
+                        } else if (floatConVars.find(command) != floatConVars.end()) {
+                            // Print current value
+                            AddLog(command + " = " + std::to_string(*floatConVars[command]), ImVec4(0.8f, 0.8f, 0.8f, 1.0f));
+                        } else {
+                            AddLog("Unknown command: " + command, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
+                        }
+                    }
+                    // -----------------------------
+
+                    inputBuf[0] = '\0'; // Clear Input
+                    reclaim_focus = true;
+                }
+
+                inputBuf[0] = '\0'; // Clear Input
+                reclaim_focus = true;
+            }
+        }
+        ImGui::SetItemDefaultFocus();
+            if (reclaim_focus) ImGui::SetKeyboardFocusHere(-1);
+
+            ImGui::End();
+        }
         ImGui::Render(); 
     }
     

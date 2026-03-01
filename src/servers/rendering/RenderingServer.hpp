@@ -175,8 +175,15 @@ namespace Crescendo {
         // Asset Management
         int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
         int acquireTexture(const std::string& path);
-        void loadSkybox(const std::string& path);
+        
+        // --- 1. UPDATE THIS SIGNATURE ---
+        void loadSkybox(const std::string& path, Scene * scene);
+
         TextureResource loadKTXCubemap(const std::string& filePath);
+        TextureResource generateCubemapFromHDR(const std::string& hdrPath);
+
+        // --- 2. ADD THIS NEW HELPER ---
+        bool extractHDRSunParams(const std::string& path, glm::vec3& outDir, glm::vec3& outColor, float& outIntensity);
 
         
         VulkanImage UploadTexture(void* pixels, int width, int height, VkFormat format);

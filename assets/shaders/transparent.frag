@@ -12,8 +12,8 @@ layout(location = 7) in vec2 fragTexCoord1;
 layout(location = 0) out vec4 outColor;
 
 layout(binding = 0) uniform sampler2D texSampler[100];
-layout(binding = 1) uniform sampler2D skyTexture;
-layout(binding = 4) uniform sampler2DArrayShadow shadowMap; // ADDED THIS
+layout(binding = 1) uniform samplerCube skyTexture;
+layout(binding = 4) uniform sampler2DArrayShadow shadowMap;
 layout(binding = 5) uniform sampler2D refractionTexture;
 
 struct EntityData {
@@ -180,7 +180,7 @@ void main() {
     vec3 finalColor = directLight + hemiAmbient + emissive;
 
     float thickness     = max(ent.volumeParams.y, 1.0);
-    float densitySlider = ent.volumeParams.z;
+    float attenDist     = max(ent.volumeParams.z, 0.001); 
     float ior           = max(ent.volumeParams.w, 1.0);
     vec3  tintColor     = clamp(ent.volumeColor.rgb, vec3(0.001), vec3(0.999));
 
@@ -191,13 +191,22 @@ void main() {
     vec3 transmissionColor = vec3(0.0);
     if (transmission > 0.0) {
         vec2 screenUV = gl_FragCoord.xy / vec2(global.params.z, global.params.w);
-        vec2 distortion = (N.xy * (1.0 - (1.0 / ior))) * 0.1;
+        
+        // Convert Normal to View Space so X/Y always align with the screen
+        vec3 viewNormal = mat3(global.view) * N;
+        
+        // Calculate base distortion
+        vec2 distortion = viewNormal.xy * (1.0 - (1.0 / ior)) * 0.1;
+        if (normalStr > 1.0) distortion *= normalStr; 
+
         float maxLod = 10.0;
         float blurLevel = roughness * maxLod;
         vec3 sceneRefr = textureLod(refractionTexture, screenUV + distortion, blurLevel).rgb;
-        float density = densitySlider * 5.0;
-        vec3 absorption = -log(tintColor) * density;
+        
+        // Proper Beer-Lambert Law 
+        vec3 absorption = -log(tintColor) / attenDist;
         vec3 transmittance = exp(-absorption * thickness);
+        
         transmissionColor = sceneRefr * transmittance;
     }
     
@@ -215,7 +224,7 @@ void main() {
         skyRefl += global.sunColor.rgb * global.sunDirection.w * pow(sunDot, 256.0);
     } 
     else {
-        skyRefl = texture(skyTexture, EquirectangularUV(normalize(R))).rgb;
+        skyRefl = texture(skyTexture, normalize(R)).rgb;
     }
     
     skyRefl *= (1.0 - roughness);

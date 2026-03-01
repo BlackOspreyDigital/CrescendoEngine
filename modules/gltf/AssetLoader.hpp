@@ -23,6 +23,6 @@ namespace Crescendo {
         static void loadGLTF(RenderingServer* renderer, const std::string& filePath, Scene* scene);
         
         // <-- UPDATE THIS SIGNATURE: Add the 'rawMeshes' map at the end
-        static void processGLTFNode(RenderingServer* renderer, tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, Scene* scene, glm::mat4 parentMatrix, RawMeshMap& rawMeshes);
+        static void processGLTFNode(RenderingServer* renderer, tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, const std::string& filePath, Scene* scene, glm::mat4 parentMatrix, RawMeshMap& rawMeshes);
     };
 }

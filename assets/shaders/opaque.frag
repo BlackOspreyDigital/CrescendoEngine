@@ -13,7 +13,7 @@ layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outNormal; 
 
 layout(binding = 0) uniform sampler2D texSampler[100];
-layout(binding = 1) uniform sampler2D skyTexture;
+layout(binding = 1) uniform samplerCube skyTexture;
 layout(binding = 4) uniform sampler2DArrayShadow shadowMap;
 
 struct EntityData {
@@ -61,12 +61,23 @@ vec2 EquirectangularUV(vec3 v) {
     return uv;
 }
 
+// --- PCF HELPER ---
+float SamplePCF(vec3 coords, int cascadeIndex) {
+    float shadow = 0.0;
+    vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0).xy);
+    
+    for(int x = -1; x <= 1; ++x) {
+        for(int y = -1; y <= 1; ++y) {
+            shadow += texture(shadowMap, vec4(coords.xy + vec2(x, y) * texelSize, float(cascadeIndex), coords.z));
+        }
+    }
+    return shadow / 9.0;
+}
+
 // PCF, Normal Bias, and Bounding-Box Cascade Selection
 float CalculateShadow(vec3 worldPos, vec3 normal, float viewDepth) {
-    // Reduced bias to prevent light leaking (Peter Panning)
-    vec3 bias = normal * 0.015; 
-    
-    int cascadeIndex = 3;
+    vec3 bias = normal * 0.015;
+    int cascadeIndex = -1;
     vec3 projCoords = vec3(0.0);
     
     // Find the tightest, highest-res cascade that actually contains this pixel
@@ -75,32 +86,55 @@ float CalculateShadow(vec3 worldPos, vec3 normal, float viewDepth) {
         vec3 coords = fragPosLightSpace.xyz / fragPosLightSpace.w;
         coords.xy = coords.xy * 0.5 + 0.5;
         
-        // Check if we are safely inside the shadow map bounds 
-        // (We use 0.01 to 0.99 to give a 1% margin for the PCF blurring so it doesn't sample the edge)
         if (coords.x > 0.01 && coords.x < 0.99 && 
             coords.y > 0.01 && coords.y < 0.99 && 
             coords.z > 0.0 && coords.z < 1.0) {
-            
+     
             cascadeIndex = i;
             projCoords = coords;
             break;
         }
     }
 
-    // If somehow behind the light's far plane, don't shadow
-    if (projCoords.z > 1.0) return 1.0;
+    if (cascadeIndex == -1 || projCoords.z > 1.0) return 1.0;
 
-    // PCF (Percentage Closer Filtering) 3x3 Grid
-    float shadow = 0.0;
-    vec2 texelSize = 1.0 / vec2(textureSize(shadowMap, 0).xy);
+    // Sample the base cascade
+    float shadow = SamplePCF(projCoords, cascadeIndex);
+
+    // ==========================================
+    // 1. CROSS-CASCADE BLENDING
+    // ==========================================
+    // If we are close to the edge of the current cascade, blend with the next one
+    // to hide the sudden drop in shadow resolution
+    float currentSplitDist = global.cascadeSplits[cascadeIndex];
+    float blendBand = 5.0; // Blend over a 5-unit intersection zone
     
-    for(int x = -1; x <= 1; ++x) {
-        for(int y = -1; y <= 1; ++y) {
-            shadow += texture(shadowMap, vec4(projCoords.xy + vec2(x, y) * texelSize, float(cascadeIndex), projCoords.z));
-        }
+    if (cascadeIndex < 3 && viewDepth > (currentSplitDist - blendBand)) {
+        
+        // Calculate where this pixel lands in the NEXT cascade map
+        vec4 nextLightSpace = global.lightSpaceMatrices[cascadeIndex + 1] * vec4(worldPos + bias, 1.0);
+        vec3 nextCoords = nextLightSpace.xyz / nextLightSpace.w;
+        nextCoords.xy = nextCoords.xy * 0.5 + 0.5;
+        
+        // Sample the blurrier cascade
+        float nextShadow = SamplePCF(nextCoords, cascadeIndex + 1);
+        
+        // Calculate a 0.0 to 1.0 gradient across the 5-unit intersection
+        float blendFactor = smoothstep(currentSplitDist - blendBand, currentSplitDist, viewDepth);
+        
+        // Mathematically merge them
+        shadow = mix(shadow, nextShadow, blendFactor);
     }
-    
-    return shadow / 9.0;
+
+    // ==========================================
+    // 2. FAR DISTANCE FADE
+    // ==========================================
+    // Smoothly fade shadows out into the lighting at the absolute edge of the render distance
+    float maxShadowDist = global.cascadeSplits[3]; 
+    float fadeBand = 15.0; // Start fading 15 units before the shadows end
+    float fadeFactor = smoothstep(maxShadowDist - fadeBand, maxShadowDist, viewDepth);
+
+    return mix(shadow, 1.0, fadeFactor);
 }
 
 vec3 ApplyFog(vec3 rgb, float dist, float worldZ) {
@@ -226,7 +260,7 @@ void main() {
         skyRefl += global.sunColor.rgb * global.sunDirection.w * pow(sunDot, 256.0);
     } 
     else {
-        skyRefl = texture(skyTexture, EquirectangularUV(normalize(R))).rgb;
+        skyRefl = texture(skyTexture, normalize(R)).rgb;
     }
     
     skyRefl *= (1.0 - roughness);

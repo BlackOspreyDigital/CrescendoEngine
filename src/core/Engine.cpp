@@ -58,58 +58,77 @@ namespace Crescendo {
        
         auto& cam = renderingServer.mainCamera;
         
-        // --- EDITOR MODE: Free-Fly Camera ---
-        if (currentState == EngineState::Editor) {
-            float speed = 10.0f * dt;
-            if (Input::IsKeyDown(SDL_SCANCODE_LSHIFT)) speed *= 4.0f; // Sprint
-     
-            if (Input::IsKeyDown(SDL_SCANCODE_W)) cam.Position += cam.Front * speed;
-            if (Input::IsKeyDown(SDL_SCANCODE_S)) cam.Position -= cam.Front * speed;
-            if (Input::IsKeyDown(SDL_SCANCODE_A)) cam.Position -= cam.Right * speed;
-            if (Input::IsKeyDown(SDL_SCANCODE_D)) cam.Position += cam.Right * speed;
-            if (Input::IsKeyDown(SDL_SCANCODE_Q)) cam.Position += glm::vec3(0,0,1) * speed; // Up
-            if (Input::IsKeyDown(SDL_SCANCODE_E)) cam.Position -= glm::vec3(0,0,1) * speed; // Down
-            
-            // Mouse Look (Right Click to Rotate)
-            if (Input::IsMouseButtonDown(3)) { 
-                cam.Rotate((float)Input::mouseRelX, (float)-Input::mouseRelY);
-            }
-        }
+        // NOTE: Editor Camera movement was DELETED from here!
+        // It is now handled exclusively inside EditorUI::Prepare() so it respects the console.
 
-        // --- STATE TRANSITION LOGIC ---
+        // =========================================================
+        // STATE TRANSITION LOGIC 
+        // =========================================================
+        
+        // 1. Leaving Editor (Starting the game)
         if (currentState == EngineState::Playing && previousState == EngineState::Editor) {
             std::cout << "[Engine] Play Mode: Saving initial state..." << std::endl;
+            
+            glm::vec3 spawnLocation = cam.GetPosition(); 
+            
             for (auto* ent : scene.entities) {
                 if (ent) {
                     ent->savedOrigin = ent->origin;
                     ent->savedAngles = ent->angles;
+                    ent->savedScale = ent->scale; 
+                    
+                    if (ent->targetName == "SpawnPoint") {
+                        spawnLocation = ent->origin + glm::vec3(0, 0, 1.0f); 
+                        ent->scale = glm::vec3(0.0f); // Turn spawner invisible
+                    }
                 }
             }
+
+            activePlayer = new FPSController();
+            activePlayer->Initialize(&physicsServer, spawnLocation);
         } 
-        else if (currentState == EngineState::Editor && previousState == EngineState::Playing) {
+        // 2. Returning to Editor (From either Playing OR Paused)
+        else if (currentState == EngineState::Editor && previousState != EngineState::Editor) {
             std::cout << "[Engine] Editor Mode: Restoring scene..." << std::endl;
             for (auto* ent : scene.entities) {
                 if (ent) {
-                    // Restore visuals
                     ent->origin = ent->savedOrigin;
                     ent->angles = ent->savedAngles;
-                    // Restore physics
+                    ent->scale = ent->savedScale; // Restores visibility
+                    
                     physicsServer.ResetBody(ent->index, ent->origin, ent->angles);
                 }
+            }
+
+            if (activePlayer) {
+                delete activePlayer;
+                activePlayer = nullptr;
+            }
+        }
+
+        // 3. Handle Mouse Locking
+        if (currentState != previousState) {
+            if (currentState == EngineState::Playing) {
+                SDL_SetRelativeMouseMode(SDL_TRUE); // Locks and hides OS mouse
+            } else {
+                SDL_SetRelativeMouseMode(SDL_FALSE); // Frees mouse for Menus/Editor
             }
         }
         
         previousState = currentState;
 
-        // --- PLAY MODE: FPS Controller & Physics ---
+        // =========================================================
+        // PLAY MODE: FPS Controller & Physics
+        // =========================================================
         if (currentState == EngineState::Playing) {
             
             if (activePlayer) {
-                // 1. Flatten the camera vectors to the XY ground plane
-                glm::vec3 forward = glm::normalize(glm::vec3(cam.Front.x, cam.Front.y, 0.0f));
-                glm::vec3 right = glm::normalize(glm::vec3(cam.Right.x, cam.Right.y, 0.0f));
+                glm::vec3 forward = glm::vec3(cam.Front.x, cam.Front.y, 0.0f);
+                if (glm::length(forward) > 0.001f) forward = glm::normalize(forward);
+                
+                glm::vec3 right = glm::vec3(cam.Right.x, cam.Right.y, 0.0f);
+                if (glm::length(right) > 0.001f) right = glm::normalize(right);
 
-                // 2. Build the movement input vector
                 glm::vec3 inputDir(0.0f);
                 if (Input::IsKeyDown(SDL_SCANCODE_W)) inputDir += forward;
                 if (Input::IsKeyDown(SDL_SCANCODE_S)) inputDir -= forward;
@@ -118,29 +137,29 @@ namespace Crescendo {
 
                 bool jump = Input::IsKeyDown(SDL_SCANCODE_SPACE);
 
-                // 3. Run the Source Engine math!
                 activePlayer->Update(dt, &physicsServer, inputDir, jump);
-
-                // 4. Lock the camera to the player's head
                 cam.SetPosition(activePlayer->GetPosition());
             }
 
-            // Mouse Look in Play Mode (Still holding Right Click for now)
-            if (Input::IsMouseButtonDown(3)) { 
-                cam.Rotate((float)Input::mouseRelX, (float)-Input::mouseRelY);
-            }
+            // Mouse Look ONLY happens here if we are actively playing
+            cam.Rotate((float)Input::mouseRelX, (float)-Input::mouseRelY);
 
-            // Step the world physics
             physicsServer.Update(dt, scene.entities);
         }
     }
-        
+
     void Engine::Render() {
         // Pass the state by reference down to the renderer
         renderingServer.render(&scene, currentState); 
     }
 
     void Engine::Shutdown() {
+        // Clean up player if we closed the engine while in Play mode
+        if (activePlayer) {
+            delete activePlayer;
+            activePlayer = nullptr;
+        }
+
         physicsServer.Cleanup(); 
         renderingServer.shutdown();
         displayServer.shutdown();

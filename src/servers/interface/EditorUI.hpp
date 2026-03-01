@@ -7,6 +7,9 @@
 #include <glm/glm.hpp>
 #include "core/EngineState.hpp"
 #include "servers/camera/Camera.hpp"
+#include <string>
+#include <vector>
+#include <unordered_map>
 
 
 namespace Crescendo {
@@ -15,6 +18,19 @@ namespace Crescendo {
     class Camera;
 
     void UpdateEditorCamera(Crescendo::Camera& editorCam, float deltaTime);
+
+    // --- DEV CONSOLE ---
+    struct ConsoleMessage {
+        std::string text;
+        ImVec4 color;
+    };
+
+   
+    extern std::vector<ConsoleMessage> consoleLog;
+    extern std::unordered_map<std::string, float*> floatConVars;
+
+    extern std::vector<ConsoleMessage> consoleLog;
+    void AddLog(const std::string& message, ImVec4 color = ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
 
     struct Console {
         ImGuiTextBuffer     Buf;

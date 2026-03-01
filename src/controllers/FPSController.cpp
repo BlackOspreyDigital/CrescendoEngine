@@ -1,5 +1,8 @@
 #include "FPSController.hpp"
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include "servers/interface/EditorUI.hpp"
+#include <iostream>
+
 
 namespace Crescendo {
 
@@ -8,50 +11,74 @@ namespace Crescendo {
     }
 
     void FPSController::Initialize(PhysicsServer* physicsServer, glm::vec3 spawnPos) {
-        // 1. Create the Player Collider (0.4m radius, 0.9m half-height = ~1.8m tall player)
+        m_spawnPos = spawnPos; // Remember where we started!
+        m_fallTimer = 0.0f;
+
+        // --- REGISTER CONVARS FOR LIVE-TUNING ---
+        Crescendo::floatConVars["sv_gravity"] = &m_gravity;
+        Crescendo::floatConVars["sv_friction"] = &m_friction;
+        Crescendo::floatConVars["surf_airaccelerate"] = &m_airAcceleration;
+        Crescendo::floatConVars["surf_maxairspeed"] = &m_maxAirSpeed;
+        Crescendo::floatConVars["surf_groundspeed"] = &m_maxGroundSpeed;
+        // ----------------------------------------
+
         JPH::Ref<JPH::CapsuleShape> capsule = new JPH::CapsuleShape(0.9f, 0.4f);
         
-        // 2. Character Virtual Settings
         JPH::CharacterVirtualSettings settings;
         settings.mShape = capsule;
-        settings.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisZ(), -0.9f); // Stand on feet
+        settings.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisZ(), -0.9f); 
         settings.mUp = JPH::Vec3(0, 0, 1);
         
-        // 3. Instantiate the Phantom Body
+        // THE SURF FIX: Anything steeper than 35 degrees forces sliding
+        settings.mMaxSlopeAngle = JPH::DegreesToRadians(35.0f); 
+        
         m_character = new JPH::CharacterVirtual(&settings, JPH::Vec3(spawnPos.x, spawnPos.y, spawnPos.z), JPH::Quat::sIdentity(), physicsServer->physicsSystem);
     }
 
-    
-    void Accelerate(JPH::Vec3& vel, JPH::Vec3 wishDir, float wishSpeed, float accel, float dt) {
-        // How much of our current velocity is aligned with our desired input direction?
+    // THE MATH FIX: Added 'baseSpeed' parameter
+    void Accelerate(JPH::Vec3& vel, JPH::Vec3 wishDir, float wishSpeedCap, float accel, float dt, float baseSpeed) {
         float currentSpeed = vel.Dot(wishDir);
+        float addSpeed = wishSpeedCap - currentSpeed;
+        if (addSpeed <= 0) return; 
         
-        // How much speed are we allowed to add before hitting the cap?
-        float addSpeed = wishSpeed - currentSpeed;
-        if (addSpeed <= 0) return; // We are maxed out in this direction!
-        
-        // Calculate the raw acceleration burst
-        float accelSpeed = accel * dt * wishSpeed;
-        
-        // Cap it if it overshoots
+        float accelSpeed = accel * dt * baseSpeed;
         if (accelSpeed > addSpeed) accelSpeed = addSpeed;
         
-        // Apply the newly calculated burst
         vel += wishDir * accelSpeed;
     }
 
     void FPSController::Update(float deltaTime, PhysicsServer* physicsServer, glm::vec3 inputDir, bool jump) {
         if (!m_character) return;
 
-        // Normalize input
         JPH::Vec3 wishDir = JPH::Vec3(inputDir.x, inputDir.y, inputDir.z);
         if (wishDir.LengthSq() > 0.0f) wishDir = wishDir.Normalized();
 
-        // Check if grounded
+        // 1. Check our exact ground state
         JPH::CharacterVirtual::EGroundState groundState = m_character->GetGroundState();
         bool onGround = (groundState == JPH::CharacterVirtual::EGroundState::OnGround);
+        
+        // NEW: Check if we are sliding on a surf ramp!
+        bool isSurfing = (groundState == JPH::CharacterVirtual::EGroundState::OnSteepGround);
 
-        // 1. Apply Friction (Only on ground)
+        // --- FALL TIMER & DEATH LOGIC ---
+        // If we are NOT on flat ground AND NOT surfing a ramp, we are truly falling!
+        if (!onGround && !isSurfing && m_character->GetLinearVelocity().GetZ() < -0.1f) {
+            m_fallTimer += deltaTime;
+        } else if (onGround || isSurfing) {
+            // We landed safely, OR we are touching a surf ramp! Reset the timer.
+            m_fallTimer = 0.0f;
+        }
+
+        // If we fall for more than 5 seconds (or hit the absolute bottom of the world)
+        if (m_fallTimer >= 5.0f || m_character->GetPosition().GetZ() < -500.0f) {
+            std::cout << "[Player] Killed by the Guardians (Fall Timer)." << std::endl;
+            m_character->SetPosition(JPH::Vec3(m_spawnPos.x, m_spawnPos.y, m_spawnPos.z));
+            m_currentVelocity = JPH::Vec3::sZero();
+            m_character->SetLinearVelocity(JPH::Vec3::sZero());
+            m_fallTimer = 0.0f; // Reset timer after respawn
+        }
+        // ---------------------------------------
+
         if (onGround) {
             float speed = m_currentVelocity.Length();
             if (speed > 0.1f) {
@@ -64,26 +91,39 @@ namespace Crescendo {
             }
         }
 
-        // 2. Apply Acceleration & Jumping
         if (onGround) {
-            m_currentVelocity.SetZ(0.0f); // Stick to the floor
-            Accelerate(m_currentVelocity, wishDir, m_maxGroundSpeed, m_groundAcceleration, deltaTime);
+            m_currentVelocity.SetZ(0.0f); 
+            Accelerate(m_currentVelocity, wishDir, m_maxGroundSpeed, m_groundAcceleration, deltaTime, m_maxGroundSpeed);
             
             if (jump) {
                 m_currentVelocity.SetZ(m_jumpForce);
             }
         } else {
-            // THE SURF MATH: High acceleration, but incredibly low max air speed!
-            Accelerate(m_currentVelocity, wishDir, m_maxAirSpeed, m_airAcceleration, deltaTime);
+            // 1. Air Acceleration (Builds the sideways force)
+            Accelerate(m_currentVelocity, wishDir, m_maxAirSpeed, m_airAcceleration, deltaTime, m_maxGroundSpeed);
             
-            // Apply Gravity
+            // 2. Apply Gravity
             m_currentVelocity += JPH::Vec3(0, 0, m_gravity) * deltaTime;
+
+            // --- 3. SOURCE ENGINE SURF MATH (Clip Velocity) ---
+            if (isSurfing) {
+                // Get the exact angle of the ramp face
+                JPH::Vec3 surfNormal = m_character->GetGroundNormal();
+                
+                // Check how much of our velocity is pointing directly INTO the ramp
+                float backoff = m_currentVelocity.Dot(surfNormal);
+                
+                // If we are pushing into the wall, perfectly redirect that force ALONG the wall
+                if (backoff < 0.0f) {
+                    m_currentVelocity -= surfNormal * backoff;
+                }
+            }
+            // --------------------------------------------------
         }
 
-        // 3. Tell Jolt our intended velocity
+        // Send the perfectly calculated surf velocity to Jolt
         m_character->SetLinearVelocity(m_currentVelocity);
         
-        // 4. Let Jolt resolve collisions and slide along ramps
         JPH::CharacterVirtual::ExtendedUpdateSettings updateSettings;
         m_character->ExtendedUpdate(
             deltaTime,
@@ -91,19 +131,17 @@ namespace Crescendo {
             updateSettings,
             physicsServer->physicsSystem->GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
             physicsServer->physicsSystem->GetDefaultLayerFilter(Layers::MOVING),
-            { }, { }, // Body and Shape filters
+            { }, { }, 
             *physicsServer->tempAllocator
         );
 
-        // 5. Read back the actual velocity after Jolt slid us across geometry
         m_currentVelocity = m_character->GetLinearVelocity();
     }
 
     glm::vec3 FPSController::GetPosition() const {
         if (!m_character) return glm::vec3(0.0f);
         JPH::Vec3 p = m_character->GetPosition();
-        // Add an offset so the camera sits at "eye level" (near the top of the 1.8m capsule)
-        return glm::vec3(p.GetX(), p.GetY(), p.GetZ() + 0.7f); 
+        return glm::vec3(p.GetX(), p.GetY(), p.GetZ() + 1.1f); 
     }
 
     void FPSController::Cleanup() {

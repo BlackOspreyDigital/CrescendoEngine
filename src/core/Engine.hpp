@@ -25,6 +25,7 @@ namespace Crescendo {
         EngineState previousState = EngineState::Editor;
 
         FPSController* activePlayer = nullptr;
+        bool playerSpawned = false;
         
         DisplayServer displayServer;
         RenderingServer renderingServer;

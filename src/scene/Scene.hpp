@@ -13,7 +13,7 @@ namespace Crescendo {
     };
    
     struct EnvironmentSettings {
-        bool enableFog = true;
+        bool enableFog = false;
         SkyType skyType = SkyType::Procedural; // Default
         
         // Sun / Lighting
@@ -23,7 +23,7 @@ namespace Crescendo {
         
         // GI and Fog
             glm::vec4 fogColor     = glm::vec4(0.5f, 0.6f, 0.7f, 0.02f); 
-            glm::vec4 fogParams    = glm::vec4(0.1f, 1.0f, 10.0f, 0.0f); 
+            glm::vec4 fogParams    = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); 
             glm::vec3 skyColor     = glm::vec3(0.5f, 0.7f, 1.0f);
             glm::vec3 groundColor  = glm::vec3(0.0f, 0.0f, 0.0f);
         

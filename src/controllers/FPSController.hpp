@@ -26,15 +26,17 @@ namespace Crescendo {
 
     private:
         JPH::Ref<JPH::CharacterVirtual> m_character;
+        glm::vec3 m_spawnPos;
+        float m_fallTimer = 0.0f;
 
         // Source Engine secret sauce 
-        float m_maxGroundSpeed = 6.0f;
-        float m_maxAirSpeed = 0.6f;             
+        float m_maxGroundSpeed = 6.5f;
+        float m_maxAirSpeed = 0.8f;             
         float m_groundAcceleration = 10.0f;
         float m_airAcceleration = 150.0f;       
         float m_friction = 4.0f;
-        float m_jumpForce = 5.0f;
-        float m_gravity = -15.0f;               
+        float m_jumpForce = 6.8f;
+        float m_gravity = -20.0f;               
 
         // Track velocity manually to apply our own momentum
         JPH::Vec3 m_currentVelocity = JPH::Vec3::sZero();

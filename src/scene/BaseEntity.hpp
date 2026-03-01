@@ -27,15 +27,13 @@ public:
     glm::vec3 angles = {0.0f, 0.0f, 0.0f};
     glm::vec3 scale  = {1.0f, 1.0f, 1.0f};
 
-    // Add these alongside origin, angles, scale
     glm::vec3 savedOrigin = glm::vec3(0.0f);
     glm::vec3 savedAngles = glm::vec3(0.0f);
+    glm::vec3 savedScale = glm::vec3(1.0f);
 
     std::vector<Crescendo::Camera> cameras;
     
-    // Which camera is currently active for this entity (-1 means none)
     int activeCameraIndex = -1; 
-    
     // Helper to add a camera and make it active
     void AddCamera(const Crescendo::Camera& cam) {
         cameras.push_back(cam);
@@ -55,6 +53,7 @@ public:
     int modelIndex = -1;
     int textureID = 0;
     bool visible = true;
+    std::string modelPath = "";
 
     // [BSDF DEFAULTS]
     float roughness = 0.0f;

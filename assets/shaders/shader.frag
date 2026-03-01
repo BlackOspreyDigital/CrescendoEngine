@@ -12,7 +12,7 @@ layout(location = 7) in vec2 fragTexCoord1;
 layout(location = 0) out vec4 outColor;
 
 layout(binding = 0) uniform sampler2D texSampler[100];
-layout(binding = 1) uniform sampler2D skyTexture;
+layout(binding = 1) uniform samplerCube skyTexture;
 // NOTE: Binding 5 (refractionTexture) has been removed!
 
 struct EntityData {
@@ -167,7 +167,7 @@ void main() {
     }
     else {
         // HDR reflection 
-        skyRefl = texture(skyTexture, EquirectangularUV(normalize(R))).rgb; // <--- FIXED (uppercase 'R')
+        skyRefl = texture(skyTexture, normalize(R)).rgb;
     }
 
     skyRefl *= (1.0 - roughness);

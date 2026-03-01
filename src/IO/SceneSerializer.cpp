@@ -1,6 +1,9 @@
 #include "SceneSerializer.hpp"
+#include "scene/Scene.hpp"
+#include "modules/gltf/AssetLoader.hpp"
+#include "servers/rendering/RenderingServer.hpp"
+#include "servers/physics/PhysicsServer.hpp"
 #include "deps/json/json.hpp"
-
 #include <fstream>
 #include <iostream>
 
@@ -8,7 +11,8 @@ using json = nlohmann::json;
 
 namespace Crescendo {
 
-    SceneSerializer::SceneSerializer(Scene* scene) : m_Scene(scene) {
+    SceneSerializer::SceneSerializer(Scene* scene, RenderingServer* renderer) 
+        : m_Scene(scene), m_Renderer(renderer) {
     }
 
     bool SceneSerializer::Serialize(const std::string& filepath) {
@@ -63,68 +67,100 @@ namespace Crescendo {
     }
 
     bool SceneSerializer::Deserialize(const std::string& filepath) {
-        std::ifstream file(filepath);
-        if (!file.is_open()) {
-            std::cerr << "[Serializer] Failed to open " << filepath << " for reading!" << std::endl;
-            return false;
-        }
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+        std::cerr << "[Serializer] Failed to open " << filepath << " for reading!" << std::endl;
+        return false;
+    }
 
-        json inData;
-        try {
-            file >> inData;
-        } catch (json::parse_error& e) {
-            std::cerr << "[Serializer] Parse Error: " << e.what() << std::endl;
-            return false;
-        }
+    json inData;
+    try {
+        file >> inData;
+    } catch (json::parse_error& e) {
+        std::cerr << "[Serializer] Parse Error: " << e.what() << std::endl;
+        return false;
+    }
 
-        // Clear the current scene before loading new entities
-        m_Scene->Clear(); 
+    // 1. Clear the current scene
+    m_Scene->Clear(); 
 
-        auto entities = inData["Entities"];
-        if (entities.is_array()) {
-            for (auto& item : entities) {
-                std::string className = item.value("ClassName", "prop_static");
-                
-                // Create the raw entity
-                CBaseEntity* ent = m_Scene->CreateEntity(className);
-                
-                ent->targetName = item.value("TargetName", "Unnamed Entity");
-                ent->modelIndex = item.value("ModelIndex", 0);
-                ent->textureID  = item.value("TextureID", 0);
+    auto entities = inData["Entities"];
+    if (entities.is_array()) {
+        for (auto& item : entities) {
+            // 2. Extract the model path and class info
+            std::string className = item.value("ClassName", "prop_static");
+            std::string modelPath = item.value("ModelPath", ""); // You must add 'modelPath' to Serialize()!
+            
+            CBaseEntity* ent = nullptr;
 
-                // Transform
-                if (item.contains("Transform")) {
-                    auto& t = item["Transform"];
+            // 3. If it's a mesh-based prop, we MUST reload it via AssetLoader 
+            // This ensures Jolt generates the Mesh Collider for surfing!
+            if (!modelPath.empty()) {
+                // AssetLoader handles: mesh upload, texture binding, and Jolt collider creation
+                AssetLoader::loadModel(m_Renderer, modelPath, m_Scene); 
+                ent = m_Scene->entities.back(); // Grab the one we just loaded
+            } else {
+                // If it's a light or empty, just create it
+                ent = m_Scene->CreateEntity(className);
+            }
+
+            if (!ent) continue;
+
+            // 4. Restore the Metadata
+            ent->targetName = item.value("TargetName", "Unnamed Entity");
+            ent->textureID  = item.value("TextureID", 0);
+
+            // 5. Restore the Transform (Safely)
+            if (item.contains("Transform")) {
+                auto& t = item["Transform"];
+                if (t.contains("Position") && t["Position"].is_array()) {
                     ent->origin = glm::vec3(t["Position"][0], t["Position"][1], t["Position"][2]);
+                }
+                if (t.contains("Rotation") && t["Rotation"].is_array()) {
                     ent->angles = glm::vec3(t["Rotation"][0], t["Rotation"][1], t["Rotation"][2]);
+                }
+                if (t.contains("Scale") && t["Scale"].is_array()) {
                     ent->scale  = glm::vec3(t["Scale"][0], t["Scale"][1], t["Scale"][2]);
                 }
+            }
 
-                // PBR Material
-                if (item.contains("Material")) {
-                    auto& m = item["Material"];
-                    ent->roughness      = m.value("Roughness", 1.0f);
-                    ent->metallic       = m.value("Metallic", 0.0f);
-                    ent->emission       = m.value("Emission", 0.0f);
-                    ent->normalStrength = m.value("NormalStrength", 0.0f);
+            // 6. Restore PBR Material properties (Safely)
+            if (item.contains("Material")) {
+                auto& m = item["Material"];
+                
+                // Only try to read Albedo if it actually exists in the file!
+                if (m.contains("Albedo") && m["Albedo"].is_array()) {
+                    ent->albedoColor = glm::vec3(m["Albedo"][0], m["Albedo"][1], m["Albedo"][2]);
                 }
+                
+                ent->roughness      = m.value("Roughness", 1.0f);
+                ent->metallic       = m.value("Metallic", 0.0f);
+                ent->emission       = m.value("Emission", 0.0f);
+                ent->normalStrength = m.value("NormalStrength", 0.0f);
+            }
 
-                // Volume / Glass
-                if (item.contains("Volume")) {
-                    auto& v = item["Volume"];
-                    ent->transmission        = v.value("Transmission", 0.0f);
-                    ent->thickness           = v.value("Thickness", 1.0f);
-                    ent->attenuationDistance = v.value("AttDistance", 0.0f);
-                    ent->ior                 = v.value("IOR", 1.0f);
-                    
-                    if (v.contains("AttColor")) {
-                        ent->attenuationColor = glm::vec3(v["AttColor"][0], v["AttColor"][1], v["AttColor"][2]);
-                    }
+            // 7. Restore Volume / Glass (Safely)
+            if (item.contains("Volume")) {
+                auto& v = item["Volume"];
+                ent->transmission        = v.value("Transmission", 0.0f);
+                ent->thickness           = v.value("Thickness", 1.0f);
+                ent->attenuationDistance = v.value("AttDistance", 1.0f);
+                ent->ior                 = v.value("IOR", 1.5f);
+                
+                if (v.contains("AttColor") && v["AttColor"].is_array()) {
+                    ent->attenuationColor = glm::vec3(v["AttColor"][0], v["AttColor"][1], v["AttColor"][2]);
                 }
             }
-        }
 
-        std::cout << "[Serializer] Successfully loaded scene from " << filepath << std::endl;
-        return true;
+            // 8. CRITICAL: Update the Physics Server
+            // This teleports the Jolt body to the saved position/rotation
+            if (m_Scene->physics) {
+                m_Scene->physics->ResetBody(ent->index, ent->origin, ent->angles);
+            }
+        }
     }
+
+    std::cout << "[Serializer] Successfully loaded " << entities.size() << " entities." << std::endl;
+    return true;
+}
 }

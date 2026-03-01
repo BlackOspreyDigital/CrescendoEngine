@@ -177,6 +177,13 @@ public:
             Layers::NON_MOVING
         );
 
+        // ==========================================
+        // --- SURF PHYSICS SAUCE ---
+        // ==========================================
+        settings.mFriction = 0.0f;     // Absolute zero friction so the capsule glides!
+        settings.mRestitution = 0.0f;  // No bouncing off ramps
+        // ==========================================
+
         Body* body = bodyInterface->CreateBody(settings);
         if (!body) {
             std::cerr << "[Physics] Failed to create Mesh Body for ID " << entityID << std::endl;
@@ -185,6 +192,8 @@ public:
         
         bodyInterface->AddBody(body->GetID(), EActivation::DontActivate);
         entityBodyMap[entityID] = body->GetID();
+        
+        std::cout << "[Physics] Mesh Collider generated for Entity " << entityID << " (" << joltIndices.size() << " triangles)" << std::endl;
     }
 
     void CreateBox(int entityID, glm::vec3 position, glm::vec3 scale, bool isDynamic) {

@@ -31,8 +31,8 @@ namespace Crescendo {
         
         // Perspective State
         float fov = 80.0f; 
-        float nearClip = 1.0f;
-        float farClip = 10000.0f;
+        float nearClip = 0.3f;
+        float farClip = 4000.0f;
 
         // Constructor
         Camera(glm::vec3 position = glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f), float yaw = -90.0f, float pitch = 0.0f) 
@@ -76,19 +76,11 @@ namespace Crescendo {
             return proj;
         }
 
+        
         // Process Keyboard (WASD + QE)
         void Update(float deltaTime) {
-            float velocity = MovementSpeed * deltaTime;
-            
-            const Uint8* state = SDL_GetKeyboardState(nullptr);
-            
-            // Forward/Back
-            if (state[SDL_SCANCODE_W]) Position += Front * velocity;
-            if (state[SDL_SCANCODE_S]) Position -= Front * velocity;
-            if (state[SDL_SCANCODE_A]) Position -= Right * velocity;
-            if (state[SDL_SCANCODE_D]) Position += Right * velocity;
-            if (state[SDL_SCANCODE_Q]) Position += WorldUp * velocity;
-            if (state[SDL_SCANCODE_E]) Position -= WorldUp * velocity;
+            // DELETED: Raw SDL polling was bypassing ImGui and the Console!
+            // Editor Camera movement is now handled exclusively inside EditorUI::Prepare()
         }
         
 
