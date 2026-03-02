@@ -3,6 +3,7 @@
 #include "controllers/FPSController.hpp"
 #include "servers/display/DisplayServer.hpp"
 #include "servers/rendering/RenderingServer.hpp"
+#include "servers/audio/AudioServer.hpp"
 #include "servers/physics/PhysicsServer.hpp" 
 #include "core/ScriptSystem.hpp"
 
@@ -30,6 +31,7 @@ namespace Crescendo {
         DisplayServer displayServer;
         RenderingServer renderingServer;
         PhysicsServer physicsServer;
+        AudioServer audioServer;
 
         // SYSTEMS
         ScriptSystem scriptSystem;

@@ -40,6 +40,8 @@ file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.c")
 list(APPEND SOURCES "src/controllers/VehicleController.cpp")
 list(APPEND SOURCES "src/IO/ConfigManager.cpp")
 list(APPEND SOURCES "deps/xatlas.cpp")
+list(APPEND SOURCES "src/servers/audio/AudioServer.cpp")
+list(APPEND SOURCES "src/servers/interface/SymbolServer.cpp")
 
 file(GLOB_RECURSE JOLT_SOURCES "modules/Jolt/JoltPhysics/Jolt/*.cpp")
 file(GLOB_RECURSE MODULE_SOURCES "modules/gltf/*.cpp")
@@ -76,6 +78,8 @@ set(SHADER_FILES
     assets/shaders/bake.vert 
     assets/shaders/bake.frag 
     assets/shaders/equirect2cube.comp 
+    assets/shaders/billboard.vert 
+    assets/shaders/billboard.frag
     
 
 )

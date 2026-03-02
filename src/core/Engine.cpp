@@ -24,6 +24,11 @@ namespace Crescendo {
         physicsServer.Initialize();
         scene.physics = &physicsServer;
 
+        // Start Audio
+        if (audioServer.Initialize()) {
+            audioServer.LoadAmbientSound("assets/audio/wind.mp3", 0.5f);
+        }
+
         // =========================================================
         // SCENE BOOTSTRAP
         // =========================================================
@@ -105,13 +110,17 @@ namespace Crescendo {
                 activePlayer = nullptr;
             }
         }
-
-        // 3. Handle Mouse Locking
+        
+        // 3. Handle Mouse Locking & Audio
         if (currentState != previousState) {
             if (currentState == EngineState::Playing) {
-                SDL_SetRelativeMouseMode(SDL_TRUE); // Locks and hides OS mouse
+                SDL_SetRelativeMouseMode(SDL_TRUE); 
+                audioServer.PlayAmbientSound();
+                audioServer.PlaySpatialEmitter();
             } else {
-                SDL_SetRelativeMouseMode(SDL_FALSE); // Frees mouse for Menus/Editor
+                SDL_SetRelativeMouseMode(SDL_FALSE); 
+                audioServer.StopAmbientSound();    
+                audioServer.StopSpatialEmitter();
             }
         }
         
@@ -137,15 +146,21 @@ namespace Crescendo {
 
                 bool jump = Input::IsKeyDown(SDL_SCANCODE_SPACE);
 
-                activePlayer->Update(dt, &physicsServer, inputDir, jump);
+                // ADD &audioServer RIGHT HERE!
+                activePlayer->Update(dt, &physicsServer, &audioServer, inputDir, jump);
                 cam.SetPosition(activePlayer->GetPosition());
             }
 
             // Mouse Look ONLY happens here if we are actively playing
-            cam.Rotate((float)Input::mouseRelX, (float)-Input::mouseRelY);
+            // Add the minus sign to -Input::mouseRelX to fix the inverted left/right panning!
+            cam.Rotate((float)-Input::mouseRelX, (float)-Input::mouseRelY);
 
             physicsServer.Update(dt, scene.entities);
         }
+
+        // ---3D Audio Listener (spatial)
+        // Bind the audioservers ears to our cameras exact position and rotation.
+        audioServer.UpdateListener(cam.Position, cam.Front, cam.Up);
     }
 
     void Engine::Render() {

@@ -4,6 +4,7 @@
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 #include "servers/physics/PhysicsServer.hpp"
+#include "servers/audio/AudioServer.hpp"
 #include <glm/glm.hpp>
 
 namespace Crescendo {
@@ -17,7 +18,7 @@ namespace Crescendo {
         void Initialize(PhysicsServer* physicsServer, glm::vec3 spawnPos);
 
         // Movement math and steps virtual character
-        void Update(float deltaTime, PhysicsServer* physicsServer, glm::vec3 inputDir, bool jump);
+        void Update(float deltaTime, PhysicsServer* physicsServer, AudioServer* audioServer, glm::vec3 inputDir, bool jump);
 
         // lock main camera to players head
         glm::vec3 GetPosition() const;

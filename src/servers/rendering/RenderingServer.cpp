@@ -114,7 +114,7 @@ namespace Crescendo {
         createGlobalUniformBuffer();
         if (!createShadowResources()) return false; 
         if (!createTextureImage()) return false; 
-
+        createTextureImage("assets/textures/speakersymbol.png", speakerTexture);
         // ---------------------------------------------------------
         // 1. BUILD COMPUTE PIPELINES FIRST
         // ---------------------------------------------------------
@@ -147,6 +147,8 @@ namespace Crescendo {
         viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(viewportSampler, finalImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
         // --- Graphics Pipelines ---
+        // Pass transparentRenderPass because it perfectly supports 4x MSAA without erasing the screen!
+        symbolServer.Initialize(device, transparentRenderPass, descriptorSetLayout, symbolTextureLayout);
         if (!createGraphicsPipeline()) return false;
         if (!createWaterPipeline()) return false;        
         if (!createTransparentPipeline()) return false;
@@ -1032,6 +1034,18 @@ namespace Crescendo {
         ssrLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         ssrLayoutInfo.bindingCount = static_cast<uint32_t>(ssrBindings.size());
         ssrLayoutInfo.pBindings = ssrBindings.data();
+
+        // --- SYMBOL TEXTURE LAYOUT ---
+        VkDescriptorSetLayoutBinding symbolBinding{};
+        symbolBinding.binding = 0;
+        symbolBinding.descriptorCount = 1;
+        symbolBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        symbolBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo symbolLayoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        symbolLayoutInfo.bindingCount = 1;
+        symbolLayoutInfo.pBindings = &symbolBinding;
+        vkCreateDescriptorSetLayout(device, &symbolLayoutInfo, nullptr, &symbolTextureLayout);
         
         if (vkCreateDescriptorSetLayout(device, &ssrLayoutInfo, nullptr, &ssrDescriptorLayout) != VK_SUCCESS) {
             return false;
@@ -1092,7 +1106,6 @@ namespace Crescendo {
         std::vector<VkDescriptorImageInfo> imageInfos(MAX_TEXTURES);
         for (int i = 0; i < MAX_TEXTURES; i++) {
 
-            // [FIX] Check if the bank slot has a valid image loaded
             if (i < textureBank.size() && textureBank[i].image.handle != VK_NULL_HANDLE) {
                 imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -1102,7 +1115,7 @@ namespace Crescendo {
                 imageInfos[i].sampler = VK_NULL_HANDLE;
             } 
             else {
-                // [FIX] Slot is empty, point to the Default/Fallback texture
+                
                 imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
                 // Access the view from the member variable 'textureImage'
@@ -1125,7 +1138,6 @@ namespace Crescendo {
         // Binding 1: Sky Texture
         VkDescriptorImageInfo skyImageInfo{};
         skyImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        // [FIX] Use skyImage.view instead of skyImageView
         skyImageInfo.imageView = skyImage.view; 
         skyImageInfo.sampler = skySampler;
 
@@ -1225,6 +1237,28 @@ namespace Crescendo {
         ssrAlloc.pSetLayouts = &ssrDescriptorLayout;
 
         if (vkAllocateDescriptorSets(device, &ssrAlloc, &ssrDescriptorSet) != VK_SUCCESS) return false;
+
+        // --- SYMBOL DESCRIPTOR SET ---
+        VkDescriptorSetAllocateInfo symbolAlloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        symbolAlloc.descriptorPool = descriptorPool;
+        symbolAlloc.descriptorSetCount = 1;
+        symbolAlloc.pSetLayouts = &symbolTextureLayout;
+        vkAllocateDescriptorSets(device, &symbolAlloc, &symbolTextureSet);
+
+        VkDescriptorImageInfo symbolInfo{};
+        symbolInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        symbolInfo.imageView = speakerTexture.view;
+        symbolInfo.sampler = textureSampler;
+
+        VkWriteDescriptorSet symbolWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        symbolWrite.dstSet = symbolTextureSet;
+        symbolWrite.dstBinding = 0;
+        symbolWrite.dstArrayElement = 0;
+        symbolWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        symbolWrite.descriptorCount = 1;
+        symbolWrite.pImageInfo = &symbolInfo;
+        vkUpdateDescriptorSets(device, 1, &symbolWrite, 0, nullptr);
+
 
         return true;
     }
@@ -2705,7 +2739,8 @@ namespace Crescendo {
         VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
         
         if (result == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapChain(window); return; }
-
+        // Lock it to 5 units in the air so you can't miss it
+        symbolServer.SubmitSymbol(glm::vec3(0.0f, 0.0f, 5.0f), 2.0f);
         // Pass the state reference to the UI!
         editorUI.Prepare(scene, mainCamera, viewportDescriptorSet, engineState);
         
@@ -3155,6 +3190,26 @@ namespace Crescendo {
                 vkCmdEndRenderPass(commandBuffers[currentFrame]);
             }
 
+        // -----------------------------------------------------------------
+        // 5. EDITOR SYMBOLS (Drawn last so they overlay the scene!)
+        // -----------------------------------------------------------------
+        VkRenderPassBeginInfo symbolPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        symbolPassInfo.renderPass = transparentRenderPass; 
+        symbolPassInfo.framebuffer = viewportFramebuffer; 
+        symbolPassInfo.renderArea.extent = swapChainExtent;
+
+        vkCmdBeginRenderPass(commandBuffers[currentFrame], &symbolPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        
+        // Ensure Vulkan knows the screen size!
+        VkViewport symbolViewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
+        vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &symbolViewport);
+        VkRect2D symbolScissor{{0, 0}, swapChainExtent};
+        vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &symbolScissor);
+
+        symbolServer.DrawSymbols(commandBuffers[currentFrame], mainCamera.Right, mainCamera.Up, descriptorSet, symbolTextureSet);
+        
+        vkCmdEndRenderPass(commandBuffers[currentFrame]);
+
         // =========================================================
         // PASS 2: SCREEN SPACE REFLECTIONS (SSR) [Optimized for intel]
         // =========================================================
@@ -3299,6 +3354,7 @@ namespace Crescendo {
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
             recreateSwapChain(window);
         }
+        symbolServer.ClearSymbols();
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
@@ -4347,6 +4403,8 @@ namespace Crescendo {
     void RenderingServer::shutdown() {
         if (device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device);
+
+            symbolServer.Cleanup(device);
             editorUI.Shutdown(device);
         
             // 1. Destroy Pipelines & Layouts
@@ -4366,6 +4424,7 @@ namespace Crescendo {
             if (shadowPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
             if (ssrPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, ssrPipelineLayout, nullptr);
             if (computePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, computePipelineLayout, nullptr);
+            if (symbolTextureLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, symbolTextureLayout, nullptr);
 
             if (postProcessLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, postProcessLayout, nullptr);
             if (ssrDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, ssrDescriptorLayout, nullptr);
@@ -4385,6 +4444,7 @@ namespace Crescendo {
             shadowImage.destroy();
             
             // 4. Cleanup RAII Images
+            speakerTexture.destroy();
             skyImage.destroy();
             textureImage.destroy();
             positionBakeImage.destroy();

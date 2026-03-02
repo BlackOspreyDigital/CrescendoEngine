@@ -8,7 +8,8 @@
 #include <map>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
-#include "VulkanResources.hpp"
+#include "vulkan/VulkanContext.hpp"
+#include "vulkan/VulkanResources.hpp"
 #include <vector>
 #include <optional>
 #include <glm/glm.hpp>
@@ -17,6 +18,7 @@
 #include "servers/camera/Camera.hpp"
 
 #include "servers/interface/EditorUI.hpp"
+#include "servers/interface/SymbolServer.hpp"
 #include "core/EngineState.hpp"
 #include "IO/ConfigManager.hpp"
 
@@ -31,6 +33,7 @@ namespace tinygltf { class Model; class Node; }
 namespace Crescendo {
     class DisplayServer;
     class Scene;
+    
     
     struct MeshResource {
         std::string name;
@@ -200,6 +203,12 @@ namespace Crescendo {
             1.0f, // bloomStrength
             1.0f   // bloomThreshold
         };
+
+        // --- SYMBOL SERVER ---
+        SymbolServer symbolServer;
+        VulkanImage speakerTexture;
+        VkDescriptorSetLayout symbolTextureLayout = VK_NULL_HANDLE;
+        VkDescriptorSet symbolTextureSet = VK_NULL_HANDLE;
 
         // --- MSAA CONFIG & RESOURCES ---
 

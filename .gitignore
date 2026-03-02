@@ -39,6 +39,11 @@ out/
 *.sln
 *.vcxproj*
 
+# --- Ignore Assets Folders
+assets/textures
+assets/audio
+
+
 # --- Ignore Dependency Build Folders ---
 # (If Jolt or other libraries compile locally)
 deps/*/build/

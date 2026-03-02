@@ -47,38 +47,55 @@ namespace Crescendo {
         vel += wishDir * accelSpeed;
     }
 
-    void FPSController::Update(float deltaTime, PhysicsServer* physicsServer, glm::vec3 inputDir, bool jump) {
+    void FPSController::Update(float deltaTime, PhysicsServer* physicsServer, AudioServer* audioServer, glm::vec3 inputDir, bool jump) {
         if (!m_character) return;
 
         JPH::Vec3 wishDir = JPH::Vec3(inputDir.x, inputDir.y, inputDir.z);
         if (wishDir.LengthSq() > 0.0f) wishDir = wishDir.Normalized();
 
-        // 1. Check our exact ground state
+        // Check our exact ground state ONCE
         JPH::CharacterVirtual::EGroundState groundState = m_character->GetGroundState();
         bool onGround = (groundState == JPH::CharacterVirtual::EGroundState::OnGround);
-        
-        // NEW: Check if we are sliding on a surf ramp!
         bool isSurfing = (groundState == JPH::CharacterVirtual::EGroundState::OnSteepGround);
 
         // --- FALL TIMER & DEATH LOGIC ---
-        // If we are NOT on flat ground AND NOT surfing a ramp, we are truly falling!
         if (!onGround && !isSurfing && m_character->GetLinearVelocity().GetZ() < -0.1f) {
             m_fallTimer += deltaTime;
         } else if (onGround || isSurfing) {
-            // We landed safely, OR we are touching a surf ramp! Reset the timer.
             m_fallTimer = 0.0f;
         }
 
-        // If we fall for more than 5 seconds (or hit the absolute bottom of the world)
         if (m_fallTimer >= 5.0f || m_character->GetPosition().GetZ() < -500.0f) {
             std::cout << "[Player] Killed by the Guardians (Fall Timer)." << std::endl;
             m_character->SetPosition(JPH::Vec3(m_spawnPos.x, m_spawnPos.y, m_spawnPos.z));
             m_currentVelocity = JPH::Vec3::sZero();
             m_character->SetLinearVelocity(JPH::Vec3::sZero());
-            m_fallTimer = 0.0f; // Reset timer after respawn
+            m_fallTimer = 0.0f; 
         }
-        // ---------------------------------------
+       
+        // --- DYNAMIC FOOTSTEP AUDIO ---
+        static float footstepTimer = 0.0f;
+        float currentSpeed = m_currentVelocity.Length();
 
+        if (onGround && currentSpeed > 1.0f) { 
+            // Math: Assume a standard stride is ~2.6 units of distance.
+            // Time between steps = Distance / Speed.
+            float stepInterval = 2.6f / currentSpeed; 
+            
+            // Clamp it so you don't sound like a machine gun if you move too fast
+            stepInterval = std::clamp(stepInterval, 0.25f, 0.6f);
+
+            footstepTimer += deltaTime;
+            if (footstepTimer >= stepInterval) {
+                // Fire the one-shot! (Make sure the filename matches your new WAV)
+                if (audioServer) audioServer->PlayOneShot("assets/audio/step.mp3", 0.6f);
+                footstepTimer = 0.0f;
+            }
+        } else {
+            // Pre-load the timer so you step instantly when you land and start moving
+            footstepTimer = 0.6f; 
+        }
+        
         if (onGround) {
             float speed = m_currentVelocity.Length();
             if (speed > 0.1f) {

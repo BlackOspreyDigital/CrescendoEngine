@@ -1,5 +1,8 @@
+#pragma once
+
 #include <vulkan/vulkan.h>
-#include <vector>
+#include <SDL2/SDL.h>
+
 
 namespace Crescendo {
     class VulkanContext {
@@ -10,8 +13,8 @@ namespace Crescendo {
     private:
         VkInstance instance;
         VkPhysicalDevice phsycialDevice = VK_NULL_HANDLE;
-        VKDevice device;
+        VkDevice device;
         VkSurfaceKHR surface;
-        // tons to add later
+        
     };
 }
