@@ -1,8 +1,10 @@
 #include "IO/SceneSerializer.hpp"
+
 #include "modules/gltf/AssetLoader.hpp"
 #include "EditorUI.hpp"
 #include "imgui.h"
 #include "scene/BaseEntity.hpp"
+#include "scene/components/PointLightComponent.hpp"
 #include "servers/rendering/RenderingServer.hpp"
 #include "scene/Scene.hpp"
 #include "servers/camera/Camera.hpp"
@@ -12,6 +14,7 @@
 #include "IO/SceneSerializer.hpp"
 #include <iostream>
 #include <streambuf>
+#include <filesystem>
 
 
 #include <glm/gtc/type_ptr.hpp>
@@ -255,9 +258,21 @@ namespace Crescendo {
         init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT; 
 
         ImGui_ImplVulkan_Init(&init_info);
-    }
 
+        // --- LOAD ASSET BROWSER ICONS ---
+        // Make sure these files are placed inside your assets/icons/ folder!
+        icons.folderIcon        = rendererRef->getImGuiTextureID("assets/icons/folder.png");
+        icons.projectFolderIcon = rendererRef->getImGuiTextureID("assets/icons/crescendoprojectfolder.png");
+        icons.scriptIcon        = rendererRef->getImGuiTextureID("assets/icons/script.png");
+        icons.shaderIcon        = rendererRef->getImGuiTextureID("assets/icons/shader.png");
+        icons.audioIcon         = rendererRef->getImGuiTextureID("assets/icons/audio.png");
+        icons.spatialAudioIcon  = rendererRef->getImGuiTextureID("assets/icons/spatialaudio.png");
+        
+        // Optional generic fallbacks
+        icons.fileIcon          = rendererRef->getImGuiTextureID("assets/icons/file.png");
+        icons.modelIcon         = rendererRef->getImGuiTextureID("assets/icons/model.png");
     
+    }
 
     void EditorUI::Shutdown(VkDevice device) {
         vkDeviceWaitIdle(device);
@@ -278,7 +293,6 @@ namespace Crescendo {
         }
     }
 
-    
     void EditorUI::Prepare(Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor, EngineState& engineState) {
         
         ImGui_ImplVulkan_NewFrame();
@@ -297,7 +311,7 @@ namespace Crescendo {
         } else {
             io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
         }
-        // -------------------------------------
+        
 
         // --- HOTKEYS & STATE MANAGEMENT ---
         static bool showPauseMenu = false;
@@ -521,7 +535,7 @@ namespace Crescendo {
         ImGui::PopStyleColor();
         // --- END TOOLBAR CODE ---
 
-        // 3. VIEWPORT WINDOW
+        // --- 3. VIEWPORT WINDOW ---
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
         ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -547,9 +561,6 @@ namespace Crescendo {
             // Generate the raw OpenGL-style projection matrix
             glm::mat4 proj = glm::perspective(glm::radians(camera.fov), aspect, camera.nearClip, camera.farClip);
                 
-            // DO NOT FLIP THE Y-AXIS! ImGuizmo needs the pure OpenGL matrix to calculate mouse dragging correctly.
-            // proj[1][1] *= -1;  <-- Remove this
-                
             if (selectedObjectIndex >= 0 && selectedObjectIndex < (int)scene->entities.size()) {
                 CBaseEntity* ent = scene->entities[selectedObjectIndex];
                 if (ent) {
@@ -571,18 +582,39 @@ namespace Crescendo {
                         ent->angles = glm::make_vec3(newRotation);
                         ent->scale  = glm::make_vec3(newScale);
                     }
+                } 
+            } 
+        } 
+
+        // --- ADD THIS: DRAG TARGET ---
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("ASSET_PATH")) {
+                const char* path = (const char*)payload->Data;
+                std::string ext = std::filesystem::path(path).extension().string();
+            
+                if (ext == ".glb" || ext == ".gltf" || ext == ".obj") {
+                    size_t priorCount = scene->entities.size();
+                    Crescendo::AssetLoader::loadModel(rendererRef, path, scene);
+
+                    if (scene->entities.size() > priorCount) {
+                        selectedObjectIndex = scene->entities.size() - 1;
+                        // Place it in front of the camera
+                        scene->entities[selectedObjectIndex]->origin = camera.Position + (camera.Front * 5.0f);
+                    }
                 }
             }
+            ImGui::EndDragDropTarget();
         }
-        ImGui::End();
+
+        ImGui::End(); // Closes "Viewport"
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
 
-        // 4. HIERARCHY & INSPECTOR
+        // --- 4. HIERARCHY & INSPECTOR ---
         
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
         ImGui::Begin("Scene Hierarchy");
-        ImGui::PopStyleColor(); // Must pop immediately after Begin so it doesn't affect child windows
+        ImGui::PopStyleColor();
 
         if (scene) {
             for (size_t i = 0; i < scene->entities.size(); i++) {
@@ -598,170 +630,270 @@ namespace Crescendo {
         }
         ImGui::End();
 
+        // --- THE NEW COMPONENT-STYLE INSPECTOR ---
         ImGui::Begin("Inspector");
         
         if (selectedObjectIndex >= 0 && scene && selectedObjectIndex < (int)scene->entities.size()) {
             CBaseEntity* ent = scene->entities[selectedObjectIndex];
             if (ent) {
-                ImGui::Text("Transform");
-                ImGui::DragFloat3("Position", glm::value_ptr(ent->origin), 0.1f);
-                ImGui::DragFloat3("Rotation", glm::value_ptr(ent->angles), 1.0f);
-                ImGui::DragFloat3("Scale",    glm::value_ptr(ent->scale), 0.1f);
+                // --- 1. ENTITY HEADER ---
+                bool active = true; 
+                ImGui::Checkbox("##Active", &active);
+                ImGui::SameLine();
                 
-                ImGui::Separator();
-                ImGui::Text("Material");
-                ImGui::ColorEdit3("Albedo", glm::value_ptr(ent->albedoColor));
-                ImGui::SliderFloat("Roughness", &ent->roughness, 0.0f, 1.0f);
-                ImGui::SliderFloat("Metallic", &ent->metallic, 0.0f, 1.0f);
-                ImGui::SliderFloat("Emission", &ent->emission, 0.0f, 10.0f);
-
-                // [FIX] Always show Transmission so you can TURN ON the glass effect
-                ImGui::SliderFloat("Transmission", &ent->transmission, 0.0f, 1.0f);
-
-                if (ent->transmission > 0.0f) {
-                    ImGui::Separator();
-                    ImGui::Text("Glass / Volume");
-
-                    // This lets you override the glTF's color
-                    ImGui::ColorEdit3("Volume Tint", glm::value_ptr(ent->attenuationColor));
-
-                    // This is the "Density" slider. 
-                    // Small Value = Dark/Thick (Red). Large Value = Clear/Thin (Yellow).
-                    ImGui::DragFloat("Density (Dist)", &ent->attenuationDistance, 0.01f, 0.001f, 10.0f);
-
-                    ImGui::SliderFloat("Refraction (IOR)", &ent->ior, 1.0f, 2.5f); 
+                char nameBuf[256];
+                strncpy(nameBuf, ent->targetName.c_str(), sizeof(nameBuf));
+                nameBuf[sizeof(nameBuf) - 1] = '\0';
+                
+                ImGui::PushItemWidth(-1);
+                if (ImGui::InputText("##Name", nameBuf, sizeof(nameBuf))) {
+                    ent->targetName = nameBuf;
                 }
-            
+                ImGui::PopItemWidth();
+
                 ImGui::Separator();
-                ImGui::Text("Normal Maps");
-                // 0.0 = Flat, 1.0 = Default, >1.0 = Deep/Exaggerated
-                ImGui::SliderFloat("Strength", &ent->normalStrength, 0.0f, 5.0f);
+                ImGui::Spacing();
 
-                // --- UNIFIED ATMOSPHERE SETTINGS ---
-                if (ent->className == "env_sky") { 
-                    ImGui::SeparatorText("Atmosphere Settings");
-                
-                    // 1. THE DROPDOWN MENU
-                    const char* skyTypeNames[] = { "Solid Color", "Procedural", "HDR Map" };
-                    int currentSkyType = static_cast<int>(scene->environment.skyType);
+
+
+                // --- 3. DYNAMIC COMPONENTS ---
+                for (auto& comp : ent->components) {
+                    ImGui::PushID(comp.get());
+                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
                     
-                    if (ImGui::Combo("Sky Type", &currentSkyType, skyTypeNames, IM_ARRAYSIZE(skyTypeNames))) {
-                        scene->environment.skyType = static_cast<SkyType>(currentSkyType);
+                    if (ImGui::CollapsingHeader(comp->GetName().c_str(), ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed)) {
+                        comp->DrawInspectorUI();
+                        ImGui::Spacing();
+                    }
+                    
+                    ImGui::PopStyleColor();
+                    ImGui::PopID();
+                }
+
+                // --- 4. LEGACY COMPONENTS (To be refactored) ---
+
+                
+                // Atmosphere & Skybox
+                if (ent->className == "env_sky") {
+                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
+                    if (ImGui::CollapsingHeader("Atmosphere (Skybox)", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed)) {
+                        const char* skyTypeNames[] = { "Solid Color", "Procedural", "HDR Map" };
+                        int currentSkyType = static_cast<int>(scene->environment.skyType);
+                        
+                        if (ImGui::Combo("Sky Type", &currentSkyType, skyTypeNames, IM_ARRAYSIZE(skyTypeNames))) {
+                            scene->environment.skyType = static_cast<SkyType>(currentSkyType);
+                        }
+
+                        if (scene->environment.skyType == SkyType::SolidColor) {
+                            ImGui::ColorEdit3("Background Color", glm::value_ptr(ent->albedoColor));
+                        }
+                        else if (scene->environment.skyType == SkyType::Procedural) {
+                            ImGui::ColorEdit3("Zenith Color", glm::value_ptr(ent->albedoColor));
+                            ImGui::ColorEdit3("Horizon Color", glm::value_ptr(ent->attenuationColor));
+                            ImGui::SliderFloat("Sun Intensity", &ent->emission, 0.0f, 10.0f);
+                        }
+                        else if (scene->environment.skyType == SkyType::HDRMap) {
+                            if (ImGui::Button("Load New HDR...")) {
+                                auto selection = pfd::open_file("Select HDR", ".", {"HDR Files", "*.hdr"}).result();
+                                if (!selection.empty()) {
+                                    rendererRef->loadSkybox(selection[0], scene);
+                                }
+                            }
+                        }
+                        
+                        ImGui::Separator();
+                        ImGui::Checkbox("Enable Fog", &scene->environment.enableFog);
+                        if (scene->environment.enableFog) {
+                            ImGui::ColorEdit4("Color/Density", glm::value_ptr(scene->environment.fogColor));
+                            ImGui::SliderFloat("Falloff", &scene->environment.fogParams.x, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Height", &scene->environment.fogParams.w, -50.0f, 50.0f);  
+                        }
+                        ImGui::Spacing();
+                    }
+                    ImGui::PopStyleColor();
+                }
+
+                // --- 4. LEGACY COMPONENTS (To be refactored) ---
+                if (ent->className == "env_sound") {
+                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
+                    if (ImGui::CollapsingHeader("Audio Source", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed)) {
+                        char audioBuf[256];
+                        strncpy(audioBuf, ent->assetPath.c_str(), sizeof(audioBuf));
+                        audioBuf[sizeof(audioBuf) - 1] = '\0';
+                        
+                        ImGui::TextDisabled("Audio File Path");
+                        if (ImGui::InputText("##AudioPath", audioBuf, sizeof(audioBuf))) {
+                            ent->assetPath = audioBuf;
+                        }
+                        ImGui::SliderFloat("Volume", &ent->emission, 0.0f, 5.0f);
+                        ImGui::Spacing();
+                    }
+                    ImGui::PopStyleColor();
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+
+                // --- 5. ADD COMPONENT MENU ---
+                if (ImGui::Button("Add Component", ImVec2(-1, 30))) {
+                    ImGui::OpenPopup("AddComponentPopup");
+                }
+
+                if (ImGui::BeginPopup("AddComponentPopup")) {
+                    ImGui::TextDisabled("Available Components");
+                    ImGui::Separator();
+                    
+                    if (ImGui::MenuItem("Point Light", nullptr, false, !ent->HasComponent<PointLightComponent>())) {
+                        ent->AddComponent<PointLightComponent>();
+                    }
+                    
+                    if (ImGui::MenuItem("Audio Source", nullptr, false, ent->className != "env_sound")) {
+                        ent->className = "env_sound";
+                        ent->emission = 1.0f;
+                        ent->assetPath = "assets/audio/default.wav";
                     }
 
-                    ImGui::Spacing();
-
-                    // 2. CONTEXT SENSITIVE PANELS
-                    if (scene->environment.skyType == SkyType::SolidColor) {
-                        ImGui::TextDisabled("Basic unlit background");
-                        
-                        // Edit the entity directly so it saves and syncs!
-                        ImGui::ColorEdit3("Background Color", glm::value_ptr(ent->albedoColor));
+                    if (ImGui::MenuItem("Static Mesh", nullptr, false, ent->className != "prop_dynamic")) {
+                        ent->className = "prop_dynamic";
                     }
-                    else if (scene->environment.skyType == SkyType::Procedural) {
-                        ImGui::TextDisabled("Sun-driven atmospheric scattering.");
-                        
-                        // Edit the entity directly so it saves and syncs!
-                        ImGui::ColorEdit3("Zenith  (Top) Color", glm::value_ptr(ent->albedoColor));
-                        ImGui::ColorEdit3("Horizon (Bottom) Color", glm::value_ptr(ent->attenuationColor));
-                        
-                        ImGui::ColorEdit3("Sun Color", glm::value_ptr(scene->environment.sunColor));
-                        ImGui::SliderFloat("Sun Intensity", &scene->environment.sunIntensity, 0.0f, 10.0f);
-                    }
-                    else if (scene->environment.skyType == SkyType::HDRMap) {
-                        ImGui::TextDisabled("Image-based lighting.");
 
-                        if (ImGui::Button("Load New HDR...")) {
-                            auto selection = pfd::open_file("Select HDR", ".", {"HDR Files", "*.hdr"}).result();
-                            if (!selection.empty()) {
-                                // PASS THE SCENE HERE!
-                                rendererRef->loadSkybox(selection[0], scene);
+                    ImGui::EndPopup();
+                }
+            } // Closes 'if (ent)'
+        } 
+
+        // --- GIZMOS & POST PROCESSING ---
+        if (ImGui::CollapsingHeader("Editor Tools", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("Gizmo Mode");
+            if (ImGui::RadioButton("Translate", mCurrentGizmoOperation == ImGuizmo::TRANSLATE)) mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Rotate", mCurrentGizmoOperation == ImGuizmo::ROTATE)) mCurrentGizmoOperation = ImGuizmo::ROTATE;
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Scale", mCurrentGizmoOperation == ImGuizmo::SCALE)) mCurrentGizmoOperation = ImGuizmo::SCALE;
+        }
+
+        if (ImGui::CollapsingHeader("Post Processing")) {
+            ImGui::DragFloat("Bloom Strength", &rendererRef->postProcessSettings.bloomStrength, 0.01f, 0.0f, 5.0f);
+            ImGui::DragFloat("Bloom Threshold", &rendererRef->postProcessSettings.bloomThreshold, 0.01f, 0.0f, 10.0f);
+            ImGui::DragFloat("Exposure", &rendererRef->postProcessSettings.exposure, 0.01f, 0.1f, 5.0f);
+            ImGui::DragFloat("Gamma", &rendererRef->postProcessSettings.gamma, 0.01f, 0.1f, 3.0f);
+            ImGui::DragFloat("Blur Radius", &rendererRef->postProcessSettings.blurRadius, 0.1f, 0.0f, 10.0f);
+        }
+
+        ImGui::End(); // Close Inspector
+
+        //-----------------------------
+        //     ASSET BROWSER DRAWER 
+        //-----------------------------
+
+        ImGui::Begin("Project");
+
+        // Top bar for navigation
+        if (currentAssetDirectory != std::filesystem::path("assets")) {
+            if (ImGui::Button("Back")) {
+                currentAssetDirectory = currentAssetDirectory.parent_path();
+            }
+            ImGui::SameLine();
+        }
+        ImGui::Text("%s", currentAssetDirectory.string().c_str());
+        ImGui::Separator();
+
+        // Calculate a responsive grid
+        float padding = 16.0f;
+        float thumbnailSize = 64.0f;
+        float cellSize = thumbnailSize + padding;
+
+        float panelWidth = ImGui::GetContentRegionAvail().x;
+        int columnCount = (int)(panelWidth / cellSize);
+        if (columnCount < 1) columnCount = 1;
+
+        if (ImGui::BeginTable("AssetBrowserGrid", columnCount)) {
+            for (auto& directoryEntry : std::filesystem::directory_iterator(currentAssetDirectory)) {
+                ImGui::TableNextColumn();
+                
+                const auto& path = directoryEntry.path();
+                std::string filenameString = path.filename().string();
+                
+                ImGui::PushID(filenameString.c_str());
+
+                VkDescriptorSet displayIcon = VK_NULL_HANDLE;
+                bool isModel = false;
+
+                // --- 1. DETERMINE THE CORRECT ICON ---
+                if (directoryEntry.is_directory()) {
+                    displayIcon = icons.folderIcon;
+                } else {
+                    std::string ext = path.extension().string();
+                    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+
+                    if (ext == ".glb" || ext == ".gltf" || ext == ".obj") {
+                        displayIcon = icons.modelIcon; // Or fallback to a generic mesh icon if you make one
+                        isModel = true;
+                    } else if (ext == ".wav" || ext == ".mp3" || ext == ".ogg") {
+                        // Use spatial for audio!
+                        displayIcon = icons.spatialAudioIcon ? icons.spatialAudioIcon : icons.audioIcon; 
+                    } else if (ext == ".frag" || ext == ".vert" || ext == ".spv" || ext == ".glsl") {
+                        displayIcon = icons.shaderIcon;
+                    } else if (ext == ".cpp" || ext == ".hpp" || ext == ".h" || ext == ".lua" || ext == ".py") {
+                        displayIcon = icons.scriptIcon;
+                    } else if (ext == ".json" || ext == ".scene") { 
+                        displayIcon = icons.projectFolderIcon;
+                    } else {
+                        displayIcon = icons.fileIcon; // Generic file fallback
+                    }
+                }
+
+                // --- 2. DRAW THE THUMBNAIL BUTTON ---
+                if (directoryEntry.is_directory()) {
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f)); // Transparent BG
+                    
+                    if (icons.folderIcon) {
+                        // FIX: Added "##folder" as the first argument!
+                        if (ImGui::ImageButton("##folder", (ImTextureID)icons.folderIcon, ImVec2(thumbnailSize, thumbnailSize))) {
+                            currentAssetDirectory /= path.filename();
+                        }
+                    } else {
+                        if (ImGui::Button("DIR", ImVec2(thumbnailSize, thumbnailSize))) currentAssetDirectory /= path.filename();
+                    }
+                    ImGui::PopStyleColor();
+                } else {
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f)); // Transparent BG
+                    
+                    if (displayIcon) {
+                        
+                        if (ImGui::ImageButton("##file", (ImTextureID)displayIcon, ImVec2(thumbnailSize, thumbnailSize))) {
+                            if (isModel) { 
+                                Crescendo::AssetLoader::loadModel(rendererRef, path.string(), scene);
+                            }
+                        }
+                    } else {
+                        if (ImGui::Button("FILE", ImVec2(thumbnailSize, thumbnailSize))) {
+                            if (isModel) {
+                                Crescendo::AssetLoader::loadModel(rendererRef, path.string(), scene);
                             }
                         }
                     }
-                    
-                    // 3. FOG SETTINGS (Always Visible)
-                    if (ImGui::CollapsingHeader("Fog & Global Illumination")) {
-                        ImGui::Checkbox("Enable Fog", &scene->environment.enableFog);
-                        
-                        if (scene->environment.enableFog) {
-                            ImGui::ColorEdit4("Fog Color/Density", glm::value_ptr(scene->environment.fogColor));
-                            ImGui::SliderFloat("Fog Falloff", &scene->environment.fogParams.x, 0.0f, 1.0f);
-                            ImGui::SliderFloat("Fog Height", &scene->environment.fogParams.w, -50.0f, 50.0f);  
+                    ImGui::PopStyleColor();
+
+                    // --- 3. DRAG AND DROP SOURCE (Files Only) ---
+                    if (!directoryEntry.is_directory()) {
+                        if (ImGui::BeginDragDropSource()) {
+                            std::string pathStr = path.string();
+                            ImGui::SetDragDropPayload("ASSET_PATH", pathStr.c_str(), pathStr.size() + 1);
+                            ImGui::Text("Import %s", filenameString.c_str());
+                            ImGui::EndDragDropSource();
                         }
                     }
-                }
+                } 
                 
-                // --- SHADOW SETTINGS TAB ---
-                if (ImGui::CollapsingHeader("Cascaded Shadows")) {
-                    ImGui::Spacing();
+                ImGui::TextWrapped("%s", filenameString.c_str());
+                ImGui::PopID();
+            } 
+            ImGui::EndTable();
+        }
 
-                    // We use DragFloat instead of SliderFloat so you aren't artificially capped 
-                    // if you need a really high or low value for a specific scene scale.
-                    ImGui::DragFloat("Bias Constant", &scene->environment.shadowBiasConstant, 0.05f, 0.0f, 10.0f, "%.3f");
-                    ImGui::DragFloat("Bias Slope", &scene->environment.shadowBiasSlope, 0.05f, 0.0f, 10.0f, "%.3f");
-
-                    ImGui::Spacing();
-                    ImGui::TextDisabled("Tweak these if you see black stripes\n(shadow acne) or disconnected shadows.");
-                }
-
-                // --- DIRECTIONAL LIGHT SETTINGS ---
-                if (ent->className == "light_directional") {
-                    ImGui::SeparatorText("Sun & Shadow Settings");
-                    
-                    ImGui::ColorEdit3("Light Color", glm::value_ptr(ent->albedoColor));
-                    ImGui::SliderFloat("Intensity", &ent->emission, 0.0f, 20.0f);
-                    
-                    ImGui::Spacing();
-                    ImGui::TextDisabled("Use the Rotation Gizmo in the viewport\nto change the sun/shadow direction!");
-                    
-                    // Sync the engine's global sun to this entity!
-                    // This converts the entity's Euler angles (XYZ) into a forward Direction Vector
-                    glm::mat4 rotMat = glm::mat4(1.0f);
-                    rotMat = glm::rotate(rotMat, glm::radians(ent->angles.z), glm::vec3(0, 0, 1));
-                    rotMat = glm::rotate(rotMat, glm::radians(ent->angles.y), glm::vec3(0, 1, 0));
-                    rotMat = glm::rotate(rotMat, glm::radians(ent->angles.x), glm::vec3(1, 0, 0));
-                    
-                    // Forward vector in OpenGL/Vulkan is generally -Z or +X depending on your setup. 
-                    // We'll use the matrix's forward vector.
-                    glm::vec3 forward = glm::normalize(glm::vec3(rotMat * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f)));
-                    
-                    scene->environment.sunDirection = forward;
-                    scene->environment.sunColor = ent->albedoColor;
-                    scene->environment.sunIntensity = ent->emission;
-                }
-
-                // --- POINT LIGHT SETTINGS ---
-                if (ent->className == "light_point") {
-                    ImGui::SeparatorText("Point Light Settings");
-                    ImGui::ColorEdit3("Light Color", glm::value_ptr(ent->albedoColor));
-                    ImGui::SliderFloat("Intensity", &ent->emission, 0.0f, 100.0f);
-                    ImGui::SliderFloat("Radius", &ent->scale.x, 1.0f, 100.0f); 
-                    
-                    ImGui::Spacing();
-                    ImGui::TextDisabled("Use the Translate Gizmo to move the light!");
-                }
-            }
-        } 
-
-        // Gizmo controls and Post Processing now safely sit OUTSIDE the entity selection!
-        ImGui::Separator();
-        ImGui::Text("Gizmo Controls");
-        if (ImGui::RadioButton("Translate", mCurrentGizmoOperation == ImGuizmo::TRANSLATE)) mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
-        ImGui::SameLine();
-        if (ImGui::RadioButton("Rotate", mCurrentGizmoOperation == ImGuizmo::ROTATE)) mCurrentGizmoOperation = ImGuizmo::ROTATE;
-        ImGui::SameLine();
-        if (ImGui::RadioButton("Scale", mCurrentGizmoOperation == ImGuizmo::SCALE)) mCurrentGizmoOperation = ImGuizmo::SCALE;
-
-        ImGui::Separator();
-        ImGui::Text("Post Processing");
-        ImGui::DragFloat("Bloom Strength", &rendererRef->postProcessSettings.bloomStrength, 0.01f, 0.0f, 5.0f);
-        ImGui::DragFloat("Bloom Threshold", &rendererRef->postProcessSettings.bloomThreshold, 0.01f, 0.0f, 10.0f);
-        ImGui::DragFloat("Exposure", &rendererRef->postProcessSettings.exposure, 0.01f, 0.1f, 5.0f);
-        ImGui::DragFloat("Gamma", &rendererRef->postProcessSettings.gamma, 0.01f, 0.1f, 3.0f);
-        ImGui::DragFloat("Blur Radius", &rendererRef->postProcessSettings.blurRadius, 0.1f, 0.0f, 10.0f);
-
-        ImGui::End(); // Safely closes the "Inspector" window
+        ImGui::End(); // Close Project Browser
 
         // --- ENGINE GRAPHICS SETTINGS ---
         if (showSettingsWindow) {
@@ -850,7 +982,7 @@ namespace Crescendo {
                     std::string tag = msg.text.substr(0, endBracket + 1);
                     std::string rest = msg.text.substr(endBracket + 1);
 
-                    // Draw the bracketed tag in aggressive red
+                    // Draw the bracketed tag in crimson red
                     ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", tag.c_str());
                     
                     // Tell ImGui to stay on the same line (0 pixel offset)
@@ -880,22 +1012,18 @@ namespace Crescendo {
                     // Echo the command in white
                     AddLog("] " + command, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
 
-                if (!command.empty()) {
-                    // Echo the command in white
-                    AddLog("] " + command, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-
                     // --- COMMAND PARSING LOGIC ---
                     size_t spacePos = command.find(" ");
                     
                     if (spacePos != std::string::npos) {
-                        // We have a space, meaning they are trying to SET a value (e.g., "sv_gravity -40")
+                        // We have a space, meaning they are trying to SET a value
                         std::string cmdName = command.substr(0, spacePos);
                         std::string cmdArg = command.substr(spacePos + 1);
 
                         if (floatConVars.find(cmdName) != floatConVars.end()) {
                             try {
                                 float newVal = std::stof(cmdArg);
-                                *floatConVars[cmdName] = newVal; // Update the actual game variable!
+                                *floatConVars[cmdName] = newVal; // Update the actual game variable
                                 AddLog(cmdName + " set to " + std::to_string(newVal), ImVec4(0.2f, 1.0f, 0.2f, 1.0f));
                             } catch (...) {
                                 AddLog("Usage: " + cmdName + " <float>", ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
@@ -914,23 +1042,20 @@ namespace Crescendo {
                             AddLog("Unknown command: " + command, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
                         }
                     }
-                    // -----------------------------
 
                     inputBuf[0] = '\0'; // Clear Input
                     reclaim_focus = true;
                 }
-
-                inputBuf[0] = '\0'; // Clear Input
-                reclaim_focus = true;
             }
-        }
-        ImGui::SetItemDefaultFocus();
+            
+            ImGui::SetItemDefaultFocus();
             if (reclaim_focus) ImGui::SetKeyboardFocusHere(-1);
 
-            ImGui::End();
-        }
+            ImGui::End(); // Close Developer Console
+        } // Closes if (showConsole)
+
         ImGui::Render(); 
-    }
+    } // Closes EditorUI::Prepare()
     
     void EditorUI::Render(VkCommandBuffer cmd) {
         ImDrawData* draw_data = ImGui::GetDrawData();

@@ -80,7 +80,7 @@ set(SHADER_FILES
     assets/shaders/equirect2cube.comp 
     assets/shaders/billboard.vert 
     assets/shaders/billboard.frag
-    
+    assets/shaders/outline.frag
 
 )
 

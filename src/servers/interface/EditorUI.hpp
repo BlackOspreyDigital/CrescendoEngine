@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <filesystem>
+#include <vulkan/vulkan_core.h>
 
 
 namespace Crescendo {
@@ -65,16 +67,34 @@ namespace Crescendo {
         glm::vec2 GetViewportSize() const { return lastViewportSize; }
         Console& Getconsole() { return gameConsole; }
 
+        int GetSelectedObjectIndex() const { return selectedObjectIndex; }
+
     private:
         RenderingServer* rendererRef;
         
         // Descriptor Pool for ImGui
         VkDescriptorPool imguiPool = VK_NULL_HANDLE;
 
+        struct EditorIcons {
+            VkDescriptorSet folderIcon = VK_NULL_HANDLE;
+            VkDescriptorSet projectFolderIcon = VK_NULL_HANDLE;
+            VkDescriptorSet scriptIcon = VK_NULL_HANDLE;
+            VkDescriptorSet shaderIcon = VK_NULL_HANDLE;
+            VkDescriptorSet audioIcon = VK_NULL_HANDLE;
+            VkDescriptorSet spatialAudioIcon = VK_NULL_HANDLE;
+            VkDescriptorSet fileIcon = VK_NULL_HANDLE;
+            VkDescriptorSet modelIcon = VK_NULL_HANDLE;
+        };
+
+        EditorIcons icons;
+
         // Toggables
         bool showSettingsWindow = false;
         bool showAboutWindow = false;
         bool showConsole = true;
+
+        // Asset Browser State
+        std::filesystem::path currentAssetDirectory = "assets";
 
         // Editor State
         Console gameConsole;

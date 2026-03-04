@@ -38,13 +38,14 @@ out/
 *.suo
 *.sln
 *.vcxproj*
+*.vscode/
 
 # --- Ignore Assets Folders
-assets/textures
-assets/audio
+assets/
 
 
 # --- Ignore Dependency Build Folders ---
 # (If Jolt or other libraries compile locally)
 deps/*/build/
 modules/*/build/
+modules/Jolt/JoltPhysics

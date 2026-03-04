@@ -8,7 +8,7 @@
 #include <map>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
-#include "vulkan/VulkanContext.hpp"
+
 #include "vulkan/VulkanResources.hpp"
 #include <vector>
 #include <optional>
@@ -168,7 +168,7 @@ namespace Crescendo {
         bool initialize(DisplayServer* display);
         void shutdown();
         // Update this signature to take the state by reference
-        void render(Scene* scene, EngineState& engineState);
+        void render(Scene* scene, EngineState& state);
 
         void SetMSAASamples(VkSampleCountFlagBits newSamples);
 
@@ -178,7 +178,7 @@ namespace Crescendo {
         // Asset Management
         int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
         int acquireTexture(const std::string& path);
-        
+        VkDescriptorSet getImGuiTextureID(const std::string& path);
         // --- 1. UPDATE THIS SIGNATURE ---
         void loadSkybox(const std::string& path, Scene * scene);
 
@@ -252,7 +252,7 @@ namespace Crescendo {
         void* globalUniformBufferMapped = nullptr;
         void createGlobalUniformBuffer();
 
-        // [UPDATED] Helpers returning RAII objects
+        // Helpers returning RAII objects
         VulkanBuffer createVertexBuffer(const std::vector<Vertex>& vertices);
         VulkanBuffer createIndexBuffer(const std::vector<uint32_t>& indices);
 
@@ -286,6 +286,9 @@ namespace Crescendo {
         VkPipeline opaquePipeline = VK_NULL_HANDLE;
         VkPipeline skyPipeline = VK_NULL_HANDLE;
         VkPipeline waterPipeline = VK_NULL_HANDLE;
+
+        // Wireframe
+        VkPipeline outlinePipeline = VK_NULL_HANDLE;
         
         // Post Process
         VkPipeline bloomPipeline = VK_NULL_HANDLE;
@@ -418,6 +421,7 @@ namespace Crescendo {
         bool createBloomResources();
         bool createBloomPipeline();
         bool createCompositePipeline();
+        bool createOutlinePipeline();
         bool createHDRImage(const std::string& path, VulkanImage& outImage);
         void updateCompositeDescriptors();
         void recreateSwapChain(SDL_Window* window);
@@ -425,6 +429,7 @@ namespace Crescendo {
         void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
         void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
         void renderShadows(Scene* scene, const glm::vec3& lightDir, GlobalUniforms& globalUBO);
+        
         
         // Frustum helper (Declaration only)
         std::vector<glm::vec4> getFrustumCornersWorldSpace(const glm::mat4& proj, const glm::mat4& view);

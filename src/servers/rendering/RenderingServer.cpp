@@ -164,6 +164,8 @@ namespace Crescendo {
         if (!createBakePipeline()) return false;
         //-------------------
 
+        if (!createOutlinePipeline()) return false;
+
         if (!createFramebuffers()) return false;
 
         // --- Assets ---
@@ -1334,6 +1336,15 @@ namespace Crescendo {
         return newID;
     }
 
+    VkDescriptorSet RenderingServer::getImGuiTextureID(const std::string& path) {
+        int id = acquireTexture(path);
+        // Ensure the texture was loaded and exists in the bank
+        if (id > 0 && id < textureBank.size() && textureBank[id].image.view != VK_NULL_HANDLE) {
+            return ImGui_ImplVulkan_AddTexture(textureSampler, textureBank[id].image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        }
+        return VK_NULL_HANDLE;
+    }
+
     //===============================================
     // PIPELINE LOGIC
     //===============================================
@@ -2401,6 +2412,94 @@ namespace Crescendo {
         return true;
     }
 
+    bool RenderingServer::createOutlinePipeline() {
+        auto vertShaderCode = readFile("assets/shaders/shader.vert.spv"); 
+        auto fragShaderCode = readFile("assets/shaders/outline.frag.spv"); 
+        
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+        VkPipelineShaderStageCreateInfo shaderStages[] = {
+            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertShaderModule, "main", nullptr},
+            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragShaderModule, "main", nullptr}
+        };
+
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+        VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+
+        // --- THE MAGIC IS HERE ---
+        VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rasterizer.depthClampEnable = VK_FALSE;
+        rasterizer.rasterizerDiscardEnable = VK_FALSE;
+        rasterizer.polygonMode = VK_POLYGON_MODE_LINE; // Force Wireframe
+        rasterizer.lineWidth = 1.0f; 
+        rasterizer.cullMode = VK_CULL_MODE_NONE;       // Draw backfaces too for a technical look
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        
+        rasterizer.depthBiasEnable = VK_TRUE;          // Pull the wireframe toward the camera
+        rasterizer.depthBiasConstantFactor = -2.0f;
+        rasterizer.depthBiasSlopeFactor = -2.0f;
+
+        VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        multisampling.sampleShadingEnable = VK_FALSE;
+        multisampling.rasterizationSamples = msaaSamples;
+
+        VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        depthStencil.depthTestEnable = VK_FALSE; 
+        depthStencil.depthWriteEnable = VK_FALSE; // No need to write depth for lines
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+        VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
+        colorBlendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachments[0].blendEnable = VK_FALSE; 
+        colorBlendAttachments[1] = colorBlendAttachments[0]; 
+
+        VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        colorBlending.attachmentCount = 2;
+        colorBlending.pAttachments = colorBlendAttachments;
+
+        std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0, (uint32_t)dynamicStates.size(), dynamicStates.data()};
+
+        VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.layout = pipelineLayout; 
+        pipelineInfo.renderPass = viewportRenderPass; 
+        pipelineInfo.subpass = 0;
+
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &outlinePipeline) != VK_SUCCESS) {
+            return false;
+        }
+
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
+        
+        return true;
+    }
+
     //===============================================
     // RENDER STAGING
     //===============================================
@@ -2841,7 +2940,7 @@ namespace Crescendo {
         globalData.skyColor    = glm::vec4(scene->environment.skyColor, 1.0f);
         globalData.groundColor = glm::vec4(scene->environment.groundColor, 1.0f);
         
-        // --- NEW: EXTRACT POINT LIGHTS ---
+        // --- EXTRACT POINT LIGHTS ---
         globalData.pointLightParams.x = 0; // Reset count
         for (auto* ent : scene->entities) {
             if (ent && ent->className == "light_point" && globalData.pointLightParams.x < 16) {
@@ -3191,7 +3290,7 @@ namespace Crescendo {
             }
 
         // -----------------------------------------------------------------
-        // 5. EDITOR SYMBOLS (Drawn last so they overlay the scene!)
+        // 5. EDITOR SYMBOLS & OUTLINES (Drawn last so they overlay the scene!)
         // -----------------------------------------------------------------
         VkRenderPassBeginInfo symbolPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         symbolPassInfo.renderPass = transparentRenderPass; 
@@ -3206,6 +3305,45 @@ namespace Crescendo {
         VkRect2D symbolScissor{{0, 0}, swapChainExtent};
         vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &symbolScissor);
 
+        // --- THE OUTLINE DRAW CALL ---
+        int selectedIndex = editorUI.GetSelectedObjectIndex();
+        if (selectedIndex >= 0 && selectedIndex < scene->entities.size()) {
+            
+            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, outlinePipeline);
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+
+            // A recursive lambda to dig through the entity and all its children
+            auto drawOutline = [&](auto& self, CBaseEntity* ent) -> void {
+                if (!ent) return;
+                
+                // If this specific node has a mesh, draw it!
+                if (ent->modelIndex >= 0 && ent->modelIndex < meshes.size()) {
+                    MeshResource& mesh = meshes[ent->modelIndex];
+                    if (mesh.vertexBuffer.handle != VK_NULL_HANDLE) {
+                        VkBuffer vBuffers[] = { mesh.vertexBuffer.handle };
+                        VkDeviceSize offsets[] = {0};
+                        vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
+                        vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
+
+                        PushConsts push{};
+                        push.entityIndex = entityGPUIndices[ent];
+                        vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConsts), &push);
+
+                        vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
+                    }
+                }
+                
+                // Recursively check all children
+                for (CBaseEntity* child : ent->children) {
+                    self(self, child);
+                }
+            };
+
+            // Fire the laser!
+            drawOutline(drawOutline, scene->entities[selectedIndex]);
+        }
+
+        // --- DRAW SYMBOLS ---
         symbolServer.DrawSymbols(commandBuffers[currentFrame], mainCamera.Right, mainCamera.Up, descriptorSet, symbolTextureSet);
         
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
@@ -3791,6 +3929,8 @@ namespace Crescendo {
         deviceFeatures.samplerAnisotropy = VK_TRUE;
         deviceFeatures.shaderSampledImageArrayDynamicIndexing = VK_TRUE;
         deviceFeatures.depthClamp = VK_TRUE;
+
+        deviceFeatures.fillModeNonSolid = VK_TRUE;
         
         // [CRITICAL] Enable this so shaders can use "texSampler[textureID]"
         deviceFeatures.shaderSampledImageArrayDynamicIndexing = VK_TRUE; 
@@ -4164,7 +4304,7 @@ namespace Crescendo {
        // Added ssrImage check!
        if (viewportImage.view == VK_NULL_HANDLE || bloomBrightImage.view == VK_NULL_HANDLE || ssrImage.view == VK_NULL_HANDLE) return;
 
-       VkDescriptorImageInfo compositeInfos[3] = {}; // Update to 3!
+       VkDescriptorImageInfo compositeInfos[3] = {}; 
        
        // Binding 0: The 3D Scene
        compositeInfos[0].sampler = viewportSampler;
@@ -4185,7 +4325,7 @@ namespace Crescendo {
        postWrite.dstSet = compositeDescriptorSet;
        postWrite.dstBinding = 0;
        postWrite.dstArrayElement = 0;
-       postWrite.descriptorCount = 3; // Update to 3!
+       postWrite.descriptorCount = 3; 
        postWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
        postWrite.pImageInfo = compositeInfos;
 
@@ -4231,7 +4371,6 @@ namespace Crescendo {
        uint32_t height = swapChainExtent.height / 4;
         
        // 1. Create the Bright Image
-       // [FIX] Use RAII Constructor
        bloomBrightImage = VulkanImage(allocator, device, width, height, VK_FORMAT_R8G8B8A8_SRGB,
            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
            VK_IMAGE_ASPECT_COLOR_BIT);
@@ -4263,7 +4402,7 @@ namespace Crescendo {
        VkFramebufferCreateInfo fbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
        fbInfo.renderPass = bloomRenderPass;
        fbInfo.attachmentCount = 1;
-       // [FIX] Use the RAII view
+       // Use the RAII view
        fbInfo.pAttachments = &bloomBrightImage.view;
        fbInfo.width = width;
        fbInfo.height = height;
@@ -4357,7 +4496,7 @@ namespace Crescendo {
         ssrImage.destroy();
         
 
-        // 3. Destroy Manual Views & SAMPLERS [FIX]
+        // 3. Destroy Manual Views & Samplers
         if (refractionImageView != VK_NULL_HANDLE) { vkDestroyImageView(device, refractionImageView, nullptr); refractionImageView = VK_NULL_HANDLE; }
         if (refractionSampler != VK_NULL_HANDLE) { vkDestroySampler(device, refractionSampler, nullptr); refractionSampler = VK_NULL_HANDLE; }
         if (viewportSampler != VK_NULL_HANDLE) { vkDestroySampler(device, viewportSampler, nullptr); viewportSampler = VK_NULL_HANDLE; }
@@ -4418,6 +4557,7 @@ namespace Crescendo {
             if (shadowPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, shadowPipeline, nullptr);
             if (ssrPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, ssrPipeline, nullptr);
             if (equirectToCubePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, equirectToCubePipeline, nullptr);
+            if (outlinePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, outlinePipeline, nullptr);
 
             if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
             if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
@@ -4464,7 +4604,7 @@ namespace Crescendo {
             if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(device, textureSampler, nullptr);
             if (skySampler != VK_NULL_HANDLE) vkDestroySampler(device, skySampler, nullptr);
             
-            // 7. Cleanup Descriptors & Pools [FIX]
+            // 7. Cleanup Descriptors & Pools
             if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
             if (descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool, nullptr); // <-- THIS WAS MISSING
             

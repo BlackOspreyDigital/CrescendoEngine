@@ -112,7 +112,7 @@ namespace Crescendo {
         colorBlending.logicOpEnable = VK_FALSE;
         colorBlending.attachmentCount = 2; // WE NEED 2 TO MATCH THE RENDER PASS!
         colorBlending.pAttachments = colorBlendAttachments;
-        // -------------------------
+        
 
         std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
         VkPipelineDynamicStateCreateInfo dynamicState{};
@@ -171,8 +171,7 @@ namespace Crescendo {
         // Set 1 = Speaker Texture
         std::vector<VkDescriptorSet> descriptorSets = {globalSet, textureSet};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipelineLayout, 0, 2, descriptorSets.data(), 0, nullptr);
-        // -------------------------------
-
+        
         for (const auto& pos : m_queuedSymbols) {
             SymbolPushConstant pc{};
             pc.worldPosition = pos;

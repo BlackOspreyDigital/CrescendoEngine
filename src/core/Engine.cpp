@@ -74,6 +74,9 @@ namespace Crescendo {
         if (currentState == EngineState::Playing && previousState == EngineState::Editor) {
             std::cout << "[Engine] Play Mode: Saving initial state..." << std::endl;
             
+            // --- NEW: INITIALIZE SPATIAL AUDIO FOR THIS RUN ---
+            audioServer.ClearSpatialEmitters(); // Wipe any leftovers
+
             glm::vec3 spawnLocation = cam.GetPosition(); 
             
             for (auto* ent : scene.entities) {
@@ -82,16 +85,23 @@ namespace Crescendo {
                     ent->savedAngles = ent->angles;
                     ent->savedScale = ent->scale; 
                     
+                    // IF THE ENTITY IS A SOUND SOURCE, LOAD IT!
+                    // This line should now compile perfectly in Engine.cpp
+                    if (ent->className == "env_sound") {
+                        audioServer.LoadSpatialEmitter(ent->assetPath, ent->origin, ent->emission);
+                    }
+
                     if (ent->targetName == "SpawnPoint") {
                         spawnLocation = ent->origin + glm::vec3(0, 0, 1.0f); 
                         ent->scale = glm::vec3(0.0f); // Turn spawner invisible
                     }
                 }
             }
+            // --------------------------------------------------
 
             activePlayer = new FPSController();
             activePlayer->Initialize(&physicsServer, spawnLocation);
-        } 
+        }
         // 2. Returning to Editor (From either Playing OR Paused)
         else if (currentState == EngineState::Editor && previousState != EngineState::Editor) {
             std::cout << "[Engine] Editor Mode: Restoring scene..." << std::endl;
@@ -99,7 +109,7 @@ namespace Crescendo {
                 if (ent) {
                     ent->origin = ent->savedOrigin;
                     ent->angles = ent->savedAngles;
-                    ent->scale = ent->savedScale; // Restores visibility
+                    ent->scale = ent->savedScale; 
                     
                     physicsServer.ResetBody(ent->index, ent->origin, ent->angles);
                 }
@@ -116,11 +126,11 @@ namespace Crescendo {
             if (currentState == EngineState::Playing) {
                 SDL_SetRelativeMouseMode(SDL_TRUE); 
                 audioServer.PlayAmbientSound();
-                audioServer.PlaySpatialEmitter();
+                audioServer.PlaySpatialEmitters(); 
             } else {
                 SDL_SetRelativeMouseMode(SDL_FALSE); 
                 audioServer.StopAmbientSound();    
-                audioServer.StopSpatialEmitter();
+                audioServer.StopSpatialEmitters(); 
             }
         }
         
@@ -165,7 +175,7 @@ namespace Crescendo {
 
     void Engine::Render() {
         // Pass the state by reference down to the renderer
-        renderingServer.render(&scene, currentState); 
+        renderingServer.render(&scene, currentState);
     }
 
     void Engine::Shutdown() {

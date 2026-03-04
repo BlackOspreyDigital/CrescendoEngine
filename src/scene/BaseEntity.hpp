@@ -1,9 +1,13 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <memory>
+#include "Component.hpp"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include "servers/camera/Camera.hpp"
+
+namespace Crescendo {
 
 class CBaseEntity;
 
@@ -54,6 +58,8 @@ public:
     int textureID = 0;
     bool visible = true;
     std::string modelPath = "";
+    std::string assetPath = "";
+
 
     // [BSDF DEFAULTS]
     float roughness = 0.0f;
@@ -76,8 +82,35 @@ public:
     virtual void Spawn() {}
     virtual void Think(float deltaTime) {}
 
+    // --- THE COMPONENT SYSTEM ---
+    std::vector<std::unique_ptr<Component>> components;
+
+    template<typename T, typename... Args>
+    T* AddComponent(Args&&... args) {
+        auto comp = std::make_unique<T>(std::forward<Args>(args)...);
+        T* ptr = comp.get();
+        comp->owner = this;
+        components.push_back(std::move(comp));
+        return ptr;
+    }
+
+    template<typename T>
+    T* GetComponent() {
+        for (auto& comp : components) {
+            T* ptr = dynamic_cast<T*>(comp.get());
+            if (ptr) return ptr;
+        }
+        return nullptr;
+    }
+
+    template<typename T>
+    bool HasComponent() {
+        return GetComponent<T>() != nullptr;
+    }
+
     glm::vec3 GetRenderPosition(glm::ivec3 cameraSector, glm::vec3 cameraOrigin) {
         glm::vec3 sectorDiff = glm::vec3(sector - cameraSector);
         return (sectorDiff * SECTOR_SIZE) + (origin - cameraOrigin);
     }
 };
+}
