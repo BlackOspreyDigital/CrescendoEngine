@@ -54,9 +54,22 @@ namespace Crescendo {
             return ent;
         }
 
+        void DeleteEntity(int index) {
+            if (index >= 0 && index < entities.size()) {
+                delete entities[index];
+                entities.erase(entities.begin() + index); 
+
+                // Re-sync
+                for (int i = 0; i < entities.size(); i++) {
+                    entities[i]->index = i;
+                }
+            }
+        }
+
         void Clear() {
             for (auto* ent : entities) if (ent) delete ent;
             entities.clear();
         }
+
     };
 }

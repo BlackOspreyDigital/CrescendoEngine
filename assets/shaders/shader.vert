@@ -28,6 +28,10 @@ struct EntityData {
     vec4 pbrParams;
     vec4 volumeParams;
     vec4 volumeColor;
+    vec4 advancedPbr;  
+    vec4 padding0;
+    vec4 padding1;
+    vec4 padding2;
 };
 
 // --- BINDING 2: The Object Buffer ---

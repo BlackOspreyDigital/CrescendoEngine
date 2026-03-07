@@ -56,10 +56,11 @@ public:
     
     int modelIndex = -1;
     int textureID = 0;
+    int normalTextureID = 0;
+    int ormTextureID = 0;    // NEW: Occlusion, Roughness, Metallic Map
     bool visible = true;
     std::string modelPath = "";
     std::string assetPath = "";
-
 
     // [BSDF DEFAULTS]
     float roughness = 0.0f;
@@ -71,7 +72,12 @@ public:
     float attenuationDistance = 1.0f; // Distance at which color is fully absorbed
     float ior = 1.5f;
     glm::vec3 attenuationColor = {1.0f, 1.0f, 1.0f}; // The color of the glass
-    glm::vec3 albedoColor = {1.0f, 1.0f, 1.0f};
+    glm::vec3 albedoColor = {1.0f, 1.0f, 1.0f};   
+    // --- Advanced PBR Sliders ---
+    float clearcoat = 0.0f;
+    float clearcoatRoughness = 0.03f;
+    float sheen = 0.0f;
+    float specularWeight = 0.5f;
 
     static constexpr float SECTOR_SIZE = 1024.0f;
 

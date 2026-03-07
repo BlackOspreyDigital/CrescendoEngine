@@ -25,6 +25,10 @@ struct EntityData {
     vec4 pbrParams;
     vec4 volumeParams;
     vec4 volumeColor;
+    vec4 advancedPbr;  
+    vec4 padding0;
+    vec4 padding1;
+    vec4 padding2;
 };
 
 layout(std430, set = 0, binding = 2) readonly buffer ObjectBuffer { 
@@ -105,18 +109,64 @@ float CalculateShadow(vec3 worldPos, vec3 normal, float viewDepth) {
 
 vec3 ApplyFog(vec3 rgb, float dist, float worldZ) {
     float fogDensity = global.fogColor.a;
-    float fogFalloff = global.fogParams.x;
-    float maxOpacity = global.fogParams.y;
-    float fogStart   = global.fogParams.z;
+    if (fogDensity <= 0.0001) return rgb; // Safely early-out if fog is disabled
+
+    float fogFalloff = max(global.fogParams.x, 0.001);
+    float maxOpacity = clamp(global.fogParams.y, 0.0, 1.0);
+    float fogStart   = max(global.fogParams.z, 0.0);
     float fogHeight  = global.fogParams.w;
 
     float d = max(dist - fogStart, 0.0);
-    float distFactor = exp(-d * fogDensity);
-    float fogDepth = max(fogHeight - worldZ, 0.0);
-    float heightFactor = exp(-fogFalloff * fogDepth);
     
-    float fogFactor = clamp(distFactor * heightFactor, 1.0 - maxOpacity, 1.0);
+    // As worldZ goes ABOVE the fog plane, density drops off.
+    float heightFalloff = max(worldZ - fogHeight, 0.0);
+    float effectiveDensity = fogDensity * exp(-fogFalloff * heightFalloff);
+    
+    float fogFactor = exp(-d * effectiveDensity);
+    fogFactor = clamp(fogFactor, 1.0 - maxOpacity, 1.0); // Limit maximum thickness
+    
     return mix(global.fogColor.rgb, rgb, fogFactor);
+}
+
+const float PI = 3.14159265359;
+
+// Calculates how many micro-facets are aligned with the halfway vector (The highlight shape)
+float DistributionGGX(vec3 N, vec3 H, float roughness) {
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH * NdotH;
+
+    float num = a2;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
+
+    return num / denom;
+}
+
+// Calculates geometric shadowing (micro-facets casting shadows on each other)
+float GeometrySchlickGGX(float NdotV, float roughness) {
+    float r = (roughness + 1.0);
+    float k = (r * r) / 8.0;
+
+    float num = NdotV;
+    float denom = NdotV * (1.0 - k) + k;
+
+    return num / denom;
+}
+
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+
+    return ggx1 * ggx2;
+}
+
+// Calculates the Fresnel effect (more reflective at grazing angles)
+vec3 fresnelSchlick(float cosTheta, vec3 F0) {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
 void main() {
@@ -131,14 +181,17 @@ void main() {
 
     vec3 albedo = albedoSample.rgb * baseColor * fragColor;
 
+    // --- NORMAL MAPPING ---
     vec3 N = normalize(fragNormal);
     float normalStr = ent.pbrParams.w;
     int normalTexID = int(ent.volumeColor.a);
 
+    // FIX: Added the "&& normalTexID > 0" check!
     if (normalStr > 0.0 && normalTexID > 0) {
         vec3 mapNormal = texture(texSampler[normalTexID], fragTexCoord).rgb;
         mapNormal = mapNormal * 2.0 - 1.0;
         mapNormal.xy *= normalStr;
+        
         if (length(mapNormal) > 0.001) {
             mapNormal = normalize(mapNormal);
             vec3 T = normalize(fragTangent);
@@ -149,34 +202,45 @@ void main() {
         }
     }
     
+    // --- LIGHTING VECTORS ---
     vec3 V = normalize(global.cameraPos.xyz - fragPos);
     vec3 L = normalize(vec3(0.5, 1.0, 0.5));
     if (length(global.sunDirection.xyz) > 0.01) L = normalize(global.sunDirection.xyz);
     vec3 H = normalize(V + L);
 
-    float roughness = ent.pbrParams.x;
+    // --- EXTRACT PARAMS (With the NaN fix!) ---
+    float roughness = max(ent.pbrParams.x, 0.04);
     float metallic  = ent.pbrParams.y;
     float emission  = ent.pbrParams.z;
     float transmission = ent.volumeParams.x;
 
-    float skyWeight = N.z * 0.5 + 0.5;
-    vec3 hemiAmbient = mix(global.groundColor.rgb, global.skyColor.rgb, skyWeight) * albedo * 0.15;
+    // --- PBR MATH (Cook-Torrance GGX) ---
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+    vec3 radiance = global.sunColor.rgb * global.sunDirection.w;
+
+    float NDF = DistributionGGX(N, H, roughness);   
+    float G   = GeometrySmith(N, V, L, roughness);      
+    vec3 F    = fresnelSchlick(max(dot(H, V), 0.0), F0);       
+    
+    vec3 numerator    = NDF * G * F;
+    float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
+    vec3 specular     = numerator / denominator;
+    
+    vec3 kS = F;
+    vec3 kD = vec3(1.0) - kS;
+    kD *= 1.0 - metallic;
+    kD *= (1.0 - transmission); // Let light pass through glass!
 
     float NdotL = max(dot(N, L), 0.0);
-    float shininess = (1.0 - roughness) * (1.0 - roughness) * 128.0; 
-    float NdotH = max(dot(N, H), 0.0);
-    float spec = pow(NdotH, max(shininess, 1.0));
-    
-    vec3 kS = vec3(spec) * (1.0 - roughness);
-    vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
-    kD *= (1.0 - transmission);
-
-    // Apply Soft Shadows
     float viewDist = length(global.cameraPos.xyz - fragPos);
     float shadowFactor = CalculateShadow(fragPos, N, viewDist); 
-
-    vec3 directLight = (kD * albedo / 3.14159 + kS) * shadowFactor * NdotL * global.sunColor.rgb;
+    
+    vec3 directLight = (kD * albedo / PI + specular) * radiance * NdotL * shadowFactor;
+    
+    float skyWeight = N.z * 0.5 + 0.5;
+    vec3 hemiAmbient = mix(global.groundColor.rgb, global.skyColor.rgb, skyWeight) * albedo * 0.15;
     vec3 emissive = albedo * emission;
+
     vec3 finalColor = directLight + hemiAmbient + emissive;
 
     float thickness     = max(ent.volumeParams.y, 1.0);
@@ -228,7 +292,9 @@ void main() {
     }
     
     skyRefl *= (1.0 - roughness);
-    vec3 finalReflection = skyRefl * (kS + fresnel);
+    // --- AMBIENT REFLECTION (GGX) ---
+    vec3 F_ambient = fresnelSchlick(max(dot(N, V), 0.0), F0);
+    vec3 finalReflection = skyRefl * F_ambient;
 
     float dist = length(global.cameraPos.xyz - fragPos);
     vec3 finalOutput;

@@ -78,14 +78,18 @@ namespace Crescendo {
     };
     
     struct EntityData {
-        glm::vec4 pos;         // .w can be used for uniform scale or flags later
-        glm::vec4 rot;         // .xyz = Euler Angles (Radians), .w = unused
-        glm::vec4 scale;       // .xyz = Scale, .w = unused
+        glm::vec4 pos;                          // .w can be used for uniform scale or flags later
+        glm::vec4 rot;                          // .xyz = Euler Angles (Radians), .w = unused
+        glm::vec4 scale;                        // .xyz = Scale, .w = unused
         glm::vec4 sphereBounds; 
         glm::vec4 albedoTint;
         glm::vec4 pbrParams;
         glm::vec4 volumeParams;
         glm::vec4 volumeColor;
+        glm::vec4 advancedPbr;                  // x = Clearcoat, y = CoatRough, z = Sheen, w = ormTexID
+        glm::vec4 padding0;
+        glm::vec4 padding1;
+        glm::vec4 padding2;
     };
 
     struct PointLight {
@@ -158,8 +162,11 @@ namespace Crescendo {
         bool enableSSR = true;
         bool halfResSSR = false;
     };
+    
 
     class RenderingServer {   
+    friend class KtxLoader;
+    
     public:
         friend class AssetLoader;
         RenderingServer();
@@ -181,13 +188,9 @@ namespace Crescendo {
         VkDescriptorSet getImGuiTextureID(const std::string& path);
         // --- 1. UPDATE THIS SIGNATURE ---
         void loadSkybox(const std::string& path, Scene * scene);
-
+        TextureResource UploadCubemap(void* pixels, size_t totalSize, uint32_t width, uint32_t height, uint32_t mipLevels);
         TextureResource loadKTXCubemap(const std::string& filePath);
         TextureResource generateCubemapFromHDR(const std::string& hdrPath);
-
-        // --- 2. ADD THIS NEW HELPER ---
-        bool extractHDRSunParams(const std::string& path, glm::vec3& outDir, glm::vec3& outColor, float& outIntensity);
-
         
         VulkanImage UploadTexture(void* pixels, int width, int height, VkFormat format);
         
@@ -244,12 +247,12 @@ namespace Crescendo {
         
         // --- [SSBO & UBO] RAII ---
         static constexpr size_t MAX_ENTITIES = 10000;
-        VulkanBuffer entityStorageBuffer; 
-        void* entityStorageBufferMapped = nullptr;
+        std::vector<VulkanBuffer> entityStorageBuffers; 
+        std::vector<void*> entityStorageBuffersMapped;
         void createStorageBuffers(); 
 
-        VulkanBuffer globalUniformBuffer; 
-        void* globalUniformBufferMapped = nullptr;
+        std::vector<VulkanBuffer> globalUniformBuffers; 
+        std::vector<void*> globalUniformBuffersMapped;
         void createGlobalUniformBuffer();
 
         // Helpers returning RAII objects
@@ -276,7 +279,7 @@ namespace Crescendo {
         static constexpr int MAX_TEXTURES = 100;
         VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
         VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+        std::vector<VkDescriptorSet> descriptorSets; 
 
         // Pipelines
         VkRenderPass renderPass = VK_NULL_HANDLE;
@@ -429,7 +432,6 @@ namespace Crescendo {
         void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
         void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
         void renderShadows(Scene* scene, const glm::vec3& lightDir, GlobalUniforms& globalUBO);
-        
         
         // Frustum helper (Declaration only)
         std::vector<glm::vec4> getFrustumCornersWorldSpace(const glm::mat4& proj, const glm::mat4& view);

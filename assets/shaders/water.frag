@@ -19,10 +19,15 @@ struct EntityData {
     vec4 scale;
     vec4 sphereBounds;
     vec4 albedoTint;
-    vec4 pbrParams;    // x=Roughness, y=Metallic, z=Emission, w=NormalStrength
-    vec4 volumeParams; // x=Transmission, y=Thickness, z=AttDist, w=IOR
+    vec4 pbrParams;    
+    vec4 volumeParams; 
     vec4 volumeColor;
+    vec4 advancedPbr;  
+    vec4 padding0;
+    vec4 padding1;
+    vec4 padding2;
 };
+
 layout(std430, set = 0, binding = 2) readonly buffer ObjectBuffer { 
     EntityData entities[];
 };

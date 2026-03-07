@@ -1,5 +1,5 @@
 #include <cstdint>
-#define STB_IMAGE_IMPLEMENTATION
+
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #ifndef GLM_ENABLE_EXPERIMENTAL
 #define GLM_ENABLE_EXPERIMENTAL
@@ -8,7 +8,6 @@
 #define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
 #define VMA_IMPLEMENTATION
 #include "deps/vk_mem_alloc.h"
-#include "stb_image.h"
 
 #include <array>
 #include <set>
@@ -19,7 +18,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
-
+#include "modules/image/ImageLoader.hpp"
 #include <SDL2/SDL_vulkan.h>
 #include <glm/common.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -28,7 +27,7 @@
 #include <glm/gtx/intersect.hpp>       
 #include <glm/gtx/matrix_decompose.hpp> 
 #include "backends/imgui_impl_vulkan.h"
-#include <deps/gli/gli/gli.hpp>
+
   
 #include <vulkan/vulkan_core.h>  
 #include "servers/display/DisplayServer.hpp"
@@ -648,47 +647,27 @@ namespace Crescendo {
     }
     
     bool RenderingServer::createTextureImage() {
-        int texWidth, texHeight, texChannels;
-        // Load the default texture
-        stbi_uc* pixels = stbi_load("assets/textures/vikingemerald_default.png", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-        VkDeviceSize imageSize = texWidth * texHeight * 4;
-
+        RawImageData imgData = ImageLoader::loadStandardTexture("assets/textures/vikingemerald_default.png");
+        
         // Fallback if file missing
         unsigned char fallback[4] = { 255, 0, 255, 255 }; // Magenta
-        if (!pixels) {
+        bool usedFallback = false;
+
+        if (!imgData.pixels) {
             std::cout << "[Warning] Default texture missing. Using fallback." << std::endl;
-            texWidth = 1; texHeight = 1; imageSize = 4;
-            pixels = (stbi_uc*)fallback;
+            imgData.width = 1; 
+            imgData.height = 1; 
+            imgData.pixels = fallback;
+            usedFallback = true;
         }
 
-        // 1. Staging Buffer (RAII)
-        VulkanBuffer stagingBuffer(
-            allocator,
-            imageSize,
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT
-        );
+        // Send to VRAM!
+        textureImage = UploadTexture(imgData.pixels, imgData.width, imgData.height, VK_FORMAT_R8G8B8A8_SRGB);
 
-        // 2. Map & Copy
-        void* data;
-        if (vmaMapMemory(allocator, stagingBuffer.allocation, &data) != VK_SUCCESS) return false;
-        memcpy(data, pixels, static_cast<size_t>(imageSize));
-        vmaUnmapMemory(allocator, stagingBuffer.allocation);
+        // Only free if we actually allocated memory
+        if (!usedFallback) imgData.free();
 
-        if (pixels != fallback) stbi_image_free(pixels);
-
-        // 3. Create Image
-        textureImage = VulkanImage(allocator, device, texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB, 
-            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
-            VK_IMAGE_ASPECT_COLOR_BIT);
-
-        // 4. Transition & Copy
-        transitionImageLayout(textureImage.handle, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        copyBufferToImage(stagingBuffer.handle, textureImage.handle, texWidth, texHeight);
-        transitionImageLayout(textureImage.handle, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-        // 5. [CRITICAL] Resize the Bank!
-        // This prevents the "Assertion failed" crash when loading other textures
+        // [CRITICAL] Resize the Bank!
         if (textureBank.size() < MAX_TEXTURES) {
             textureBank.resize(MAX_TEXTURES);
         }
@@ -697,55 +676,20 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createTextureImage(const std::string& path, VulkanImage& outImage) {
-        int texWidth, texHeight, texChannels;
-        stbi_uc* pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+        RawImageData imgData = ImageLoader::loadStandardTexture(path);
+        if (!imgData.pixels) return false;
 
-        if (!pixels) {
-            std::cerr << "Failed to load texture file: " << path << std::endl;
-            return false;
-        }
-
-        VkDeviceSize imageSize = texWidth * texHeight * 4;
-
-        // 1. Staging Buffer (RAII)
-        VulkanBuffer stagingBuffer(
-            allocator,
-            imageSize,
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT
-        );
-
-        // 2. Map & Copy
-        void* data;
-        if (vmaMapMemory(allocator, stagingBuffer.allocation, &data) != VK_SUCCESS) {
-            stbi_image_free(pixels);
-            return false;
-        }
-        memcpy(data, pixels, static_cast<size_t>(imageSize));
-        vmaUnmapMemory(allocator, stagingBuffer.allocation);
-
-        stbi_image_free(pixels);
-
-        // 3. Create Image (RAII Move Assignment)
-        // Note: We use UNORM for standard textures, unlike the SFLOAT used in HDR
-        outImage = VulkanImage(allocator, device, texWidth, texHeight, VK_FORMAT_R8G8B8A8_UNORM, 
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
-            VK_IMAGE_ASPECT_COLOR_BIT);
-
-        // 4. Transition & Copy
-        transitionImageLayout(outImage.handle, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        copyBufferToImage(stagingBuffer.handle, outImage.handle, texWidth, texHeight);
-        transitionImageLayout(outImage.handle, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
+        outImage = UploadTexture(imgData.pixels, imgData.width, imgData.height, VK_FORMAT_R8G8B8A8_UNORM);
+        
+        imgData.free();
         return true;
     }
 
     bool RenderingServer::createHDRImage(const std::string& path, VulkanImage& outImage) {
-        int width, height, nrComponents;
-        float* data = stbi_loadf(path.c_str(), &width, &height, &nrComponents, 4);
-        if (!data) return false;
+        RawImageData imgData = ImageLoader::loadHDRTexture(path);
+        if (!imgData.hdrPixels) return false;
 
-        VkDeviceSize imageSize = width * height * 4 * sizeof(float);
+        VkDeviceSize imageSize = imgData.width * imgData.height * 4 * sizeof(float);
         
         // 1. Staging Buffer (RAII)
         VulkanBuffer staging(allocator, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, 
@@ -753,65 +697,22 @@ namespace Crescendo {
 
         void* mappedData;
         vmaMapMemory(allocator, staging.allocation, &mappedData);
-        memcpy(mappedData, data, static_cast<size_t>(imageSize));
+        memcpy(mappedData, imgData.hdrPixels, static_cast<size_t>(imageSize));
         vmaUnmapMemory(allocator, staging.allocation);
 
-        stbi_image_free(data);
+        // Tell the module to free the CPU RAM
+        imgData.free();
 
-        // 2. Create Image (RAII) - Move it into the outImage
-        outImage = VulkanImage(allocator, device, width, height, VK_FORMAT_R32G32B32A32_SFLOAT, 
+        // 2. Create Image (RAII)
+        outImage = VulkanImage(allocator, device, imgData.width, imgData.height, VK_FORMAT_R32G32B32A32_SFLOAT, 
                                VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
                                VK_IMAGE_ASPECT_COLOR_BIT);
 
         // 3. Copy
         transitionImageLayout(outImage.handle, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        copyBufferToImage(staging.handle, outImage.handle, width, height);
+        copyBufferToImage(staging.handle, outImage.handle, imgData.width, imgData.height);
         transitionImageLayout(outImage.handle, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         
-        return true;
-    }
-
-    bool RenderingServer::extractHDRSunParams(const std::string& path, glm::vec3& outDir, glm::vec3& outColor, float& outIntensity) {
-        int width, height, channels;
-        float* data = stbi_loadf(path.c_str(), &width, &height, &channels, 3);
-        if (!data) return false;
-
-        float maxLuminance = -1.0f;
-        int maxIndex = 0;
-        int maxX = 0, maxY = 0;
-
-        for (int y = 0; y < height; ++y) {
-            for (int x = 0; x < width; ++x) {
-                int idx = (y * width + x) * 3;
-                float luminance = 0.2126f * data[idx] + 0.7152f * data[idx + 1] + 0.0722f * data[idx + 2]; 
-                if (luminance > maxLuminance) {
-                    maxLuminance = luminance;
-                    maxIndex = idx;
-                    maxX = x;
-                    maxY = y;
-                }
-            }
-        }
-
-        outIntensity = maxLuminance; 
-        if (outIntensity > 0.0f) {
-            outColor = glm::vec3(data[maxIndex], data[maxIndex + 1], data[maxIndex + 2]) / outIntensity;
-        } else {
-            outColor = glm::vec3(1.0f);
-        }
-
-        float u = (float)maxX / (float)width;
-        float v = (float)maxY / (float)height;
-
-        float theta = (u - 0.5f) * 2.0f * glm::pi<float>();
-        float phi = (v - 0.5f) * glm::pi<float>();
-
-        outDir.x = std::cos(phi) * std::cos(theta);
-        outDir.y = std::cos(phi) * std::sin(theta);
-        outDir.z = -std::sin(phi);
-        outDir = glm::normalize(outDir);
-
-        stbi_image_free(data);
         return true;
     }
 
@@ -825,20 +726,25 @@ namespace Crescendo {
             skyImage.destroy(); 
             skyImage = std::move(newSky.image);
 
-            VkDescriptorImageInfo skyInfo{};
-            skyInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            skyInfo.imageView = skyImage.view;
-            skyInfo.sampler = skySampler;
+           
+            for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+                VkDescriptorImageInfo skyInfo{};
+                skyInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                skyInfo.imageView = skyImage.view;
+                skyInfo.sampler = skySampler;
 
-            VkWriteDescriptorSet skyWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-            skyWrite.dstSet = descriptorSet;
-            skyWrite.dstBinding = 1;
-            skyWrite.dstArrayElement = 0;
-            skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            skyWrite.descriptorCount = 1;
-            skyWrite.pImageInfo = &skyInfo;
+                VkWriteDescriptorSet skyWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                skyWrite.dstSet = descriptorSets[i]; // 'i' is now safely declared!
+                skyWrite.dstBinding = 1;
+                skyWrite.dstArrayElement = 0;
+                skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                skyWrite.descriptorCount = 1;
+                skyWrite.pImageInfo = &skyInfo;
 
-            vkUpdateDescriptorSets(device, 1, &skyWrite, 0, nullptr);
+                vkUpdateDescriptorSets(device, 1, &skyWrite, 0, nullptr);
+            }
+           
+            
             std::cout << "[Engine] Successfully generated and loaded new HDR Cubemap: " << path << std::endl;
 
             // --- CPU SUN EXTRACTION ---
@@ -846,7 +752,7 @@ namespace Crescendo {
                 glm::vec3 sunDir, sunColor;
                 float sunInt;
                 
-                if (extractHDRSunParams(path, sunDir, sunColor, sunInt)) {
+                if (ImageLoader::extractHDRSunParams(path, sunDir, sunColor, sunInt)) {
                     sunInt = std::clamp(sunInt, 1.0f, 10.0f); 
 
                     scene->environment.sunDirection = sunDir;
@@ -963,7 +869,7 @@ namespace Crescendo {
             samplerLayoutBinding, skyLayoutBinding, ssboBinding, globalBinding, shadowBinding, refractionBinding
         };
 
-        // Update layoutInfo.bindingCount =4 
+        // Update layoutInfo.bindingCount =6
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1090,133 +996,110 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createDescriptorSets() {
-
-        // 1. Allocate Main Scene Set (Set 0)
-        std::vector<VkDescriptorSetLayout> layouts(1, descriptorSetLayout);
+        // 1. Allocate Main Scene Sets (One per frame in flight)
+        std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, descriptorSetLayout);
         VkDescriptorSetAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         allocInfo.descriptorPool = descriptorPool;
-        allocInfo.descriptorSetCount = 1;
+        allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
         allocInfo.pSetLayouts = layouts.data();
 
-        if (vkAllocateDescriptorSets(device, &allocInfo, &descriptorSet) != VK_SUCCESS) return false;
+        descriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
+        if (vkAllocateDescriptorSets(device, &allocInfo, descriptorSets.data()) != VK_SUCCESS) return false;
 
         // -----------------------------------------------------------
-        // PREPARE DESCRIPTOR WRITES
+        // PREPARE DESCRIPTOR WRITES FOR EVERY FRAME
         // -----------------------------------------------------------
-
-        std::vector<VkDescriptorImageInfo> imageInfos(MAX_TEXTURES);
-        for (int i = 0; i < MAX_TEXTURES; i++) {
-
-            if (i < textureBank.size() && textureBank[i].image.handle != VK_NULL_HANDLE) {
-                imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-                // Access the view from the bank
-                imageInfos[i].imageView = textureBank[i].image.view; 
-
-                imageInfos[i].sampler = VK_NULL_HANDLE;
-            } 
-            else {
-                
-                imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-                // Access the view from the member variable 'textureImage'
-                imageInfos[i].imageView = textureImage.view; 
-
-                imageInfos[i].sampler = VK_NULL_HANDLE;
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            std::vector<VkDescriptorImageInfo> imageInfos(MAX_TEXTURES);
+            for (int j = 0; j < MAX_TEXTURES; j++) {
+                imageInfos[j].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                imageInfos[j].sampler = VK_NULL_HANDLE;
+                if (j < textureBank.size() && textureBank[j].image.handle != VK_NULL_HANDLE) {
+                    imageInfos[j].imageView = textureBank[j].image.view; 
+                } else {
+                    imageInfos[j].imageView = textureImage.view; 
+                }
             }
+
+            VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            descriptorWrite.dstSet = descriptorSets[i];
+            descriptorWrite.dstBinding = 0;
+            descriptorWrite.dstArrayElement = 0;
+            descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            descriptorWrite.descriptorCount = static_cast<uint32_t>(MAX_TEXTURES);
+            descriptorWrite.pImageInfo = imageInfos.data();
+
+            VkDescriptorImageInfo skyImageInfo{};
+            skyImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            skyImageInfo.imageView = skyImage.view; 
+            skyImageInfo.sampler = skySampler;
+
+            VkWriteDescriptorSet skyWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            skyWrite.dstSet = descriptorSets[i];
+            skyWrite.dstBinding = 1;
+            skyWrite.dstArrayElement = 0;
+            skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            skyWrite.descriptorCount = 1;
+            skyWrite.pImageInfo = &skyImageInfo;
+
+            // [CRITICAL] Bind this frame's specific SSBO!
+            VkDescriptorBufferInfo ssboInfo{};
+            ssboInfo.buffer = entityStorageBuffers[i].handle;
+            ssboInfo.offset = 0;
+            ssboInfo.range = sizeof(EntityData) * MAX_ENTITIES;
+
+            VkWriteDescriptorSet ssboWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            ssboWrite.dstSet = descriptorSets[i];
+            ssboWrite.dstBinding = 2;
+            ssboWrite.dstArrayElement = 0;
+            ssboWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            ssboWrite.descriptorCount = 1;
+            ssboWrite.pBufferInfo = &ssboInfo;
+
+            // [CRITICAL] Bind this frame's specific UBO!
+            VkDescriptorBufferInfo globalInfo{};
+            globalInfo.buffer = globalUniformBuffers[i].handle;
+            globalInfo.offset = 0;
+            globalInfo.range = sizeof(GlobalUniforms);
+
+            VkWriteDescriptorSet globalWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            globalWrite.dstSet = descriptorSets[i];
+            globalWrite.dstBinding = 3;
+            globalWrite.dstArrayElement = 0;
+            globalWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            globalWrite.descriptorCount = 1;
+            globalWrite.pBufferInfo = &globalInfo;
+
+            VkDescriptorImageInfo shadowInfo{};
+            shadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            shadowInfo.imageView = shadowImageView;
+            shadowInfo.sampler = shadowSampler;
+
+            VkWriteDescriptorSet shadowWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            shadowWrite.dstSet = descriptorSets[i];
+            shadowWrite.dstBinding = 4;
+            shadowWrite.dstArrayElement = 0;
+            shadowWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            shadowWrite.descriptorCount = 1;
+            shadowWrite.pImageInfo = &shadowInfo;
+
+            VkDescriptorImageInfo refInfo{};
+            refInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            refInfo.imageView = refractionImageView;
+            refInfo.sampler = refractionSampler;
+
+            VkWriteDescriptorSet refWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            refWrite.dstSet = descriptorSets[i];
+            refWrite.dstBinding = 5;
+            refWrite.dstArrayElement = 0;
+            refWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            refWrite.descriptorCount = 1;
+            refWrite.pImageInfo = &refInfo;
+
+            std::array<VkWriteDescriptorSet, 6> writes = {descriptorWrite, skyWrite, ssboWrite, globalWrite, shadowWrite, refWrite};
+            vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
         }
-
-        // Descriptor WRITE
-        VkWriteDescriptorSet descriptorWrite{};
-        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = descriptorSet;
-        descriptorWrite.dstBinding = 0;
-        descriptorWrite.dstArrayElement = 0;
-        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        descriptorWrite.descriptorCount = static_cast<uint32_t>(MAX_TEXTURES);
-        descriptorWrite.pImageInfo = imageInfos.data();
-
-        // Binding 1: Sky Texture
-        VkDescriptorImageInfo skyImageInfo{};
-        skyImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        skyImageInfo.imageView = skyImage.view; 
-        skyImageInfo.sampler = skySampler;
-
-        VkWriteDescriptorSet skyWrite{};
-        skyWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        skyWrite.dstSet = descriptorSet;
-        skyWrite.dstBinding = 1;
-        skyWrite.dstArrayElement = 0;
-        skyWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        skyWrite.descriptorCount = 1;
-        skyWrite.pImageInfo = &skyImageInfo;
-
-        // Binding 2: SSBO (Entity Data)
-        VkDescriptorBufferInfo ssboInfo{};
-        ssboInfo.buffer = entityStorageBuffer.handle;
-        ssboInfo.offset = 0;
-        ssboInfo.range = sizeof(EntityData) * MAX_ENTITIES;
-
-        VkWriteDescriptorSet ssboWrite{};
-        ssboWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        ssboWrite.dstSet = descriptorSet;
-        ssboWrite.dstBinding = 2;
-        ssboWrite.dstArrayElement = 0;
-        ssboWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        ssboWrite.descriptorCount = 1;
-        ssboWrite.pBufferInfo = &ssboInfo;
-
-        // Binding 3: Global Uniforms (GUB)
-        VkDescriptorBufferInfo globalInfo{};
-        globalInfo.buffer = globalUniformBuffer.handle;
-        globalInfo.offset = 0;
-        globalInfo.range = sizeof(GlobalUniforms);
-
-        VkWriteDescriptorSet globalWrite{};
-        globalWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        globalWrite.dstSet = descriptorSet;
-        globalWrite.dstBinding = 3;
-        globalWrite.dstArrayElement = 0;
-        globalWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        globalWrite.descriptorCount = 1;
-        globalWrite.pBufferInfo = &globalInfo;
-
-        // Binding 4: Shadow Map
-        VkDescriptorImageInfo shadowInfo{};
-        shadowInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-        shadowInfo.imageView = shadowImageView;
-        shadowInfo.sampler = shadowSampler;
-
-        VkWriteDescriptorSet shadowWrite{};
-        shadowWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        shadowWrite.dstSet = descriptorSet;
-        shadowWrite.dstBinding = 4;
-        shadowWrite.dstArrayElement = 0;
-        shadowWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        shadowWrite.descriptorCount = 1;
-        shadowWrite.pImageInfo = &shadowInfo;
-
-        // Binding 5: Refraction Map
-        VkDescriptorImageInfo refInfo{};
-        refInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        refInfo.imageView = refractionImageView;
-        refInfo.sampler = refractionSampler;
-
-        VkWriteDescriptorSet refWrite{};
-        refWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        refWrite.dstSet = descriptorSet;
-        refWrite.dstBinding = 5;
-        refWrite.dstArrayElement = 0;
-        refWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        refWrite.descriptorCount = 1;
-        refWrite.pImageInfo = &refInfo;
-
-        std::array<VkWriteDescriptorSet, 6> writes = { // Updated size to 6
-            descriptorWrite, skyWrite, ssboWrite, globalWrite, shadowWrite, refWrite 
-        };
-
-        vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
         // -----------------------------------------------------------
         // UPDATE SET 1 (Post Process)
@@ -1265,27 +1148,6 @@ namespace Crescendo {
         return true;
     }
 
-    int RenderingServer::acquireMesh(const std::string& path, const std::string& name, 
-                                     const std::vector<Vertex>& vertices, 
-                                     const std::vector<uint32_t>& indices) {
-        std::string key = path + "_" + name;
-        if (cache.meshes.find(key) != cache.meshes.end()) return cache.meshes[key];
-
-        MeshResource newMesh;
-        newMesh.name = name;
-        newMesh.indexCount = static_cast<uint32_t>(indices.size());
-        
-        // [RAII] Direct assignment
-        newMesh.vertexBuffer = createVertexBuffer(vertices);
-        newMesh.indexBuffer = createIndexBuffer(indices);
-        
-        meshes.push_back(std::move(newMesh));
-        
-        int newIndex = static_cast<int>(meshes.size()) - 1;
-        cache.meshes[key] = newIndex;
-        return newIndex;
-    }
-
     int RenderingServer::acquireTexture(const std::string& path) {
         if (cache.textures.find(path) != cache.textures.end()) {
             return cache.textures[path];
@@ -1294,20 +1156,19 @@ namespace Crescendo {
         int newID = static_cast<int>(textureMap.size()) + 1;
         if (newID >= MAX_TEXTURES) return 0;
 
-        int texWidth, texHeight, texChannels;
-        stbi_uc* pixels = stbi_load(path.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-        if (!pixels) {
-            std::cerr << "Failed to load texture: " << path << std::endl;
-            return 0;
-        }
+        // 1. DELEGATED TO MODULE: The server doesn't know what a PNG is.
+        // It just asks the ImageLoader for a struct of raw pixels.
+        RawImageData imgData = ImageLoader::loadStandardTexture(path);
+        if (!imgData.pixels) return 0;
 
+        // 2. HARDWARE UPLOAD: Push the raw bytes to VRAM
         TextureResource newTex;
-        // [FIX] Use VK_FORMAT_R8G8B8A8_SRGB
-        // This ensures the texture is linearized when sampled in the shader.
-        newTex.image = UploadTexture(pixels, texWidth, texHeight, VK_FORMAT_R8G8B8A8_SRGB);
+        newTex.image = UploadTexture(imgData.pixels, imgData.width, imgData.height, VK_FORMAT_R8G8B8A8_SRGB);
         
-        stbi_image_free(pixels);
+        // 3. CLEANUP: Tell the module to free the CPU RAM now that the GPU has it
+        imgData.free();
 
+        // 4. SERVER CACHING & DESCRIPTORS (Remains exactly the same!)
         if (newID < textureBank.size()) {
             textureBank[newID] = std::move(newTex);
         }
@@ -1316,21 +1177,23 @@ namespace Crescendo {
         textureMap[path] = newID;
 
         // Immediate Descriptor Update
-        if (descriptorSet != VK_NULL_HANDLE) {
-            VkDescriptorImageInfo imageInfo{};
-            imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            imageInfo.imageView = textureBank[newID].image.view;
-            imageInfo.sampler = textureSampler;
+        if (!descriptorSets.empty()) {
+            for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+                VkDescriptorImageInfo imageInfo{};
+                imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                imageInfo.imageView = textureBank[newID].image.view;
+                imageInfo.sampler = textureSampler;
 
-            VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-            descriptorWrite.dstSet = descriptorSet;
-            descriptorWrite.dstBinding = 0;
-            descriptorWrite.dstArrayElement = newID;
-            descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            descriptorWrite.descriptorCount = 1;
-            descriptorWrite.pImageInfo = &imageInfo;
+                VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                descriptorWrite.dstSet = descriptorSets[i]; 
+                descriptorWrite.dstBinding = 0;
+                descriptorWrite.dstArrayElement = newID;
+                descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                descriptorWrite.descriptorCount = 1;
+                descriptorWrite.pImageInfo = &imageInfo;
 
-            vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+                vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+            }
         }
 
         return newID;
@@ -1836,7 +1699,7 @@ namespace Crescendo {
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depthStencil.depthTestEnable = VK_TRUE; 
-        depthStencil.depthWriteEnable = VK_TRUE; 
+        depthStencil.depthWriteEnable = VK_FALSE; 
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
        VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
@@ -1917,7 +1780,6 @@ namespace Crescendo {
         std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
         VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0, (uint32_t)dynamicStates.size(), dynamicStates.data()};
         
-        // [FIX] Reuse existing layout if created by Bloom
         if (compositePipelineLayout == VK_NULL_HANDLE) {
             VkPushConstantRange pushConstantRange{};
             pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -2690,33 +2552,27 @@ namespace Crescendo {
 
     void RenderingServer::createGlobalUniformBuffer() {
         VkDeviceSize bufferSize = sizeof(GlobalUniforms);
+        globalUniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+        globalUniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
 
-        // [FIX] REMOVED "VMA_ALLOCATION_CREATE_MAPPED_BIT" to prevent double-mapping
-        globalUniformBuffer = VulkanBuffer(
-            allocator, 
-            bufferSize, 
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 
-            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT 
-        );
-
-        if (vmaMapMemory(allocator, globalUniformBuffer.allocation, &globalUniformBufferMapped) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to map Global Uniform Buffer memory!");
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            globalUniformBuffers[i] = VulkanBuffer(allocator, bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+            if (vmaMapMemory(allocator, globalUniformBuffers[i].allocation, &globalUniformBuffersMapped[i]) != VK_SUCCESS) {
+                throw std::runtime_error("Failed to map Global Uniform Buffer memory!");
+            }
         }
     }
 
     void RenderingServer::createStorageBuffers() {
         VkDeviceSize bufferSize = sizeof(EntityData) * MAX_ENTITIES;
-        
-        // [FIX] REMOVED "VMA_ALLOCATION_CREATE_MAPPED_BIT" to prevent double-mapping
-        entityStorageBuffer = VulkanBuffer(
-            allocator, 
-            bufferSize, 
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 
-            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT 
-        );
-    
-        if (vmaMapMemory(allocator, entityStorageBuffer.allocation, &entityStorageBufferMapped) != VK_SUCCESS) {
-            throw std::runtime_error("Failed to map Entity Storage Buffer memory!");
+        entityStorageBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+        entityStorageBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
+
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            entityStorageBuffers[i] = VulkanBuffer(allocator, bufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+            if (vmaMapMemory(allocator, entityStorageBuffers[i].allocation, &entityStorageBuffersMapped[i]) != VK_SUCCESS) {
+                throw std::runtime_error("Failed to map Entity Storage Buffer memory!");
+            }
         }
     }
 
@@ -2838,8 +2694,7 @@ namespace Crescendo {
         VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
         
         if (result == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapChain(window); return; }
-        // Lock it to 5 units in the air so you can't miss it
-        symbolServer.SubmitSymbol(glm::vec3(0.0f, 0.0f, 5.0f), 2.0f);
+        
         // Pass the state reference to the UI!
         editorUI.Prepare(scene, mainCamera, viewportDescriptorSet, engineState);
         
@@ -2849,7 +2704,7 @@ namespace Crescendo {
         // ---------------------------------------------------------
         // PHASE 0: UPLOAD ENTITY DATA TO GPU (SSBO)
         // ---------------------------------------------------------
-        EntityData* gpuData = (EntityData*)entityStorageBufferMapped;
+        EntityData* gpuData = (EntityData*)entityStorageBuffersMapped[currentFrame];
         int entityCount = 0;
 
         // Map used to link an Entity Pointer to its GPU Index
@@ -2877,6 +2732,15 @@ namespace Crescendo {
             data.pbrParams    = glm::vec4(ent->roughness, ent->metallic, ent->emission, ent->normalStrength);
             data.volumeParams = glm::vec4(ent->transmission, ent->thickness, ent->attenuationDistance, ent->ior);
             data.volumeColor  = glm::vec4(ent->attenuationColor, 0.0f);
+
+            data.volumeParams = glm::vec4(ent->transmission, ent->thickness, ent->attenuationDistance, ent->ior);
+            data.volumeColor  = glm::vec4(ent->attenuationColor, (float)ent->normalTextureID); 
+            
+            data.advancedPbr = glm::vec4(ent->clearcoat, ent->clearcoatRoughness, ent->sheen, (float)ent->ormTextureID);
+                    
+            data.padding0 = glm::vec4(0.0f);
+            data.padding1 = glm::vec4(0.0f);
+            data.padding2 = glm::vec4(0.0f);
 
             entityGPUIndices[ent] = entityCount;
             entityCount++;
@@ -2954,7 +2818,7 @@ namespace Crescendo {
         calculateCascades(scene, mainCamera, aspectRatio, globalData);
 
         // Upload to GPU (Binding 3)
-        memcpy(globalUniformBufferMapped, &globalData, sizeof(GlobalUniforms));
+        memcpy(globalUniformBuffersMapped[currentFrame], &globalData, sizeof(GlobalUniforms));
 
         // ---> 2. THE PASTED ENTITY SORTING BLOCK <---
         std::vector<CBaseEntity*> opaqueList;
@@ -2978,7 +2842,7 @@ namespace Crescendo {
         // PASS 0: CASCADED SHADOW MAPS (Depth Only)
         // =========================================================
         vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
-        vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+        vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
 
         // Loop through all 4 shadow slices
         for (uint32_t i = 0; i < SHADOW_CASCADES; i++) {
@@ -3066,7 +2930,7 @@ namespace Crescendo {
             // DRAW SKYBOX
             // -----------------------------------------------------------------
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
-            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
             {
                 struct SkyboxPush { glm::mat4 invViewProj; } skyPush;
                 glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view));
@@ -3083,7 +2947,7 @@ namespace Crescendo {
             // -----------------------------------------------------------------
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                                    pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+                                    pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
             
             // -----------------------------------------------------------------
             // 1. SEPARATE AND SORT DRAW ENTITIES
@@ -3126,7 +2990,7 @@ namespace Crescendo {
             // 2. DRAW OPAQUE
             // -----------------------------------------------------------------
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, opaquePipeline);
-            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
             
             DrawList(opaqueList);
 
@@ -3251,7 +3115,7 @@ namespace Crescendo {
 
                 // 3. Draw exactly ONE transparent entity
                 vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, transparentPipeline);
-                vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+                vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
                 
                 std::vector<CBaseEntity*> singleList = { transEnt };
                 DrawList(singleList);
@@ -3283,7 +3147,7 @@ namespace Crescendo {
                 vkCmdBeginRenderPass(commandBuffers[currentFrame], &waterPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
                 vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, waterPipeline);
-                vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+                vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
 
                 DrawList(waterList);
                 vkCmdEndRenderPass(commandBuffers[currentFrame]);
@@ -3307,10 +3171,11 @@ namespace Crescendo {
 
         // --- THE OUTLINE DRAW CALL ---
         int selectedIndex = editorUI.GetSelectedObjectIndex();
-        if (selectedIndex >= 0 && selectedIndex < scene->entities.size()) {
+
+        if (editorUI.GetShowSelectionOutline() && selectedIndex >= 0 && selectedIndex < scene->entities.size()) {
             
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, outlinePipeline);
-            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
 
             // A recursive lambda to dig through the entity and all its children
             auto drawOutline = [&](auto& self, CBaseEntity* ent) -> void {
@@ -3344,7 +3209,7 @@ namespace Crescendo {
         }
 
         // --- DRAW SYMBOLS ---
-        symbolServer.DrawSymbols(commandBuffers[currentFrame], mainCamera.Right, mainCamera.Up, descriptorSet, symbolTextureSet);
+        symbolServer.DrawSymbols(commandBuffers[currentFrame], mainCamera.Right, mainCamera.Up, descriptorSets[currentFrame], symbolTextureSet);
         
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
 
@@ -3528,7 +3393,6 @@ namespace Crescendo {
         vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
     }
 
-    // The 7-Argument Overload for Cubemaps
     void RenderingServer::transitionImageLayout(VkCommandBuffer cmd, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t mipLevels, uint32_t layerCount) {
         VkImageMemoryBarrier barrier{};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -3569,41 +3433,20 @@ namespace Crescendo {
         vkCmdPipelineBarrier(cmd, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
 
-    // The KTX Loader
-    TextureResource RenderingServer::loadKTXCubemap(const std::string& filePath) {
+    TextureResource RenderingServer::UploadCubemap(void* pixels, size_t totalSize, uint32_t width, uint32_t height, uint32_t mipLevels) {
         TextureResource resource{};
+        VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT;
 
-        // 1. Load the raw file safely
-        gli::texture rawTex = gli::load(filePath);
-        if (rawTex.empty()) {
-            std::cerr << "[GLI Error] File missing or invalid: " << filePath << std::endl;
-            return resource; // Safely back out!
-        }
-        
-        // 2. Ensure the artist actually provided a Cubemap and not a 2D image
-        if (rawTex.target() != gli::TARGET_CUBE) {
-            std::cerr << "[GLI Error] Texture is not a 6-sided cubemap: " << filePath << std::endl;
-            return resource;
-        }
-
-        // 3. Now it is 100% safe to cast
-        gli::texture_cube tex(rawTex);
-
-        uint32_t width = static_cast<uint32_t>(tex.extent().x);
-        uint32_t height = static_cast<uint32_t>(tex.extent().y);
-        uint32_t mipLevels = static_cast<uint32_t>(tex.levels());
-        VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT; 
-
-        VkDeviceSize imageSize = tex.size();
-        VulkanBuffer stagingBuffer(allocator, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+        // 1. Staging Buffer
+        VulkanBuffer stagingBuffer(allocator, totalSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
 
         void* data;
         vmaMapMemory(allocator, stagingBuffer.allocation, &data);
-        memcpy(data, tex.data(), imageSize);
+        memcpy(data, pixels, totalSize);
         vmaUnmapMemory(allocator, stagingBuffer.allocation);
 
-        VkImageCreateInfo imageInfo{};
-        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        // 2. Create the Image (6 Array Layers)
+        VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         imageInfo.imageType = VK_IMAGE_TYPE_2D;
         imageInfo.format = format;
         imageInfo.extent = {width, height, 1};
@@ -3618,38 +3461,47 @@ namespace Crescendo {
         allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
 
         if (vmaCreateImage(allocator, &imageInfo, &allocInfo, &resource.image.handle, &resource.image.allocation, nullptr) != VK_SUCCESS) {
-            std::cerr << "Failed to allocate Cubemap Image!" << std::endl;
+            std::cerr << "[Vulkan Error] Failed to allocate Cubemap Image!" << std::endl;
             return resource;
         }
 
+        // 3. Mathematically calculate the mipmap copy regions (No GLI needed)
         std::vector<VkBufferImageCopy> bufferCopyRegions;
         size_t offset = 0;
 
-        for (uint32_t face = 0; face < 6; face++) {
+        for(uint32_t face = 0; face < 6; face++) {
             for (uint32_t level = 0; level < mipLevels; level++) {
+
+                // Halve the resolution for each mip level
+                uint32_t mipWidth = std::max(1u, width >> level);
+                uint32_t mipHeight = std::max(1u, height >> level);
+
                 VkBufferImageCopy region{};
                 region.bufferOffset = offset;
                 region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
                 region.imageSubresource.mipLevel = level;
                 region.imageSubresource.baseArrayLayer = face;
                 region.imageSubresource.layerCount = 1;
-                region.imageExtent.width = static_cast<uint32_t>(tex[face][level].extent().x);
-                region.imageExtent.height = static_cast<uint32_t>(tex[face][level].extent().y);
+                region.imageExtent.width = mipWidth;
+                region.imageExtent.height = mipHeight;
                 region.imageExtent.depth = 1;
 
                 bufferCopyRegions.push_back(region);
-                offset += tex[face][level].size();
+
+                // Advance the offset (R16G16B16_SFLOAT is 8 bytes per pixel)
+                offset += (mipWidth * mipHeight * 8);
             }
         }
 
+        // 4. GPU Copy
         VkCommandBuffer commandBuffer = beginSingleTimeCommands();
         transitionImageLayout(commandBuffer, resource.image.handle, format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mipLevels, 6);
         vkCmdCopyBufferToImage(commandBuffer, stagingBuffer.handle, resource.image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, static_cast<uint32_t>(bufferCopyRegions.size()), bufferCopyRegions.data());
         transitionImageLayout(commandBuffer, resource.image.handle, format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, mipLevels, 6);
         endSingleTimeCommands(commandBuffer);
 
-        VkImageViewCreateInfo viewInfo{};
-        viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        // 5. Create Image View
+        VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         viewInfo.image = resource.image.handle;
         viewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
         viewInfo.format = format;
@@ -3661,7 +3513,6 @@ namespace Crescendo {
 
         vkCreateImageView(device, &viewInfo, nullptr, &resource.image.view);
 
-        std::cout << "[Vulkan] KTX Cubemap Loaded: " << filePath << " (Mips: " << mipLevels << ")" << std::endl;
         return resource;
     }
 
@@ -4454,22 +4305,23 @@ namespace Crescendo {
             );
         }
 
-        // [FIX] Update Refraction Descriptor after a window resize
-        VkDescriptorImageInfo refInfo{};
-        refInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        refInfo.imageView = refractionImageView;
-        refInfo.sampler = refractionSampler;
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            VkDescriptorImageInfo refInfo{};
+            refInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            refInfo.imageView = refractionImageView;
+            refInfo.sampler = refractionSampler;
 
-        VkWriteDescriptorSet refWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        refWrite.dstSet = descriptorSet;
-        refWrite.dstBinding = 5;
-        refWrite.dstArrayElement = 0;
-        refWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        refWrite.descriptorCount = 1;
-        refWrite.pImageInfo = &refInfo;
+            VkWriteDescriptorSet refWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            refWrite.dstSet = descriptorSets[i]; 
+            refWrite.dstBinding = 5;
+            refWrite.dstArrayElement = 0;
+            refWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            refWrite.descriptorCount = 1;
+            refWrite.pImageInfo = &refInfo;
 
-        vkUpdateDescriptorSets(device, 1, &refWrite, 0, nullptr);
-    }
+            vkUpdateDescriptorSets(device, 1, &refWrite, 0, nullptr);
+        }
+    } 
 
     void RenderingServer::cleanupSwapChain() {
         // 1. Destroy Framebuffers
@@ -4495,7 +4347,6 @@ namespace Crescendo {
         finalImage.destroy();
         ssrImage.destroy();
         
-
         // 3. Destroy Manual Views & Samplers
         if (refractionImageView != VK_NULL_HANDLE) { vkDestroyImageView(device, refractionImageView, nullptr); refractionImageView = VK_NULL_HANDLE; }
         if (refractionSampler != VK_NULL_HANDLE) { vkDestroySampler(device, refractionSampler, nullptr); refractionSampler = VK_NULL_HANDLE; }
@@ -4609,16 +4460,16 @@ namespace Crescendo {
             if (descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool, nullptr); // <-- THIS WAS MISSING
             
             // 8. Cleanup SSBO & UBO
-            if (entityStorageBufferMapped) {
-                vmaUnmapMemory(allocator, entityStorageBuffer.allocation);
-                entityStorageBufferMapped = nullptr;
+            for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+                if (entityStorageBuffersMapped[i]) {
+                    vmaUnmapMemory(allocator, entityStorageBuffers[i].allocation);
+                }
+                if (globalUniformBuffersMapped[i]) {
+                    vmaUnmapMemory(allocator, globalUniformBuffers[i].allocation);
+                }
+                entityStorageBuffers[i].destroy();
+                globalUniformBuffers[i].destroy();
             }
-            if (globalUniformBufferMapped) {
-                vmaUnmapMemory(allocator, globalUniformBuffer.allocation);
-                globalUniformBufferMapped = nullptr;
-            }
-            entityStorageBuffer.destroy();
-            globalUniformBuffer.destroy();
                 
             // 9. Cleanup Swapchain
             cleanupSwapChain();

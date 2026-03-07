@@ -5,6 +5,8 @@
 #include "AssetLoader.hpp"
 #include "servers/rendering/RenderingServer.hpp"
 #include "servers/physics/PhysicsServer.hpp"
+#include "scene/components/TransformComponent.hpp"
+#include "scene/components/MeshRendererComponent.hpp"
 #include "tiny_gltf.h"
 #include "deps/xatlas.h"
 #include <iostream>
@@ -248,6 +250,9 @@ namespace Crescendo {
         
         newEnt->modelPath = filePath;
 
+        newEnt->AddComponent<Crescendo::TransformComponent>();
+        newEnt->AddComponent<Crescendo::MeshRendererComponent>();
+
         // Classic Hierarchy Parenting
         if (parent) {
             newEnt->moveParent = parent;
@@ -335,19 +340,23 @@ namespace Crescendo {
                                     renderer->cache.textures[texKey] = newID; 
                                     targetEnt->textureID = newID;
 
-                                    VkDescriptorImageInfo imageInfo{};
-                                    imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                                    imageInfo.imageView = renderer->textureBank[newID].image.view;
-                                    imageInfo.sampler = renderer->textureSampler;
+                                    // --- THE FIX: Loop over frames using 'frame', not 'i'! ---
+                                    for (size_t frame = 0; frame < renderer->descriptorSets.size(); frame++) {
+                                        VkDescriptorImageInfo imageInfo{};
+                                        imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                                        imageInfo.imageView = renderer->textureBank[newID].image.view;
+                                        imageInfo.sampler = renderer->textureSampler;
 
-                                    VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-                                    descriptorWrite.dstSet = renderer->descriptorSet; 
-                                    descriptorWrite.dstBinding = 0;
-                                    descriptorWrite.dstArrayElement = newID; 
-                                    descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                                    descriptorWrite.descriptorCount = 1;
-                                    descriptorWrite.pImageInfo = &imageInfo;
-                                    vkUpdateDescriptorSets(renderer->device, 1, &descriptorWrite, 0, nullptr);
+                                        VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+                                        descriptorWrite.dstSet = renderer->descriptorSets[frame]; 
+                                        descriptorWrite.dstBinding = 0;
+                                        descriptorWrite.dstArrayElement = newID; 
+                                        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                                        descriptorWrite.descriptorCount = 1;
+                                        descriptorWrite.pImageInfo = &imageInfo;
+                                        
+                                        vkUpdateDescriptorSets(renderer->device, 1, &descriptorWrite, 0, nullptr);
+                                    }
                                 }
                             }
                         }

@@ -1,11 +1,5 @@
 #include "SymbolServer.hpp"
 #include <iostream>
-
-
-
-
-// Assuming you have a utility to read files or load shader modules.
-// You might need to include your engine's specific shader helper here!
 #include "servers/rendering/vulkan/VulkanUtils.hpp"
 
 namespace Crescendo {

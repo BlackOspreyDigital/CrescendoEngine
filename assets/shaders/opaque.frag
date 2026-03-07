@@ -15,6 +15,7 @@ layout(location = 1) out vec4 outNormal;
 layout(binding = 0) uniform sampler2D texSampler[100];
 layout(binding = 1) uniform samplerCube skyTexture;
 layout(binding = 4) uniform sampler2DArrayShadow shadowMap;
+layout(binding = 5) uniform sampler2D refractionTexture;
 
 struct EntityData {
     vec4 pos;
@@ -25,6 +26,10 @@ struct EntityData {
     vec4 pbrParams;
     vec4 volumeParams;
     vec4 volumeColor;
+    vec4 advancedPbr;  
+    vec4 padding0;
+    vec4 padding1;
+    vec4 padding2;
 };
 
 layout(std430, set = 0, binding = 2) readonly buffer ObjectBuffer {
@@ -53,6 +58,39 @@ layout(set = 0, binding = 3) uniform GlobalUniforms {
     vec4 pointLightParams;
     PointLight pointLights[16];
 } global;
+
+const float PI = 3.14159265359;
+
+float DistributionGGX(vec3 N, vec3 H, float roughness) {
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH * NdotH;
+    float num = a2;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
+    return num / denom;
+}
+
+float GeometrySchlickGGX(float NdotV, float roughness) {
+    float r = (roughness + 1.0);
+    float k = (r * r) / 8.0;
+    float num = NdotV;
+    float denom = NdotV * (1.0 - k) + k;
+    return num / denom;
+}
+
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+    return ggx1 * ggx2;
+}
+
+vec3 fresnelSchlick(float cosTheta, vec3 F0) {
+    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
 
 vec2 EquirectangularUV(vec3 v) {
     vec2 uv = vec2(atan(v.y, v.x), asin(-v.z));
@@ -164,21 +202,29 @@ void main() {
     }
 
     vec3 albedo = albedoSample.rgb * baseColor * fragColor;
-
+    
+    // --- NORMAL MAPPING ---
     vec3 N = normalize(fragNormal);
     float normalStr = ent.pbrParams.w;
     int normalTexID = int(ent.volumeColor.a);
-    
-    if (normalStr > 0.0 && normalTexID > 0) {
+
+    if (normalStr > 0.0) {
         vec3 mapNormal = texture(texSampler[normalTexID], fragTexCoord).rgb;
         mapNormal = mapNormal * 2.0 - 1.0;
         mapNormal.xy *= normalStr;
+
         if (length(mapNormal) > 0.001) {
             mapNormal = normalize(mapNormal);
+
+            // --- TBN BASIS ---
             vec3 T = normalize(fragTangent);
             vec3 B = normalize(fragBitangent);
-            T = normalize(T - dot(T, N) * N);
-            mat3 TBN = mat3(T, B, N);
+            vec3 N_basis = normalize(fragNormal);
+
+            // Re-orthogonalize T with respect to N (Gram-Schmidt)
+            T = normalize(T - dot(T, N_basis) * N_basis);
+            
+            mat3 TBN = mat3(T, B, N_basis);
             N = normalize(TBN * mapNormal);
         }
     }
@@ -192,31 +238,56 @@ void main() {
     if (length(global.sunDirection.xyz) > 0.01) L = normalize(global.sunDirection.xyz);
     vec3 H = normalize(V + L);
 
+    // --- ORM EXTRACTION ---
     float roughness = ent.pbrParams.x;
     float metallic  = ent.pbrParams.y;
     float emission  = ent.pbrParams.z;
+    float ao        = 1.0; 
 
-    // Hemisphere GI
+    int ormTexID = int(ent.advancedPbr.w);
+    if (ormTexID > 0) {
+        vec3 ormSample = texture(texSampler[ormTexID], fragTexCoord).rgb;
+        ao        = ormSample.r;             
+        roughness = roughness * ormSample.g; 
+        metallic  = metallic * ormSample.b;  
+    }
+
+    // --- BASE REFLECTIVITY (F0) ---
+    vec3 F0 = vec3(0.04); 
+    F0 = mix(F0, albedo, metallic);
+
+    // --- HEMISPHERE GI (with AO!) ---
     float skyWeight = N.z * 0.5 + 0.5;
-    vec3 hemiAmbient = mix(global.groundColor.rgb, global.skyColor.rgb, skyWeight) * albedo * 0.15;
+    vec3 hemiAmbient = mix(global.groundColor.rgb, global.skyColor.rgb, skyWeight) * albedo * 0.15 * ao;
 
-    // PBR Lighting
-    float NdotL = max(dot(N, L), 0.0);
-    float shininess = (1.0 - roughness) * (1.0 - roughness) * 128.0; 
-    float NdotH = max(dot(N, H), 0.0);
-    float spec = pow(NdotH, max(shininess, 1.0));
-    
-    vec3 kS = vec3(spec) * (1.0 - roughness);
-    vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
-
-    // --- 1. SHADOWS & DIRECTIONAL LIGHT ---
+    // --- 1. DIRECTIONAL LIGHT (GGX) & SHADOWS ---
+    vec3 directLight = vec3(0.0);
     float viewDist = length(global.cameraPos.xyz - fragPos);
-    float shadowFactor = CalculateShadow(fragPos, N, viewDist); // Apply PCF and Bias here!
-    vec3 directLight = (kD * albedo / 3.14159 + kS) * shadowFactor * NdotL * global.sunColor.rgb;
+    float shadowFactor = CalculateShadow(fragPos, N, viewDist); 
 
-    // --- 2. ACCUMULATE POINT LIGHTS ---
+    if (length(global.sunDirection.xyz) > 0.01) {
+        float NdotL = max(dot(N, L), 0.0);
+        
+        float NDF = DistributionGGX(N, H, roughness);   
+        float G   = GeometrySmith(N, V, L, roughness);      
+        vec3 F    = fresnelSchlick(max(dot(H, V), 0.0), F0);       
+        
+        vec3 numerator    = NDF * G * F;
+        float denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
+        vec3 specular     = numerator / denominator;
+        
+        vec3 kS = F;
+        vec3 kD = vec3(1.0) - kS;
+        kD *= 1.0 - metallic;
+
+        vec3 radiance = global.sunColor.rgb * global.sunDirection.w;
+        directLight = (kD * albedo / PI + specular) * radiance * NdotL * shadowFactor;
+    }
+
+    // --- 2. POINT LIGHTS (GGX) ---
     vec3 pointLightAccum = vec3(0.0);
     int pLightCount = int(global.pointLightParams.x);
+
     for(int i = 0; i < pLightCount; i++) {
         vec3 lightPos = global.pointLights[i].positionAndRadius.xyz;
         float radius = global.pointLights[i].positionAndRadius.w;
@@ -226,19 +297,28 @@ void main() {
         vec3 L_pt = lightPos - fragPos;
         float dist_pt = length(L_pt);
         L_pt = normalize(L_pt);
+        vec3 H_pt = normalize(V + L_pt);
 
         float attenuation = clamp(1.0 - (dist_pt * dist_pt) / (radius * radius), 0.0, 1.0);
         attenuation *= attenuation; 
 
         float NdotL_pt = max(dot(N, L_pt), 0.0);
-        vec3 H_pt = normalize(V + L_pt);
-        float NdotH_pt = max(dot(N, H_pt), 0.0);
-        float spec_pt = pow(NdotH_pt, max(shininess, 1.0));
+        
+        // GGX for Point Lights
+        float NDF_pt = DistributionGGX(N, H_pt, roughness);   
+        float G_pt   = GeometrySmith(N, V, L_pt, roughness);      
+        vec3 F_pt    = fresnelSchlick(max(dot(H_pt, V), 0.0), F0);       
+        
+        vec3 numerator_pt    = NDF_pt * G_pt * F_pt;
+        float denominator_pt = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L_pt), 0.0) + 0.0001;
+        vec3 specular_pt     = numerator_pt / denominator_pt;
+        
+        vec3 kS_pt = F_pt;
+        vec3 kD_pt = vec3(1.0) - kS_pt;
+        kD_pt *= 1.0 - metallic;
 
-        vec3 kS_pt = vec3(spec_pt) * (1.0 - roughness);
-        vec3 kD_pt = (vec3(1.0) - kS_pt) * (1.0 - metallic);
-
-        pointLightAccum += (kD_pt * albedo / 3.14159 + kS_pt) * lightColor * intensity * NdotL_pt * attenuation;
+        vec3 radiance_pt = lightColor * intensity * attenuation;
+        pointLightAccum += (kD_pt * albedo / PI + specular_pt) * radiance_pt * NdotL_pt;
     }
 
     // --- 3. COMBINE ALL LIGHTING ---
@@ -265,13 +345,17 @@ void main() {
     
     skyRefl *= (1.0 - roughness);
     
-    float NdotV = abs(dot(N, V));
-    float f0 = mix(0.04, 1.0, metallic);
-    float fresnel = f0 + (1.0 - f0) * pow(1.0 - NdotV, 5.0);
     
-    vec3 finalReflection = skyRefl * (kS + fresnel) * metallic;
+    // --- AMBIENT REFLECTION (GGX) ---
+    // Calculate Fresnel specifically for the environment map using our F0 base
+    vec3 F_ambient = fresnelSchlick(max(dot(N, V), 0.0), F0);
+    
+    // We don't need kS or metallic multipliers here anymore, F_ambient handles it mathematically!
+    vec3 finalReflection = skyRefl * F_ambient;
     
     vec3 finalOutput = finalColor + finalReflection;
+    // Fog Integration
+    // ...
 
     // Fog Integration
     float dist = length(global.cameraPos.xyz - fragPos);

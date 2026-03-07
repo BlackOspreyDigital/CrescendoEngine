@@ -68,6 +68,7 @@ namespace Crescendo {
         Console& Getconsole() { return gameConsole; }
 
         int GetSelectedObjectIndex() const { return selectedObjectIndex; }
+        bool GetShowSelectionOutline() const { return showSelectionOutline; }
 
     private:
         RenderingServer* rendererRef;
@@ -92,7 +93,8 @@ namespace Crescendo {
         bool showSettingsWindow = false;
         bool showAboutWindow = false;
         bool showConsole = true;
-
+        bool showSelection = true;
+        bool showSelectionOutline = true;
         // Asset Browser State
         std::filesystem::path currentAssetDirectory = "assets";
 

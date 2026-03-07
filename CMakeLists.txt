@@ -16,6 +16,8 @@ find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LUA REQUIRED lua5.4)
 
+find_package(Ktx REQUIRED)
+
 # ADD THIS BLOCK: Download Jolt Physics automatically
 include(FetchContent)
 FetchContent_Declare(
@@ -44,7 +46,7 @@ list(APPEND SOURCES "src/servers/audio/AudioServer.cpp")
 list(APPEND SOURCES "src/servers/interface/SymbolServer.cpp")
 
 file(GLOB_RECURSE JOLT_SOURCES "modules/Jolt/JoltPhysics/Jolt/*.cpp")
-file(GLOB_RECURSE MODULE_SOURCES "modules/gltf/*.cpp")
+file(GLOB_RECURSE MODULE_SOURCES "modules/gltf/*.cpp" "modules/ktx/*.cpp" "modules/image/*.cpp")
 
 set(IMGUI_SOURCES 
     deps/imgui/imgui.cpp 
@@ -97,7 +99,7 @@ foreach(SHADER ${SHADER_FILES})
 endforeach()
 
 # --- 4. Executable ---
-# [FIX] Added ${MODULE_SOURCES} to the executable list
+
 add_executable(crescendo_engine ${SOURCES} ${JOLT_SOURCES} ${MODULE_SOURCES} ${IMGUI_SOURCES} ${SHADER_SPV_FILES})
 
 # --- 5. Includes ---
@@ -112,6 +114,8 @@ target_include_directories(crescendo_engine PRIVATE
     ${CMAKE_SOURCE_DIR}/deps/imgui
     ${CMAKE_SOURCE_DIR}/deps/imgui/backends
     ${CMAKE_SOURCE_DIR}/modules/gltf 
+    ${CMAKE_SOURCE_DIR}/modules/image
+    ${CMAKE_SOURCE_DIR}/modules/ktx
     ${CMAKE_SOURCE_DIR}/deps/gli 
     ${joltphysics_SOURCE_DIR} # <--- REPLACE YOUR OLD JOLT PATH WITH THIS
     ${SDL2_INCLUDE_DIRS}
@@ -125,5 +129,5 @@ target_compile_definitions(crescendo_engine PRIVATE
 )
 
 target_link_libraries(crescendo_engine PRIVATE 
-    SDL2::SDL2 SDL2_image Vulkan::Vulkan ${LUA_LIBRARIES} Threads::Threads dl Jolt # <--- ADD 'Jolt' HERE
+    SDL2::SDL2 SDL2_image Vulkan::Vulkan ${LUA_LIBRARIES} Threads::Threads dl Jolt KTX::ktx
 )

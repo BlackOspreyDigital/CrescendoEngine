@@ -5,6 +5,8 @@
 #include "imgui.h"
 #include "scene/BaseEntity.hpp"
 #include "scene/components/PointLightComponent.hpp"
+#include "scene/components/TransformComponent.hpp"    
+#include "scene/components/MeshRendererComponent.hpp" 
 #include "servers/rendering/RenderingServer.hpp"
 #include "scene/Scene.hpp"
 #include "servers/camera/Camera.hpp"
@@ -15,8 +17,6 @@
 #include <iostream>
 #include <streambuf>
 #include <filesystem>
-
-
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 #include <vulkan/vulkan_core.h>
@@ -377,8 +377,13 @@ namespace Crescendo {
             if (ImGui::MenuItem("Empty Prop")) {
                 CBaseEntity* ent = scene->CreateEntity("prop_dynamic");
                 ent->targetName = "New Prop";
-                ent->origin = camera.Position + camera.Front * 5.0f; // Spawn 5 units in front of camera
-                selectedObjectIndex = scene->entities.size() - 1;    // Auto-select it
+                ent->origin = camera.Position + camera.Front * 5.0f; 
+                
+                // Auto-attach core components
+                ent->AddComponent<TransformComponent>();
+                ent->AddComponent<MeshRendererComponent>();
+                
+                selectedObjectIndex = scene->entities.size() - 1; 
             }
 
             if (ImGui::MenuItem("Point Light")) {
@@ -625,6 +630,61 @@ namespace Crescendo {
                 if (ImGui::Selectable(label.c_str(), selectedObjectIndex == (int)i)) {
                     selectedObjectIndex = (int)i;
                 }
+
+                // --- RIGHT-CLICK CONTEXT MENU ---
+                if (ImGui::BeginPopupContextItem()) {
+                    selectedObjectIndex = (int)i; // Auto-select the item you right-clicked
+                    
+                    ImGui::TextDisabled("%s", label.c_str());
+                    ImGui::Separator();
+
+                    if (ImGui::MenuItem("Duplicate", "Ctrl+D")) {
+                        CBaseEntity* orig = scene->entities[i];
+                        CBaseEntity* clone = scene->CreateEntity(orig->className);
+                        
+                        clone->targetName = orig->targetName + " (Copy)";
+                        clone->modelIndex = orig->modelIndex;
+                        clone->textureID  = orig->textureID;
+                        clone->assetPath  = orig->assetPath;
+                        
+                        // Copy Transform
+                        clone->origin = orig->origin;
+                        clone->angles = orig->angles;
+                        clone->scale  = orig->scale;
+                        
+                        // Copy PBR Material Data
+                        clone->albedoColor = orig->albedoColor;
+                        clone->emission    = orig->emission;
+                        clone->roughness   = orig->roughness;
+                        clone->metallic    = orig->metallic;
+                        clone->transmission = orig->transmission;
+                        clone->ior         = orig->ior;
+                        clone->attenuationColor = orig->attenuationColor;
+                        clone->attenuationDistance = orig->attenuationDistance;
+                        clone->normalStrength = orig->normalStrength;
+
+                        // Re-attach Bridge Components
+                        if (orig->HasComponent<TransformComponent>()) clone->AddComponent<TransformComponent>();
+                        if (orig->HasComponent<MeshRendererComponent>()) clone->AddComponent<MeshRendererComponent>();
+                        if (orig->HasComponent<PointLightComponent>()) clone->AddComponent<PointLightComponent>();
+                        
+                        // Select the newly duplicated item
+                        selectedObjectIndex = clone->index; 
+                    }
+                    
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f)); // Red text
+                    if (ImGui::MenuItem("Delete", "Del")) {
+                        
+                        scene->DeleteEntity(i); // Call our new safe delete!
+                        
+                        // Reset selection so the Inspector doesn't try to draw a deleted object
+                        selectedObjectIndex = -1; 
+                    }
+                    ImGui::PopStyleColor();
+
+                    ImGui::EndPopup();
+                }
+
                 ImGui::PopID();
             }
         }
@@ -669,9 +729,6 @@ namespace Crescendo {
                     ImGui::PopStyleColor();
                     ImGui::PopID();
                 }
-
-                // --- 4. LEGACY COMPONENTS (To be refactored) ---
-
                 
                 // Atmosphere & Skybox
                 if (ent->className == "env_sky") {
@@ -705,6 +762,8 @@ namespace Crescendo {
                         ImGui::Checkbox("Enable Fog", &scene->environment.enableFog);
                         if (scene->environment.enableFog) {
                             ImGui::ColorEdit4("Color/Density", glm::value_ptr(scene->environment.fogColor));
+                            ImGui::SliderFloat("Max Opacity", &scene->environment.fogParams.y, 0.0f, 1.0f);
+                            ImGui::SliderFloat("Start Dist", &scene->environment.fogParams.z, 0.0f, 100.0f); 
                             ImGui::SliderFloat("Falloff", &scene->environment.fogParams.x, 0.0f, 1.0f);
                             ImGui::SliderFloat("Height", &scene->environment.fogParams.w, -50.0f, 50.0f);  
                         }
@@ -747,15 +806,15 @@ namespace Crescendo {
                     if (ImGui::MenuItem("Point Light", nullptr, false, !ent->HasComponent<PointLightComponent>())) {
                         ent->AddComponent<PointLightComponent>();
                     }
+
+                    if (ImGui::MenuItem("Mesh Renderer", nullptr, false, !ent->HasComponent<MeshRendererComponent>())) {
+                        ent->AddComponent<MeshRendererComponent>();
+                    }
                     
                     if (ImGui::MenuItem("Audio Source", nullptr, false, ent->className != "env_sound")) {
                         ent->className = "env_sound";
                         ent->emission = 1.0f;
                         ent->assetPath = "assets/audio/default.wav";
-                    }
-
-                    if (ImGui::MenuItem("Static Mesh", nullptr, false, ent->className != "prop_dynamic")) {
-                        ent->className = "prop_dynamic";
                     }
 
                     ImGui::EndPopup();
@@ -765,6 +824,8 @@ namespace Crescendo {
 
         // --- GIZMOS & POST PROCESSING ---
         if (ImGui::CollapsingHeader("Editor Tools", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Checkbox("Show Selection Outline", &showSelectionOutline);
+            ImGui::Separator();
             ImGui::Text("Gizmo Mode");
             if (ImGui::RadioButton("Translate", mCurrentGizmoOperation == ImGuizmo::TRANSLATE)) mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
             ImGui::SameLine();
