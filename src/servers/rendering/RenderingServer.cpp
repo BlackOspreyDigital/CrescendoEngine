@@ -1,6 +1,7 @@
+#include <cstddef>
 #include <cstdint>
 
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+
 #ifndef GLM_ENABLE_EXPERIMENTAL
 #define GLM_ENABLE_EXPERIMENTAL
 #endif
@@ -863,18 +864,42 @@ namespace Crescendo {
         refractionBinding.pImmutableSamplers = nullptr;
         refractionBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+        // Binding 6: Irradiance Map (Ambient Diffuse)
+        VkDescriptorSetLayoutBinding irradianceBinding{};
+        irradianceBinding.binding = 6;
+        irradianceBinding.descriptorCount = 1;
+        irradianceBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        irradianceBinding.pImmutableSamplers = nullptr;
+        irradianceBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        // Binding 7: Prefilter Map (Ambient Specular)
+        VkDescriptorSetLayoutBinding prefilterBinding{};
+        prefilterBinding.binding = 7;
+        prefilterBinding.descriptorCount = 1;
+        prefilterBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        prefilterBinding.pImmutableSamplers = nullptr;
+        prefilterBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        // Binding 8: BRDF LUT (Fresnel Look-Up Table)
+        VkDescriptorSetLayoutBinding brdfBinding;
+        brdfBinding.binding = 8;
+        brdfBinding.descriptorCount = 1;
+        brdfBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        brdfBinding.pImmutableSamplers = nullptr;
+        brdfBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+
         globalBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         
-        std::array<VkDescriptorSetLayoutBinding, 6> bindings = { // Updated size to 6
-            samplerLayoutBinding, skyLayoutBinding, ssboBinding, globalBinding, shadowBinding, refractionBinding
+        std::array<VkDescriptorSetLayoutBinding, 9> bindings = { 
+            samplerLayoutBinding, skyLayoutBinding, ssboBinding, globalBinding, 
+            shadowBinding, refractionBinding, irradianceBinding, prefilterBinding, brdfBinding 
         };
-
-        // Update layoutInfo.bindingCount =6
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-        layoutInfo.pBindings = bindings.data(); 
+        layoutInfo.pBindings = bindings.data();
 
         if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descriptorSetLayout) != VK_SUCCESS) {
             return false;
@@ -1097,9 +1122,44 @@ namespace Crescendo {
             refWrite.descriptorCount = 1;
             refWrite.pImageInfo = &refInfo;
 
-            std::array<VkWriteDescriptorSet, 6> writes = {descriptorWrite, skyWrite, ssboWrite, globalWrite, shadowWrite, refWrite};
+            // STUB 6 & 7
+            VkWriteDescriptorSet irradianceWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            irradianceWrite.dstSet = descriptorSets[i];
+            irradianceWrite.dstBinding = 6;
+            irradianceWrite.dstArrayElement = 0;
+            irradianceWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            irradianceWrite.descriptorCount = 1;
+            irradianceWrite.pImageInfo = &skyImageInfo; // placeholder
+
+            VkWriteDescriptorSet prefilterWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            prefilterWrite.dstSet = descriptorSets[i];
+            prefilterWrite.dstBinding = 7;
+            prefilterWrite.dstArrayElement = 0;
+            prefilterWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            prefilterWrite.descriptorCount = 1;
+            prefilterWrite.pImageInfo = &skyImageInfo; // placeholder
+            
+            // Stub 8
+            VkDescriptorImageInfo brdfInfo{};
+            brdfInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            brdfInfo.imageView = textureImage.view; // Default texture fallback
+            brdfInfo.sampler = textureSampler;
+
+            VkWriteDescriptorSet brdfWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            brdfWrite.dstSet = descriptorSets[i];
+            brdfWrite.dstBinding = 8;
+            brdfWrite.dstArrayElement = 0;
+            brdfWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            brdfWrite.descriptorCount = 1;
+            brdfWrite.pImageInfo = &brdfInfo;
+                        
+
+            std::array<VkWriteDescriptorSet, 9> writes = {
+                descriptorWrite, skyWrite, ssboWrite, globalWrite, shadowWrite, refWrite,
+                irradianceWrite, prefilterWrite, brdfWrite
+            };
             vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-        }
+        } // End of the frames-in-flight loop
 
         // -----------------------------------------------------------
         // UPDATE SET 1 (Post Process)
@@ -2732,13 +2792,10 @@ namespace Crescendo {
             data.pbrParams    = glm::vec4(ent->roughness, ent->metallic, ent->emission, ent->normalStrength);
             data.volumeParams = glm::vec4(ent->transmission, ent->thickness, ent->attenuationDistance, ent->ior);
             data.volumeColor  = glm::vec4(ent->attenuationColor, 0.0f);
-
             data.volumeParams = glm::vec4(ent->transmission, ent->thickness, ent->attenuationDistance, ent->ior);
             data.volumeColor  = glm::vec4(ent->attenuationColor, (float)ent->normalTextureID); 
-            
-            data.advancedPbr = glm::vec4(ent->clearcoat, ent->clearcoatRoughness, ent->sheen, (float)ent->ormTextureID);
-                    
-            data.padding0 = glm::vec4(0.0f);
+            data.advancedPbr = glm::vec4(ent->clearcoat, ent->clearcoatRoughness, ent->sheen, (float)ent->ormTextureID);       
+            data.extendedPbr = glm::vec4(ent->subsurface, ent->specular, ent->specularTint, ent->anisotropic);
             data.padding1 = glm::vec4(0.0f);
             data.padding2 = glm::vec4(0.0f);
 
@@ -2864,7 +2921,7 @@ namespace Crescendo {
             VkRect2D scissor{{0, 0}, {SHADOW_DIM, SHADOW_DIM}};
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
 
-            // [FIX] Lower the multiplier so the UI sliders don't rip the shadows off the models
+            // Lower the multiplier so the UI sliders don't rip the shadows off the models
             float scaledConstantBias = scene->environment.shadowBiasConstant * 100.0f;
             
             vkCmdSetDepthBias(commandBuffers[currentFrame], scaledConstantBias, 0.0f, scene->environment.shadowBiasSlope);
@@ -3214,7 +3271,7 @@ namespace Crescendo {
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
 
         // =========================================================
-        // PASS 2: SCREEN SPACE REFLECTIONS (SSR) [Optimized for intel]
+        // PASS 2: SCREEN SPACE REFLECTIONS (SSR)
         // =========================================================
         {
             VkRenderPassBeginInfo ssrPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};

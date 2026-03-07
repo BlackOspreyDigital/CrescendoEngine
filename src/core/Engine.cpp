@@ -6,6 +6,10 @@
 #include "Jolt/Core/Memory.h"
 #include "core/Input.hpp"
 #include "scene/BaseEntity.hpp"
+#include "servers/networking/NetworkingServer.hpp"
+#include "modules/gltf/AssetLoader.hpp"
+#include "servers/rendering/RenderingServer.hpp"
+
 
 namespace Crescendo {
 
@@ -101,6 +105,20 @@ namespace Crescendo {
 
             activePlayer = new FPSController();
             activePlayer->Initialize(&physicsServer, spawnLocation);
+
+            // Spawn Player model
+            size_t priorCount = scene.entities.size();
+            // load the model directly into the scene
+            Crescendo::AssetLoader::loadModel(&renderingServer, "assets/systemsymbols/defaultplayer.glb", &scene);
+
+            if (scene.entities.size() > priorCount) {
+                localPlayerModel = scene.entities[priorCount];
+                localPlayerModel->targetName = "LocalPlayer";
+
+                // Auto flag it for enet
+                localPlayerModel->syncTransform = true;
+                localPlayerModel->networkID = 1;
+            }
         }
         // 2. Returning to Editor (From either Playing OR Paused)
         else if (currentState == EngineState::Editor && previousState != EngineState::Editor) {
@@ -118,6 +136,11 @@ namespace Crescendo {
             if (activePlayer) {
                 delete activePlayer;
                 activePlayer = nullptr;
+            }
+
+            if (localPlayerModel) {
+                scene.DeleteEntity(localPlayerModel->index);
+                localPlayerModel = nullptr;
             }
         }
         
@@ -137,7 +160,7 @@ namespace Crescendo {
         previousState = currentState;
 
         // =========================================================
-        // PLAY MODE: FPS Controller & Physics
+        // PLAY MODE: FPS Controller Physics & Network
         // =========================================================
         if (currentState == EngineState::Playing) {
             
@@ -159,6 +182,14 @@ namespace Crescendo {
                 // ADD &audioServer RIGHT HERE!
                 activePlayer->Update(dt, &physicsServer, &audioServer, inputDir, jump);
                 cam.SetPosition(activePlayer->GetPosition());
+
+                if (localPlayerModel) {
+                    // Offset by -1.0f on Z so the model is at your feet
+                    localPlayerModel->origin = activePlayer->GetPosition() - glm::vec3(0.0f, 0.0f, 1.0f);
+
+                    // Rotate the model to face the direction you are looking
+                    localPlayerModel->angles = glm::vec3(90.0f, 0.0f, cam.Yaw);
+                }
             }
 
             // Mouse Look ONLY happens here if we are actively playing
@@ -166,6 +197,35 @@ namespace Crescendo {
             cam.Rotate((float)-Input::mouseRelX, (float)-Input::mouseRelY);
 
             physicsServer.Update(dt, scene.entities);
+
+            // =========================================================
+            // MULTIPLAYER SYNC LOOP
+            // =========================================================
+
+            NetworkingServer* activeServer = nullptr;
+
+            // 1. Find the Network Manager and process incoming movements
+            for (auto* ent : scene.entities) {
+                if (ent && ent->className == "node_network" && ent->netServer && ent->netServer->IsConnected()) {
+                    activeServer = ent->netServer;
+                    activeServer->Poll(scene.entities); // Apply incoming data to the scene
+                    break;
+                }
+            }
+
+            // 2. Broadcast local movements out to the server/clients
+            if (activeServer) {
+                for (auto* ent : scene.entities) {
+                    // Broadcast networked entities (like localPlayerModel)
+                    if (ent && ent->syncTransform && activeServer->IsServer()) {
+                        activeServer->BroadcastTransform(
+                            ent->networkID,
+                            ent->origin,
+                            glm::radians(ent->angles)
+                        );
+                    }
+                }
+            }
         }
 
         // ---3D Audio Listener (spatial)

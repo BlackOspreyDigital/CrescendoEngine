@@ -87,7 +87,7 @@ namespace Crescendo {
         glm::vec4 volumeParams;
         glm::vec4 volumeColor;
         glm::vec4 advancedPbr;                  // x = Clearcoat, y = CoatRough, z = Sheen, w = ormTexID
-        glm::vec4 padding0;
+        glm::vec4 extendedPbr;                  // x = Subsurface, y = Specular, z = SpecularTint, w = Anisotropic
         glm::vec4 padding1;
         glm::vec4 padding2;
     };

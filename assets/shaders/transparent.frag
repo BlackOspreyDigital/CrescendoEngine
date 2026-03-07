@@ -26,7 +26,7 @@ struct EntityData {
     vec4 volumeParams;
     vec4 volumeColor;
     vec4 advancedPbr;  
-    vec4 padding0;
+    vec4 extendedPbr;
     vec4 padding1;
     vec4 padding2;
 };
@@ -144,6 +144,31 @@ float DistributionGGX(vec3 N, vec3 H, float roughness) {
     return num / denom;
 }
 
+float DistributionGGXAnisotropic(vec3 N, vec3 H, vec3 T, vec3 B, float roughness, float anisotropic) {
+    float aspect = sqrt(1.0 - anisotropic * 0.9);
+    float ax = max(0.001, (roughness * roughness) / aspect);
+    float ay = max(0.001, (roughness * roughness) * aspect);
+    float dotNH = max(dot(N, H), 0.0);
+    float dotTH = dot(T, H);
+    float dotBH = dot(B, H);
+    float denom = dotTH * dotTH / (ax * ax) + dotBH * dotBH / (ay * ay) + dotNH * dotNH;
+    return 1.0 / (PI * ax * ay * denom * denom);
+}
+
+vec3 PrincipleDiffuse(float NdotL, float NdotV, float LdotH, float roughness, float subsurface, vec3 albedo) {
+    float FL = pow(clamp(1.0 - NdotL, 0.0, 1.0), 5.0);
+    float FV = pow(clamp(1.0 - NdotV, 0.0, 1.0), 5.0);
+    float Fd90 = 0.5 + 2.0 * roughness * LdotH * LdotH;
+    float lightScatter = 1.0 + (Fd90 - 1.0) * FL;
+    float viewScatter  = 1.0 + (Fd90 - 1.0) * FV;
+    vec3 baseDiffuse = albedo * PI * lightScatter * viewScatter;
+    float Fss90 = roughness * LdotH * LdotH;
+    float lightScatterSS = 1.0 + (Fss90 - 1.0) * FL;
+    float viewScatterSS  = 1.0 + (Fss90 - 1.0) * FV;
+    vec3 ssDiffuse = 1.25 * albedo * PI * (lightScatterSS * viewScatterSS * (1.0 / (NdotL + NdotV + 0.0001) - 0.5) + 0.5);
+    return mix(baseDiffuse, ssDiffuse, subsurface) / PI;
+}
+
 // Calculates geometric shadowing (micro-facets casting shadows on each other)
 float GeometrySchlickGGX(float NdotV, float roughness) {
     float r = (roughness + 1.0);
@@ -183,20 +208,19 @@ void main() {
 
     // --- NORMAL MAPPING ---
     vec3 N = normalize(fragNormal);
+    vec3 T = normalize(fragTangent);   
+    vec3 B = normalize(fragBitangent); 
     float normalStr = ent.pbrParams.w;
     int normalTexID = int(ent.volumeColor.a);
-
-    // FIX: Added the "&& normalTexID > 0" check!
+    
     if (normalStr > 0.0 && normalTexID > 0) {
         vec3 mapNormal = texture(texSampler[normalTexID], fragTexCoord).rgb;
         mapNormal = mapNormal * 2.0 - 1.0;
         mapNormal.xy *= normalStr;
-        
         if (length(mapNormal) > 0.001) {
             mapNormal = normalize(mapNormal);
-            vec3 T = normalize(fragTangent);
-            vec3 B = normalize(fragBitangent);
-            T = normalize(T - dot(T, N) * N);
+            // Just update T, don't re-declare it!
+            T = normalize(T - dot(T, N) * N); 
             mat3 TBN = mat3(T, B, N);
             N = normalize(TBN * mapNormal);
         }
@@ -243,10 +267,15 @@ void main() {
 
     vec3 finalColor = directLight + hemiAmbient + emissive;
 
-    float thickness     = max(ent.volumeParams.y, 1.0);
-    float attenDist     = max(ent.volumeParams.z, 0.001); 
-    float ior           = max(ent.volumeParams.w, 1.0);
-    vec3  tintColor     = clamp(ent.volumeColor.rgb, vec3(0.001), vec3(0.999));
+    float thickness        = max(ent.volumeParams.y, 1.0);
+    float attenDist        = max(ent.volumeParams.z, 0.001); 
+    float ior              = max(ent.volumeParams.w, 1.0);
+    vec3  tintColor        = clamp(ent.volumeColor.rgb, vec3(0.001), vec3(0.999));
+
+    float subsurface       = ent.extendedPbr.x;
+    float specularAmount   = ent.extendedPbr.y;
+    float specularTint     = ent.extendedPbr.z;
+    float anisotropic      = ent.extendedPbr.w;
 
     float NdotV = abs(dot(N, V));
     float f0 = pow((1.0 - ior) / (1.0 + ior), 2.0);

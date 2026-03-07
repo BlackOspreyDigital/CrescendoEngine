@@ -27,7 +27,7 @@ struct EntityData {
     vec4 volumeParams;
     vec4 volumeColor;
     vec4 advancedPbr;  
-    vec4 padding0;
+    vec4 extendedPbr;
     vec4 padding1;
     vec4 padding2;
 };
@@ -70,6 +70,31 @@ float DistributionGGX(vec3 N, vec3 H, float roughness) {
     float denom = (NdotH2 * (a2 - 1.0) + 1.0);
     denom = PI * denom * denom;
     return num / denom;
+}
+
+float DistributionGGXAnisotropic(vec3 N, vec3 H, vec3 T, vec3 B, float roughness, float anisotropic) {
+    float aspect = sqrt(1.0 - anisotropic * 0.9);
+    float ax = max(0.001, (roughness * roughness) / aspect);
+    float ay = max(0.001, (roughness * roughness) * aspect);
+    float dotNH = max(dot(N, H), 0.0);
+    float dotTH = dot(T, H);
+    float dotBH = dot(B, H);
+    float denom = dotTH * dotTH / (ax * ax) + dotBH * dotBH / (ay * ay) + dotNH * dotNH;
+    return 1.0 / (PI * ax * ay * denom * denom);
+}
+
+vec3 PrincipleDiffuse(float NdotL, float NdotV, float LdotH, float roughness, float subsurface, vec3 albedo) {
+    float FL = pow(clamp(1.0 - NdotL, 0.0, 1.0), 5.0);
+    float FV = pow(clamp(1.0 - NdotV, 0.0, 1.0), 5.0);
+    float Fd90 = 0.5 + 2.0 * roughness * LdotH * LdotH;
+    float lightScatter = 1.0 + (Fd90 - 1.0) * FL;
+    float viewScatter  = 1.0 + (Fd90 - 1.0) * FV;
+    vec3 baseDiffuse = albedo * PI * lightScatter * viewScatter;
+    float Fss90 = roughness * LdotH * LdotH;
+    float lightScatterSS = 1.0 + (Fss90 - 1.0) * FL;
+    float viewScatterSS  = 1.0 + (Fss90 - 1.0) * FV;
+    vec3 ssDiffuse = 1.25 * albedo * PI * (lightScatterSS * viewScatterSS * (1.0 / (NdotL + NdotV + 0.0001) - 0.5) + 0.5);
+    return mix(baseDiffuse, ssDiffuse, subsurface) / PI;
 }
 
 float GeometrySchlickGGX(float NdotV, float roughness) {
@@ -205,26 +230,20 @@ void main() {
     
     // --- NORMAL MAPPING ---
     vec3 N = normalize(fragNormal);
+    vec3 T = normalize(fragTangent);   
+    vec3 B = normalize(fragBitangent); 
     float normalStr = ent.pbrParams.w;
     int normalTexID = int(ent.volumeColor.a);
-
-    if (normalStr > 0.0) {
+    
+    if (normalStr > 0.0 && normalTexID > 0) {
         vec3 mapNormal = texture(texSampler[normalTexID], fragTexCoord).rgb;
         mapNormal = mapNormal * 2.0 - 1.0;
         mapNormal.xy *= normalStr;
-
         if (length(mapNormal) > 0.001) {
             mapNormal = normalize(mapNormal);
-
-            // --- TBN BASIS ---
-            vec3 T = normalize(fragTangent);
-            vec3 B = normalize(fragBitangent);
-            vec3 N_basis = normalize(fragNormal);
-
-            // Re-orthogonalize T with respect to N (Gram-Schmidt)
-            T = normalize(T - dot(T, N_basis) * N_basis);
-            
-            mat3 TBN = mat3(T, B, N_basis);
+            // Just update T, don't re-declare it!
+            T = normalize(T - dot(T, N) * N); 
+            mat3 TBN = mat3(T, B, N);
             N = normalize(TBN * mapNormal);
         }
     }
@@ -252,9 +271,18 @@ void main() {
         metallic  = metallic * ormSample.b;  
     }
 
+    // --- EXTENDED PBR UNPACKS ---
+    float subsurface     = ent.extendedPbr.x;
+    float specularAmount = ent.extendedPbr.y; 
+    float specTint       = ent.extendedPbr.z;
+    float anisotropic    = ent.extendedPbr.w;
+
     // --- BASE REFLECTIVITY (F0) ---
-    vec3 F0 = vec3(0.04); 
-    F0 = mix(F0, albedo, metallic);
+    float luminance = dot(albedo, vec3(0.3, 0.59, 0.11));
+    vec3 tintColor = luminance > 0.0 ? albedo / luminance : vec3(1.0);
+    // Use specularAmount and specTint here!
+    vec3 F0_base = mix(vec3(1.0), tintColor, specTint) * specularAmount * 0.08; 
+    vec3 F0 = mix(F0_base, albedo, metallic);
 
     // --- HEMISPHERE GI (with AO!) ---
     float skyWeight = N.z * 0.5 + 0.5;

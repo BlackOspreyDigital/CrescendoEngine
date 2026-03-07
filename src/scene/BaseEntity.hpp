@@ -9,6 +9,8 @@
 
 namespace Crescendo {
 
+class NetworkingServer;
+
 class CBaseEntity;
 
 class CBaseEntity {
@@ -66,18 +68,21 @@ public:
     float roughness = 0.0f;
     float metallic = 0.0f;
     float emission = 0.0f;
-    float normalStrength = 0.0f; // default to 0 to assume no normal map
-    float transmission = 0.0f; // 0.0 = Opaque, 1.0 = glass
-    float thickness = 0.0f; // average thickness
-    float attenuationDistance = 1.0f; // Distance at which color is fully absorbed
+    float normalStrength = 0.0f;                                // default to 0 to assume no normal map
+    float transmission = 0.0f;                                  // 0.0 = Opaque, 1.0 = glass
+    float thickness = 0.0f;                                     // average thickness
+    float attenuationDistance = 1.0f;                           // Distance at which color is fully absorbed
     float ior = 1.5f;
-    glm::vec3 attenuationColor = {1.0f, 1.0f, 1.0f}; // The color of the glass
+    glm::vec3 attenuationColor = {1.0f, 1.0f, 1.0f};     // The color of the glass
     glm::vec3 albedoColor = {1.0f, 1.0f, 1.0f};   
-    // --- Advanced PBR Sliders ---
-    float clearcoat = 0.0f;
+    float clearcoat = 0.0f;                                     // advanced pbr sheedn and clearcoat ORM
     float clearcoatRoughness = 0.03f;
     float sheen = 0.0f;
     float specularWeight = 0.5f;
+    float subsurface = 0.0f;
+    float specular = 0.0f;
+    float specularTint = 0.0f;
+    float anisotropic = 0.0f;
 
     static constexpr float SECTOR_SIZE = 1024.0f;
 
@@ -87,6 +92,19 @@ public:
 
     virtual void Spawn() {}
     virtual void Think(float deltaTime) {}
+
+    // --- NETWORKING PROPERTIES ---
+    // If this is a "node_network", it owns this server instance
+    NetworkingServer* netServer = nullptr;
+
+    // Connection Settings (Exposed to the Inspector)
+    bool isHost = true;
+    int networkPort = 7777;
+    std::string networkIP = "127.0.0.1";
+
+    // Replication
+    bool syncTransform = false;
+    uint32_t networkID = 0;
 
     // --- THE COMPONENT SYSTEM ---
     std::vector<std::unique_ptr<Component>> components;

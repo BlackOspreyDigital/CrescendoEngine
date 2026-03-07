@@ -8,6 +8,7 @@
 #include "scene/components/TransformComponent.hpp"    
 #include "scene/components/MeshRendererComponent.hpp" 
 #include "servers/rendering/RenderingServer.hpp"
+#include "servers/networking/NetworkingServer.hpp"
 #include "scene/Scene.hpp"
 #include "servers/camera/Camera.hpp"
 #include "backends/imgui_impl_sdl2.h"
@@ -312,7 +313,6 @@ namespace Crescendo {
             io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
         }
         
-
         // --- HOTKEYS & STATE MANAGEMENT ---
         static bool showPauseMenu = false;
 
@@ -425,6 +425,18 @@ namespace Crescendo {
                     selectedObjectIndex = priorCount; // Auto-select in inspector
                 }
             }
+
+            if (ImGui::MenuItem("Network Manager")) {
+                CBaseEntity* netNode = scene->CreateEntity("node_network");
+                netNode->targetName = "Network Manager";
+
+                // Set default network values
+                netNode->isHost = true;
+                netNode->networkPort = 7777;
+                netNode->networkIP = "127.0.0.1";
+
+                selectedObjectIndex = scene->entities.size() -1; // Auto-Select
+            }
             
             ImGui::EndPopup();
         }
@@ -436,8 +448,7 @@ namespace Crescendo {
         if (ImGui::BeginMainMenuBar()) {
             if (ImGui::BeginMenu("File")) {
                 if (ImGui::MenuItem("Import Model")) {
-                    auto selection = pfd::open_file("Select a file", ".",
-                        { "All Models", "*.obj *.gltf *.glb", "GLTF", "*.gltf *.glb", "OBJ", "*.obj" }).result();
+                    auto selection = pfd::open_file("Select a file", ".", std::vector<std::string>{ "All Models", "*.obj *.gltf *.glb", "GLTF", "*.gltf *.glb", "OBJ", "*.obj" }).result();
                     
                     if (!selection.empty() && rendererRef) {
                         std::string path = selection[0];
@@ -447,11 +458,12 @@ namespace Crescendo {
 
                 // Save Project
                 if (ImGui::MenuItem("Save Project", "Ctrl+S")) {
-                    // Open a native save dialog
-                    auto destination = pfd::save_file("Save Project", ".", { "JSON Map Files", "*json" }).result();
+                    // Use pfd::save_file instead of open_file, and declare the 'destination' string!
+                    std::string destination = pfd::save_file("Choose file", ".", std::vector<std::string>{ "JSON Files", "*.json" }).result();
+                    
                     if (!destination.empty()) {
                         // Ensure it ends in json
-                        if (destination.find("json") == std::string::npos) destination += ".json";
+                        if (destination.find(".json") == std::string::npos) destination += ".json";
 
                         SceneSerializer serializer(scene, rendererRef);
                         serializer.Serialize(destination);
@@ -460,8 +472,7 @@ namespace Crescendo {
 
                 // Load Project
                 if (ImGui::MenuItem("Load Project", "Ctrl+O")) {
-                    // Same as above
-                    auto selection = pfd::open_file("Load Project", ".", { "JSON Map Files", "*.json" }).result();
+                    auto selection = pfd::open_file("Load Project", ".", std::vector<std::string>{ "JSON Map Files", "*.json" }).result();
                     if (!selection.empty()) {
                         SceneSerializer serializer(scene, rendererRef);
                         serializer.Deserialize(selection[0]);
@@ -500,15 +511,50 @@ namespace Crescendo {
             static float displayFps = 0.0f;
             
             fpsTimer += io.DeltaTime;
-            if (fpsTimer >= 0.1f) { // Update every 100ms
+            if (fpsTimer >= 0.1f) { 
                 displayFps = io.Framerate;
                 fpsTimer = 0.0f;
             }
 
-            // Push the text to the far right of the menu bar
-            ImGui::SameLine(ImGui::GetWindowWidth() - 80.0f);
+            // --- RIGHT-ALIGNED UI BLOCK ---
+            // Reserve 160 pixels from the right edge so BOTH items fit without wrapping!
+            ImGui::SameLine(ImGui::GetWindowWidth() - 160.0f);
+            
+            // 1. Draw FPS Counter First (Left side of the block)
             ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "FPS: %.0f", displayFps);
-            // --------------------------------
+            
+            // Separator
+            ImGui::SameLine();
+            ImGui::TextDisabled("|");
+            ImGui::SameLine();
+            
+            // --- ACTUAL NETWORK STATUS CHECK ---
+            // Sweep the scene to see if our node_network is actively hosting/connected
+            bool isConnected = false; 
+            if (scene) {
+                for (auto* ent : scene->entities) {
+                    if (ent && ent->className == "node_network" && ent->netServer) {
+                        isConnected = ent->netServer->IsConnected();
+                        break;
+                    }
+                }
+            }
+
+            // 2. Draw Status Circle (Right side of the block)
+            ImVec2 cursorPos = ImGui::GetCursorScreenPos();
+            float circleRadius = 6.0f;
+
+            // Nudge the cursor and center vertically
+            cursorPos.x += circleRadius + 2.0f;
+            cursorPos.y += ImGui::GetTextLineHeight() * 0.5f;
+
+            ImU32 statusColor = isConnected ? IM_COL32(0, 255, 0, 255) : IM_COL32(255, 0, 0, 255);
+            ImGui::GetWindowDrawList()->AddCircleFilled(cursorPos, circleRadius, statusColor);
+
+            // Move ImGui's internal cursor past the circle we just custom-painted
+            ImGui::Dummy(ImVec2(circleRadius * 2.0f + 4.0f, 0.0f));
+            ImGui::SameLine();
+            ImGui::Text(isConnected ? "Online " : "Offline");
 
             ImGui::EndMainMenuBar();
         }
@@ -714,7 +760,64 @@ namespace Crescendo {
                 ImGui::Separator();
                 ImGui::Spacing();
 
+                // =========================================================
+                // 1. THE NETWORK MANAGER UI
+                // =========================================================
 
+                if (ent->className == "node_network") {
+                    ImGui::Text("Network Manager Settings");
+
+                    ImGui::Checkbox("Host Server", &ent->isHost);
+
+                    // IP Address requires a char buffer for ImGui
+                    char ipBuffer[64];
+                    strncpy(ipBuffer, ent->networkIP.c_str(), sizeof(ipBuffer));
+                    ipBuffer[sizeof(ipBuffer) -1] = '\0';
+                    if (ImGui::InputText("IP Address", ipBuffer, sizeof(ipBuffer))) {
+                        ent->networkIP = ipBuffer;
+                    }
+
+                    ImGui::InputInt("Port", &ent->networkPort);
+
+                    ImGui::Spacing();
+
+                    // Connection Controls
+                    if (ent->netServer == nullptr || !ent->netServer->IsConnected()) {
+                        if (ImGui::Button(ent->isHost? "Start Host": "Connected to server", ImVec2(-1, 0))) {
+                            if (ent->netServer == nullptr) {
+                                ent->netServer = new NetworkingServer();
+                            }
+                            ent->netServer->Initialize(ent->isHost, ent->networkPort, ent->networkIP);
+                        }
+                    } else {
+                        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "Status: Online");
+                        if (ImGui::Button("Disconnect", ImVec2(-1, 0))) {
+                            ent->netServer->Shutdown();
+                            delete ent->netServer;
+                            ent->netServer = nullptr;
+                        }
+                    }
+                }
+
+                // =========================================================
+                // 2. THE MULTIPLAYER SYNC UI
+                // =========================================================
+                else {
+                    ImGui::Text("Multiplayer Synchronization");
+                    ImGui::Checkbox("Sync Transform over Network", &ent->syncTransform);
+
+                    if (ent->syncTransform) {
+                        // Cast to int for ImGui, but ensure it stays positive for the uint32_t
+                        int tempNetID = static_cast<int>(ent->networkID);
+                        
+                        if (ImGui::InputInt("Network ID", &tempNetID)) {
+                            // YOU ARE MISSING THIS LINE:
+                            ent->networkID = static_cast<uint32_t>(std::max(0, tempNetID));
+                        }
+                        
+                        ImGui::TextDisabled("Note: Network ID must match on both clients.");
+                    }
+                }
 
                 // --- 3. DYNAMIC COMPONENTS ---
                 for (auto& comp : ent->components) {
@@ -751,7 +854,7 @@ namespace Crescendo {
                         }
                         else if (scene->environment.skyType == SkyType::HDRMap) {
                             if (ImGui::Button("Load New HDR...")) {
-                                auto selection = pfd::open_file("Select HDR", ".", {"HDR Files", "*.hdr"}).result();
+                                auto selection = pfd::open_file("Select HDR", ".", std::vector<std::string>{"HDR Files", "*.hdr"}).result();
                                 if (!selection.empty()) {
                                     rendererRef->loadSkybox(selection[0], scene);
                                 }

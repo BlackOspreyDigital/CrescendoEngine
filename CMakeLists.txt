@@ -35,6 +35,8 @@ set(TARGET_VIEWER OFF CACHE BOOL "Disable Jolt viewer" FORCE)
 
 FetchContent_MakeAvailable(JoltPhysics)
 
+add_subdirectory(deps/enet)
+
 # --- 2. Sources ---
 file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.c")
 
@@ -117,6 +119,7 @@ target_include_directories(crescendo_engine PRIVATE
     ${CMAKE_SOURCE_DIR}/modules/image
     ${CMAKE_SOURCE_DIR}/modules/ktx
     ${CMAKE_SOURCE_DIR}/deps/gli 
+    ${CMAKE_SOURCE_DIR}/deps/enet/include
     ${joltphysics_SOURCE_DIR} # <--- REPLACE YOUR OLD JOLT PATH WITH THIS
     ${SDL2_INCLUDE_DIRS}
     ${Vulkan_INCLUDE_DIRS}
@@ -129,5 +132,5 @@ target_compile_definitions(crescendo_engine PRIVATE
 )
 
 target_link_libraries(crescendo_engine PRIVATE 
-    SDL2::SDL2 SDL2_image Vulkan::Vulkan ${LUA_LIBRARIES} Threads::Threads dl Jolt KTX::ktx
+    SDL2::SDL2 SDL2_image Vulkan::Vulkan ${LUA_LIBRARIES} Threads::Threads dl Jolt KTX::ktx enet
 )

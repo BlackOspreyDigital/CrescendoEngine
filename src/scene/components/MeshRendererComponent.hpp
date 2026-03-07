@@ -14,21 +14,23 @@ namespace Crescendo {
         void DrawInspectorUI() override {
             if (!owner) return;
 
-            ImGui::TextDisabled("Material Properties");
+            // Material UI
+            ImGui::TextDisabled("BSDF Material");
             ImGui::ColorEdit3("Albedo", glm::value_ptr(owner->albedoColor));
             ImGui::SliderFloat("Roughness", &owner->roughness, 0.0f, 1.0f);
             ImGui::SliderFloat("Metallic", &owner->metallic, 0.0f, 1.0f);
             ImGui::SliderFloat("Emission", &owner->emission, 0.0f, 20.0f);
-
-            ImGui::Spacing();
-            ImGui::TextColored(ImVec4(0.8f, 0.6f, 0.0f, 1.0f), "PBR +");
             ImGui::SliderFloat("Clearcoat", &owner->clearcoat, 0.0f, 1.0f);
             ImGui::SliderFloat("Coat Roughness", &owner->clearcoatRoughness, 0.0f, 1.0f);
             ImGui::SliderFloat("Sheen", &owner->sheen, 0.0f, 1.0f);
             ImGui::SliderFloat("Specular Weight", &owner->specularWeight, 0.0f, 1.0f);
+            ImGui::SliderFloat("Subsurface", &owner->subsurface, 0.0f, 1.0f);
+            ImGui::SliderFloat("Specular", &owner->specular, 0.0f, 1.0f);
+            ImGui::SliderFloat("Specular Tint", &owner->specularTint, 0.0f, 1.0f);
+            ImGui::SliderFloat("Anisotropic", &owner->anisotropic, 0.0f, 1.0f);
+
             ImGui::Spacing();
-            
-            
+                        
             ImGui::Separator();
             ImGui::Spacing();
             
