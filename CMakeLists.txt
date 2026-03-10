@@ -18,7 +18,6 @@ pkg_check_modules(LUA REQUIRED lua5.4)
 
 find_package(Ktx REQUIRED)
 
-# ADD THIS BLOCK: Download Jolt Physics automatically
 include(FetchContent)
 FetchContent_Declare(
   JoltPhysics
@@ -34,7 +33,7 @@ set(TARGET_SAMPLES OFF CACHE BOOL "Disable Jolt samples" FORCE)
 set(TARGET_VIEWER OFF CACHE BOOL "Disable Jolt viewer" FORCE)
 
 FetchContent_MakeAvailable(JoltPhysics)
-
+add_subdirectory(deps/ozz-animation)
 add_subdirectory(deps/enet)
 
 # --- 2. Sources ---
@@ -43,6 +42,7 @@ file(GLOB_RECURSE SOURCES "src/*.cpp" "src/*.c")
 # Explicitly add the controller so CMake never misses it
 list(APPEND SOURCES "src/controllers/VehicleController.cpp")
 list(APPEND SOURCES "src/IO/ConfigManager.cpp")
+list(APPEND SOURCES "src/IO/SceneManager.cpp")
 list(APPEND SOURCES "deps/xatlas.cpp")
 list(APPEND SOURCES "src/servers/audio/AudioServer.cpp")
 list(APPEND SOURCES "src/servers/interface/SymbolServer.cpp")
@@ -120,7 +120,8 @@ target_include_directories(crescendo_engine PRIVATE
     ${CMAKE_SOURCE_DIR}/modules/ktx
     ${CMAKE_SOURCE_DIR}/deps/gli 
     ${CMAKE_SOURCE_DIR}/deps/enet/include
-    ${joltphysics_SOURCE_DIR} # <--- REPLACE YOUR OLD JOLT PATH WITH THIS
+    ${joltphysics_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/deps/ozz-animation/include
     ${SDL2_INCLUDE_DIRS}
     ${Vulkan_INCLUDE_DIRS}
     ${LUA_INCLUDE_DIRS}
@@ -132,5 +133,5 @@ target_compile_definitions(crescendo_engine PRIVATE
 )
 
 target_link_libraries(crescendo_engine PRIVATE 
-    SDL2::SDL2 SDL2_image Vulkan::Vulkan ${LUA_LIBRARIES} Threads::Threads dl Jolt KTX::ktx enet
+    SDL2::SDL2 SDL2_image Vulkan::Vulkan ${LUA_LIBRARIES} Threads::Threads dl Jolt KTX::ktx enet ozz_animation ozz_base
 )

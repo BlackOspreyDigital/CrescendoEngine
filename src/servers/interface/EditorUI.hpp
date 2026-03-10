@@ -17,6 +17,7 @@
 namespace Crescendo {
     class RenderingServer;
     class Scene;
+    class SceneManager;
     class Camera;
 
     void UpdateEditorCamera(Crescendo::Camera& editorCam, float deltaTime);
@@ -26,7 +27,6 @@ namespace Crescendo {
         std::string text;
         ImVec4 color;
     };
-
    
     extern std::vector<ConsoleMessage> consoleLog;
     extern std::unordered_map<std::string, float*> floatConVars;
@@ -36,8 +36,6 @@ namespace Crescendo {
 
     struct Console {
         ImGuiTextBuffer     Buf;
-        
-        // This line was missing causing text to not filter
         ImGuiTextFilter     Filter; 
 
         ImVector<int>       LineOffsets;
@@ -49,6 +47,8 @@ namespace Crescendo {
         void Draw(const char* title, bool* p_open = nullptr);
     };
 
+    
+
     class EditorUI {
     public:
         EditorUI();
@@ -57,8 +57,7 @@ namespace Crescendo {
         void Initialize(RenderingServer* renderer, SDL_Window* window, VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue graphicsQueue, uint32_t queueFamilyIndex, VkRenderPass renderPass, uint32_t imageCount);
         void Shutdown(VkDevice device);
 
-        // Update this signature
-        void Prepare(Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor, EngineState& engineState);
+        void Prepare(Scene* scene, SceneManager* sceneManager, Camera& camera, VkDescriptorSet viewportDescriptor, EngineState& engineState);
         void Render(VkCommandBuffer cmd);
         
         void HandleInput(SDL_Event& event);
@@ -69,6 +68,10 @@ namespace Crescendo {
 
         int GetSelectedObjectIndex() const { return selectedObjectIndex; }
         bool GetShowSelectionOutline() const { return showSelectionOutline; }
+
+        // Managers
+        SceneManager* sceneManager = nullptr;
+       
 
     private:
         RenderingServer* rendererRef;
@@ -107,7 +110,7 @@ namespace Crescendo {
         ImGuizmo::MODE mCurrentGizmoMode = ImGuizmo::WORLD;
         
         // Selection & Cursor
-        int selectedObjectIndex = -1; // Declared once here
+        int selectedObjectIndex = -1; 
         glm::vec3 cursor3DPosition = glm::vec3(0.0f);
 
         // Themes

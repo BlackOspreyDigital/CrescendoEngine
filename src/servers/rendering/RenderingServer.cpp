@@ -2739,7 +2739,7 @@ namespace Crescendo {
     // Render() / THE RENDER LOOP
     // --------------------------------------------------------------------
 
-    void RenderingServer::render(Scene* scene, EngineState& engineState) {
+    void RenderingServer::render(Scene* scene, SceneManager* sceneManager, EngineState& engineState) {
         if (!scene) return;
                     
         // --- SAFELY REBUILD PIPELINES BEFORE THE FRAME STARTS ---
@@ -2756,7 +2756,7 @@ namespace Crescendo {
         if (result == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapChain(window); return; }
         
         // Pass the state reference to the UI!
-        editorUI.Prepare(scene, mainCamera, viewportDescriptorSet, engineState);
+        editorUI.Prepare(scene, sceneManager, mainCamera, viewportDescriptorSet, engineState);
         
         vkResetFences(device, 1, &inFlightFences[currentFrame]);
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);

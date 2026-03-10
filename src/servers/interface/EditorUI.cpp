@@ -10,12 +10,13 @@
 #include "servers/rendering/RenderingServer.hpp"
 #include "servers/networking/NetworkingServer.hpp"
 #include "scene/Scene.hpp"
+#include "src/IO/SceneManager.hpp"
 #include "servers/camera/Camera.hpp"
 #include "backends/imgui_impl_sdl2.h"
 #include "backends/imgui_impl_vulkan.h"
 #include "include/portable-file-dialogs.h" 
 #include "IO/SceneSerializer.hpp"
-#include <iostream>
+
 #include <streambuf>
 #include <filesystem>
 #include <glm/gtc/type_ptr.hpp>
@@ -294,7 +295,12 @@ namespace Crescendo {
         }
     }
 
-    void EditorUI::Prepare(Scene* scene, Camera& camera, VkDescriptorSet viewportDescriptor, EngineState& engineState) {
+    void EditorUI::Prepare(Scene* scene, SceneManager* sceneManager, Camera& camera, VkDescriptorSet viewportDescriptor, EngineState& engineState) {
+
+        // 1. Get the active scene from the manager
+        if (!sceneManager) return;
+
+        if (!scene) return;
         
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -440,6 +446,8 @@ namespace Crescendo {
             
             ImGui::EndPopup();
         }
+
+        
 
         // 2. DOCKSPACE & MENU
         ImGuiID dockSpaceId = ImGui::GetID("MainDockSpace");
@@ -599,7 +607,90 @@ namespace Crescendo {
             ImGui::Image((ImTextureID)viewportDescriptor, viewportSize);
         }
 
-       // --- GIZMOS ---
+        // Scene manager access
+        if (ImGui::BeginTabBar("SceneTabs", ImGuiTabBarFlags_Reorderable | ImGuiTabBarFlags_AutoSelectNewTabs)) {
+
+            // Loop through all currently open scenes
+            auto openScenes = sceneManager->GetOpenScenes();
+            for (auto& openScene : openScenes) {
+            
+                bool isOpen = true; 
+                ImGuiTabItemFlags flags = (sceneManager->GetActiveScene() == openScene) ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+            
+                if (ImGui::BeginTabItem(openScene->name.c_str(), &isOpen, flags)) {
+                    if (sceneManager->GetActiveScene() != openScene) {
+                        sceneManager->SetActiveScene(openScene);
+                        selectedObjectIndex = -1;
+                    }
+                    ImGui::EndTabItem();
+                }
+            
+                if (!isOpen) {
+                    sceneManager->CloseScene(openScene);
+                }
+            }
+        
+            // "+" button at the end to quickly make a new scene
+            if (ImGui::TabItemButton("+", ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip)) {
+                auto newTab = sceneManager->CreateScene("New Prefab");
+                sceneManager->SetActiveScene(newTab);
+            }
+        
+            ImGui::EndTabBar();
+        }
+
+        // --- NEW SCENE MODAL ---
+        /* 
+
+
+        // Need to refactor this, putting a pin in it for now its not important
+        // We will need to modularize this into its own component or module system 
+        // Refactor the dynamic rendering before squashing this...
+        
+        if (showNewSceneModal) {
+            ImGui::OpenPopup("Create New Scene");
+        }
+
+        if (ImGui::BeginPopupModal("Create New Scene", &showNewSceneModal, ImGuiWindowFlags_AlwaysAutoResize)) {
+            static char sceneNameBuf[128] = "Untitled Scene";
+            ImGui::InputText("Scene Name", sceneNameBuf, IM_ARRAYSIZE(sceneNameBuf));
+
+            ImGui::Spacing();
+
+            if (ImGui::Button("Create", ImVec2(120, 0))) {
+                auto newScene = sceneManager->CreateScene(sceneNameBuf);
+
+                // Bootstrap with default lighting so we don't spawn into a black void
+                CBaseEntity* sky = newScene->CreateEntity("env_sky");
+                sky->targetName = "Procedural Sky";
+                sky->albedoColor = glm::vec3(0.5f, 0.7f, 1.0f);
+
+                CBaseEntity* sun = newScene->CreateEntity("light_directional");
+                sun->targetName = "Sun Light";
+                sun->angles = glm::vec3(45.0f, -30.0f, 0.0f);
+                sun->albedoColor = glm::vec3(1.0f, 0.95f, 0.9f);
+                sun->emission = 5.0f;
+
+                sceneManager->SetActiveScene(newScene);
+                selectedObjectIndex = -1; // Deselect the old scene's objects
+
+                showNewSceneModal = false;
+                ImGui::CloseCurrentPopup();
+                
+                // Reset buffer for the next time we open it
+                strcpy(sceneNameBuf, "Untitled Scene"); 
+            }
+
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+                showNewSceneModal = false;
+                ImGui::CloseCurrentPopup();
+            }
+
+            ImGui::EndPopup();
+        }
+        */
+        // --- GIZMOS ---
         
         if (viewportSize.x > 0 && viewportSize.y > 0 && scene) {
             ImGuizmo::SetOrthographic(false);
@@ -662,6 +753,8 @@ namespace Crescendo {
         ImGui::PopStyleColor();
 
         // --- 4. HIERARCHY & INSPECTOR ---
+
+        
         
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
         ImGui::Begin("Scene Hierarchy");

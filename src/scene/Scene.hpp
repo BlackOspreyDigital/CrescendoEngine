@@ -43,8 +43,8 @@ namespace Crescendo {
     public:
         std::vector<CBaseEntity*> entities;
         PhysicsServer* physics = nullptr;
-
         EnvironmentSettings environment; 
+        std::string name = "Untitled Scene"; 
 
         CBaseEntity* CreateEntity(const std::string& className = "prop_dynamic") {
             CBaseEntity* ent = new CBaseEntity();

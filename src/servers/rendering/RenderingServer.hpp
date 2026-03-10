@@ -175,7 +175,7 @@ namespace Crescendo {
         bool initialize(DisplayServer* display);
         void shutdown();
         // Update this signature to take the state by reference
-        void render(Scene* scene, EngineState& state);
+        void render(Scene* scene, SceneManager* sceneManager, EngineState& engineState);
 
         void SetMSAASamples(VkSampleCountFlagBits newSamples);
 

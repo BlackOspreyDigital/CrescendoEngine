@@ -2,7 +2,6 @@
 #include <iostream>
 
 #include <Jolt/Core/IssueReporting.h>
-
 #include "Jolt/Core/Memory.h"
 #include "core/Input.hpp"
 #include "scene/BaseEntity.hpp"
@@ -10,6 +9,7 @@
 #include "modules/gltf/AssetLoader.hpp"
 #include "servers/rendering/RenderingServer.hpp"
 
+#include "IO/SceneManager.hpp"
 
 namespace Crescendo {
 
@@ -23,6 +23,9 @@ namespace Crescendo {
         
         if (!displayServer.initialize(title, width, height)) return false;
         if (!renderingServer.initialize(&displayServer)) return false;
+
+        // FIX: Change .get() to the memory address operator &
+        sceneManager = std::make_unique<SceneManager>(&renderingServer);
 
         // Start Physics 
         physicsServer.Initialize();
@@ -101,8 +104,7 @@ namespace Crescendo {
                     }
                 }
             }
-            // --------------------------------------------------
-
+            
             activePlayer = new FPSController();
             activePlayer->Initialize(&physicsServer, spawnLocation);
 
@@ -234,8 +236,8 @@ namespace Crescendo {
     }
 
     void Engine::Render() {
-        // Pass the state by reference down to the renderer
-        renderingServer.render(&scene, currentState);
+        // Pass both the scene and sceneManager down to the renderer
+        renderingServer.render(&scene, sceneManager.get(), currentState);
     }
 
     void Engine::Shutdown() {

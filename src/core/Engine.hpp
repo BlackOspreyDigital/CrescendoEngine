@@ -20,8 +20,8 @@ namespace Crescendo {
         void Run();
         void Shutdown();
 
-        // PUBLIC MEMBERS so main.cpp can access them
-        Scene scene; // world manager 
+        
+        
         EngineState currentState = EngineState::Editor;
         EngineState previousState = EngineState::Editor;
 
@@ -36,9 +36,11 @@ namespace Crescendo {
 
         // SYSTEMS
         ScriptSystem scriptSystem;
+        Scene scene; 
         
     private:
         bool isRunning;
+        std::unique_ptr<SceneManager> sceneManager;
         void ProcessEvents();
         void Update();
         void Render();
