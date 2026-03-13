@@ -48,8 +48,8 @@ list(APPEND SOURCES "src/servers/audio/AudioServer.cpp")
 list(APPEND SOURCES "src/servers/interface/SymbolServer.cpp")
 
 file(GLOB_RECURSE JOLT_SOURCES "modules/Jolt/JoltPhysics/Jolt/*.cpp")
-file(GLOB_RECURSE MODULE_SOURCES "modules/gltf/*.cpp" "modules/ktx/*.cpp" "modules/image/*.cpp")
-
+file(GLOB_RECURSE MODULE_SOURCES "modules/gltf/*.cpp" "modules/ktx/*.cpp" "modules/image/*.cpp" "modules/terrain/*.cpp")
+ 
 set(IMGUI_SOURCES 
     deps/imgui/imgui.cpp 
     deps/imgui/imgui_draw.cpp

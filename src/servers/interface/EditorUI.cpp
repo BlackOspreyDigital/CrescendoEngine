@@ -7,6 +7,7 @@
 #include "scene/components/PointLightComponent.hpp"
 #include "scene/components/TransformComponent.hpp"    
 #include "scene/components/MeshRendererComponent.hpp" 
+#include "scene/components/ProceduralPlanetComponent.hpp"
 #include "servers/rendering/RenderingServer.hpp"
 #include "servers/networking/NetworkingServer.hpp"
 #include "scene/Scene.hpp"
@@ -16,6 +17,7 @@
 #include "backends/imgui_impl_vulkan.h"
 #include "include/portable-file-dialogs.h" 
 #include "IO/SceneSerializer.hpp"
+
 
 #include <streambuf>
 #include <filesystem>
@@ -320,7 +322,7 @@ namespace Crescendo {
         }
         
         // --- HOTKEYS & STATE MANAGEMENT ---
-        static bool showPauseMenu = false;
+        // static bool showPauseMenu = false;
 
         // Toggle Console with '~'
         if (ImGui::IsKeyPressed(ImGuiKey_GraveAccent, false)) {
@@ -331,7 +333,7 @@ namespace Crescendo {
             }
         }
 
-        // Toggle Pause Menu with 'ESC'
+        /* Toggle Pause Menu with 'ESC'
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
             if (engineState == EngineState::Playing) {
                 engineState = EngineState::Paused;
@@ -341,7 +343,7 @@ namespace Crescendo {
                 showPauseMenu = false;
                 showConsole = false; // Close console when resuming
             }
-        }
+        } */
 
         // --- EDITOR CAMERA INPUT ---
         // ONLY allow camera movement if we are actually in Editor Mode!
@@ -388,6 +390,29 @@ namespace Crescendo {
                 // Auto-attach core components
                 ent->AddComponent<TransformComponent>();
                 ent->AddComponent<MeshRendererComponent>();
+                
+                selectedObjectIndex = scene->entities.size() - 1; 
+            }
+
+            if (ImGui::MenuItem("Procedural Planet")) {
+                // Initialize default settings
+                Crescendo::Terrain::VoxelSettings defaultSettings{};
+                
+                auto chunk = Crescendo::Terrain::VoxelGenerator::GenerateChunk(glm::vec3(-15.0f), 32, 30.0f, defaultSettings);
+                int meshID = rendererRef->acquireMesh("PROCEDURAL", "PlanetChunk", chunk.vertices, chunk.indices);
+
+                CBaseEntity* planet = scene->CreateEntity("prop_dynamic");
+                planet->targetName = "Voxel Planet";
+                planet->origin = camera.Position + (camera.Front * 30.0f); 
+                
+                planet->AddComponent<TransformComponent>();
+                planet->AddComponent<MeshRendererComponent>();
+                planet->AddComponent<ProceduralPlanetComponent>(); // <-- ADD THIS!
+                
+                planet->modelIndex = meshID;
+                planet->albedoColor = glm::vec3(0.2f, 0.6f, 0.3f); 
+                planet->roughness = 0.9f;
+                planet->metallic = 0.0f;
                 
                 selectedObjectIndex = scene->entities.size() - 1; 
             }
@@ -914,6 +939,8 @@ namespace Crescendo {
 
                 // --- 3. DYNAMIC COMPONENTS ---
                 for (auto& comp : ent->components) {
+                    if (comp->GetName() == "Procedural Planet") continue;
+                    
                     ImGui::PushID(comp.get());
                     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
                     
@@ -989,6 +1016,60 @@ namespace Crescendo {
                 ImGui::Spacing();
                 ImGui::Separator();
                 ImGui::Spacing();
+
+                // --- PROCEDURAL PLANET SETTINGS ---
+                if (ent->HasComponent<ProceduralPlanetComponent>()) {
+                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
+                    if (ImGui::CollapsingHeader("Procedural Planet", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed)) {
+
+                        // 1. Removed the '&' so it is correctly captured as a pointer
+                        auto planet = ent->GetComponent<ProceduralPlanetComponent>();
+                        bool needsRebuild = false;
+                    
+                        // 2. Swapped all the dots '.' for arrows '->'
+                        ImGui::SliderFloat("Radius", &planet->settings.radius, 1.0f, 50.0f);
+                        if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
+                    
+                        ImGui::SliderInt("Octaves", &planet->settings.octaves, 1, 8);
+                        if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
+                    
+                        ImGui::SliderFloat("Amplitude", &planet->settings.amplitude, 0.0f, 20.0f);
+                        if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
+                    
+                        ImGui::SliderFloat("Frequency", &planet->settings.frequency, 0.01f, 1.0f);
+                        if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
+                    
+                        ImGui::SliderInt("Resolution", &planet->resolution, 8, 64);
+                        if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
+                    
+                        // 3. Fixed the ImVec2 typo!
+                        if (ImGui::Button("Regenerate Mesh", ImVec2(-1, 0))) {
+                            needsRebuild = true;
+                        }
+                    
+                        if (needsRebuild) {
+                        // --- THE FIX: Auto-scale the bounding box! ---
+                        // Diameter = Radius * 2. Add the mountain amplitude, plus a 20% safety margin.
+                        planet->chunkSize = (planet->settings.radius + planet->settings.amplitude) * 2.2f;
+                            
+                        // Center the chunk perfectly using the new dynamic size
+                        glm::vec3 genOrigin = glm::vec3(-planet->chunkSize / 2.0f);
+                            
+                        auto chunk = Crescendo::Terrain::VoxelGenerator::GenerateChunk(
+                            genOrigin, planet->resolution, planet->chunkSize, planet->settings
+                        );
+                    
+                        // Send new mesh to Vulkan (with our safety net!)
+                        if (!chunk.vertices.empty() && !chunk.indices.empty()) {
+                            ent->modelIndex = rendererRef->acquireMesh("PROCEDURAL", "PlanetChunk", chunk.vertices, chunk.indices);
+                        } else {
+                            ent->modelIndex = -1; 
+                        }
+                    }
+                        ImGui::Spacing();
+                    }
+                    ImGui::PopStyleColor();
+                }
 
                 // --- 5. ADD COMPONENT MENU ---
                 if (ImGui::Button("Add Component", ImVec2(-1, 30))) {

@@ -15,6 +15,7 @@
 
 
 namespace Crescendo {
+    
     class RenderingServer;
     class Scene;
     class SceneManager;

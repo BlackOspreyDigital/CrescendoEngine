@@ -1208,6 +1208,35 @@ namespace Crescendo {
         return true;
     }
 
+    int RenderingServer::acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices) {
+        // 1. Check cache first (unless it's a dynamic procedural mesh)
+        if (path != "PROCEDURAL" && cache.meshes.find(path) != cache.meshes.end()) {
+            return cache.meshes[path];
+        }
+
+        // 2. Create the new MeshResource
+        MeshResource newMesh;
+        newMesh.name = name;
+        newMesh.indexCount = static_cast<uint32_t>(indices.size());
+        
+        // 3. Send the raw vertices/indices to the Vulkan GPU buffers
+        newMesh.vertexBuffer = createVertexBuffer(vertices);
+        newMesh.indexBuffer = createIndexBuffer(indices);
+        newMesh.textureID = 0; // Default white texture
+
+        // 4. Store it in the engine's master list
+        int meshID = static_cast<int>(meshes.size());
+        meshes.push_back(std::move(newMesh));
+        
+        // 5. Cache it so we don't upload the same file twice
+        if (path != "PROCEDURAL") {
+            cache.meshes[path] = meshID;
+            meshMap[path] = meshID;
+        }
+
+        return meshID;
+    }
+
     int RenderingServer::acquireTexture(const std::string& path) {
         if (cache.textures.find(path) != cache.textures.end()) {
             return cache.textures[path];
