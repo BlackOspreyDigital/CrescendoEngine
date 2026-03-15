@@ -139,12 +139,19 @@ namespace Crescendo {
         glm::mat4 view;
         glm::mat4 invProj;
         glm::mat4 invView;
-    }; // Exactly 256 bytes total
+    }; 
 
     struct SkyboxPushConsts {
         glm::mat4 invViewProj;  
     };
-    
+
+    struct AtmospherePush {
+        glm::mat4 invViewProj;       // 64 bytes
+        glm::vec4 camPos_pRadius;    // 16 bytes
+        glm::vec4 pCenter_aRadius;   // 16 bytes
+        glm::vec4 sunDir_intensity;  // 16 bytes (Renamed from sunDir_padding!)
+        glm::vec4 rayleigh_mie;      // 16 bytes (xyz = Rayleigh, w = Mie)
+    }; // Total: 128 Bytes
     
     struct PostProcessPushConstants {
        float exposure;
@@ -163,7 +170,6 @@ namespace Crescendo {
         bool halfResSSR = false;
     };
     
-
     class RenderingServer {   
     friend class KtxLoader;
     
@@ -289,6 +295,7 @@ namespace Crescendo {
         VkPipeline opaquePipeline = VK_NULL_HANDLE;
         VkPipeline skyPipeline = VK_NULL_HANDLE;
         VkPipeline waterPipeline = VK_NULL_HANDLE;
+        VkPipeline atmospherePipeline = VK_NULL_HANDLE;
 
         // Wireframe
         VkPipeline outlinePipeline = VK_NULL_HANDLE;
@@ -417,6 +424,7 @@ namespace Crescendo {
         bool createTransparentPipeline();
         bool createOpaquePipeline();
         bool createWaterPipeline();
+        bool createAtmospherePipeline();
         bool createTextureImage();        
         bool createTextureImage(const std::string& path, VulkanImage& outImage);
         bool createTextureSampler();          

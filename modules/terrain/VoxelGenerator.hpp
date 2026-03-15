@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <glm/glm.hpp>
+#include <glm/gtc/constants.hpp>
 #include "servers/rendering/Vertex.hpp" 
 
 namespace Crescendo {
@@ -22,12 +23,15 @@ namespace Terrain {
 
     class VoxelGenerator {
     public:
-        // 2. Make sure your GenerateChunk expects the settings!
-        static ChunkData GenerateChunk(const glm::vec3& origin, int resolution, float size, const VoxelSettings& settings);
+        // ADDED int lod = 0
+        static ChunkData GenerateChunk(const glm::vec3& origin, int resolution, float size, const VoxelSettings& settings, int lod = 0);
+        static void GenerateWaterSphere(float radius, int segments, int rings, std::vector<Vertex>& outVertices, std::vector<uint32_t>& outIndices);
+
+        // ADDED int lod = 0
+        static float EvaluateDensity(const glm::vec3& worldPos, const VoxelSettings& settings, int lod = 0);
 
     private:
-        // 3. Make sure EvaluateDensity expects the settings!
-        static float EvaluateDensity(const glm::vec3& worldPos, const VoxelSettings& settings);
+        static glm::vec3 CalculateNormal(const glm::vec3& p, const VoxelSettings& settings); 
         static glm::vec3 VertexInterp(float isolevel, const glm::vec3& p1, const glm::vec3& p2, float valp1, float valp2);
     };
 

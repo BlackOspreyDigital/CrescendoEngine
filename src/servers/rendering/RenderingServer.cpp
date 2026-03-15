@@ -13,6 +13,7 @@
 #include <array>
 #include <set>
 #include "scene/Scene.hpp"
+#include "scene/components/ProceduralPlanetComponent.hpp"
 #include <cstring>
 #include <fstream>
 #include <algorithm>
@@ -28,7 +29,7 @@
 #include <glm/gtx/intersect.hpp>       
 #include <glm/gtx/matrix_decompose.hpp> 
 #include "backends/imgui_impl_vulkan.h"
-
+#include "modules/terrain/TerrainManager.hpp"
   
 #include <vulkan/vulkan_core.h>  
 #include "servers/display/DisplayServer.hpp"
@@ -150,7 +151,8 @@ namespace Crescendo {
         // Pass transparentRenderPass because it perfectly supports 4x MSAA without erasing the screen!
         symbolServer.Initialize(device, transparentRenderPass, descriptorSetLayout, symbolTextureLayout);
         if (!createGraphicsPipeline()) return false;
-        if (!createWaterPipeline()) return false;        
+        if (!createWaterPipeline()) return false;       
+        if (!createAtmospherePipeline()) return false; 
         if (!createTransparentPipeline()) return false;
         if (!createOpaquePipeline()) return false;
         if (!createBloomPipeline()) return false;
@@ -162,8 +164,8 @@ namespace Crescendo {
         if (!createBakeRenderPass()) return false;
         if (!createBakeFramebuffer()) return false;
         if (!createBakePipeline()) return false;
-        //-------------------
-
+        
+        // --- wireframe view ---
         if (!createOutlinePipeline()) return false;
 
         if (!createFramebuffers()) return false;
@@ -1777,7 +1779,7 @@ namespace Crescendo {
         rasterizer.rasterizerDiscardEnable = VK_FALSE;
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_NONE; 
+        rasterizer.cullMode = VK_CULL_MODE_BACK_BIT; 
         rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{};
@@ -1833,6 +1835,91 @@ namespace Crescendo {
         vkDestroyShaderModule(device, fragShaderModule, nullptr);
         vkDestroyShaderModule(device, vertShaderModule, nullptr);
 
+        return true;
+    }
+
+    bool RenderingServer::createAtmospherePipeline() {
+        auto vertShaderCode = readFile("assets/shaders/atmosphere.vert.spv");
+        auto fragShaderCode = readFile("assets/shaders/atmosphere.frag.spv");
+
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+        VkPipelineShaderStageCreateInfo shaderStages[] = {
+            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertShaderModule, "main", nullptr},
+            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragShaderModule, "main", nullptr}
+        };
+
+        // Empty Vertex Input (We use the gl_VertexIndex trick in the shader to draw the quad)
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+        VkViewport viewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
+        VkRect2D scissor{{0, 0}, swapChainExtent};
+
+        VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        viewportState.viewportCount = 1;
+        viewportState.pViewports = &viewport;
+        viewportState.scissorCount = 1;
+        viewportState.pScissors = &scissor;
+
+        VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE; // Fullscreen quad
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+        VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        multisampling.rasterizationSamples = msaaSamples; // Inherit your dynamic MSAA settings!
+
+        // No Depth Testing - We want this to draw as a background layer!
+        VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        depthStencil.depthTestEnable = VK_FALSE; 
+        depthStencil.depthWriteEnable = VK_FALSE; 
+
+        // BLENDING: Allow the procedural skybox behind it to show through!
+        VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
+        colorBlendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachments[0].blendEnable = VK_TRUE;
+        colorBlendAttachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        colorBlendAttachments[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorBlendAttachments[0].colorBlendOp = VK_BLEND_OP_ADD;
+        colorBlendAttachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        colorBlendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
+        
+        colorBlendAttachments[1] = colorBlendAttachments[0]; // G-Buffer Normal
+
+        VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        colorBlending.attachmentCount = 2;
+        colorBlending.pAttachments = colorBlendAttachments;
+
+        std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0, (uint32_t)dynamicStates.size(), dynamicStates.data()};
+
+        VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.layout = pipelineLayout; // Use your main layout!
+        pipelineInfo.renderPass = viewportRenderPass;
+        pipelineInfo.subpass = 0;
+
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &atmospherePipeline) != VK_SUCCESS) {
+            return false;
+        }
+
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
         return true;
     }
 
@@ -2450,6 +2537,7 @@ namespace Crescendo {
         
         return true;
     }
+    
 
     //===============================================
     // RENDER STAGING
@@ -3027,7 +3115,42 @@ namespace Crescendo {
                                    0, sizeof(SkyboxPush), &skyPush);
             }
             vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
-        
+
+            // -----------------------------------------------------------------
+            // DRAW ATMOSPHERE ( Only for voxel ents )
+            // -----------------------------------------------------------------
+            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, atmospherePipeline);
+            
+            for (auto* ent : scene->entities) {
+                if (ent && ent->HasComponent<ProceduralPlanetComponent>()) {
+                    auto planet = ent->GetComponent<ProceduralPlanetComponent>();
+
+                    AtmospherePush atmosPush{};
+                    
+                    // --- THE FIX 1: FULL VIEW MATRIX ---
+                    // Using 'view' instead of 'viewNoTrans' locks the bubble to the planet
+                    atmosPush.invViewProj = glm::inverse(proj * view); 
+                    
+                    atmosPush.camPos_pRadius = glm::vec4(camPos, planet->settings.radius);
+                    
+                    // --- THE FIX 2: HOOK UP THE SLIDERS ---
+                    // 1. Multiply radius by the dynamic UI Scale slider
+                    atmosPush.pCenter_aRadius = glm::vec4(ent->origin, planet->settings.radius * planet->atmosphereScale); 
+                    
+                    // 2. Pack the Intensity into the W component of the Sun Direction
+                    atmosPush.sunDir_intensity = glm::vec4(sunDirection, planet->atmosphereIntensity); 
+                    
+                    // 3. Pack Rayleigh and Mie into the new vec4
+                    atmosPush.rayleigh_mie = glm::vec4(planet->rayleigh, planet->mie);
+
+                    vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
+                                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
+                                       0, sizeof(AtmospherePush), &atmosPush);
+                    
+                    vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
+                }
+            }
+                    
             // -----------------------------------------------------------------
             // DRAW ENTITIES (OPAQUE & TRANSPARENT)
             // -----------------------------------------------------------------
@@ -3073,14 +3196,69 @@ namespace Crescendo {
             };
 
             // -----------------------------------------------------------------
-            // 2. DRAW OPAQUE
+            // 2. DRAW OPAQUE & OCTREES
             // -----------------------------------------------------------------
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, opaquePipeline);
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
             
+            // First, draw standard opaque models (like the player, ships, etc)
             DrawList(opaqueList);
 
-            // Close the opaque pass so we can snapshot it!
+            // Now, traverse and stream the Procedural Planets!
+            for (auto* ent : scene->entities) {
+                if (ent && ent->HasComponent<ProceduralPlanetComponent>()) {
+                    auto planet = ent->GetComponent<ProceduralPlanetComponent>();
+                    if (!planet->rootNode) continue;
+
+                    // 1. Thread Sync & LOD Updates
+                    // This mathematically shatters the chunk grid as you fly closer!
+                    planet->rootNode->Update(camPos - ent->origin, planet->lodSplitThreshold); 
+                    
+                    // Safely scoops up any background meshes that finished baking this frame
+                    planet->rootNode->CheckForFinishedMeshes(this); 
+
+                    PushConsts push{};
+                    push.entityIndex = entityGPUIndices[ent];
+
+                    // 2. Recursive Octree Streaming Lambda
+                    auto drawOctree = [&](auto& self, Crescendo::Terrain::OctreeNode* node) -> void {
+                        if (!node) return;
+
+                        if (node->isLeaf) {
+                            if (node->meshID != -1) {
+                                // The chunk is baked, in VRAM, and ready to draw!
+                                MeshResource& mesh = meshes[node->meshID];
+                                if (mesh.vertexBuffer.handle != VK_NULL_HANDLE) {
+                                    VkBuffer vBuffers[] = { mesh.vertexBuffer.handle };
+                                    VkDeviceSize offsets[] = {0};
+                                    vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
+                                    vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
+                                    
+                                    vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConsts), &push);
+                                    vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
+                                }
+                            } else {
+                                // If we don't have a mesh, kick off a background thread to make one!
+                                planet->chunkManager->EnqueueChunk(node);
+                            }
+                        } else {
+                            // If it's not a leaf, traverse deeper into the high-res children
+                            for (auto& child : node->children) {
+                                self(self, child.get());
+                            }
+                        }
+                    };
+
+                    // 3. Fire the laser!
+                    drawOctree(drawOctree, planet->rootNode.get());
+
+                    // Sort the queue and dispatch the closest 4 chunks!
+                    // Changed . to -> 
+                    planet->chunkManager->ProcessQueue(camPos - ent->origin, planet->settings);
+                }
+            }
+
+            // Close the opaque pass so we can snapshot it for the glass refraction!
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
 
             // -----------------------------------------------------------------
@@ -4465,6 +4643,7 @@ namespace Crescendo {
         if (opaquePipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, opaquePipeline, nullptr);opaquePipeline = VK_NULL_HANDLE; }
         if (transparentPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, transparentPipeline, nullptr); transparentPipeline = VK_NULL_HANDLE; }
         if (waterPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, waterPipeline, nullptr); waterPipeline = VK_NULL_HANDLE; }
+        if (atmospherePipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, atmospherePipeline, nullptr); atmospherePipeline = VK_NULL_HANDLE; }
 
         recreateSwapChain(window);
 
@@ -4472,6 +4651,7 @@ namespace Crescendo {
         createOpaquePipeline();
         createTransparentPipeline();
         createWaterPipeline();
+        createAtmospherePipeline();
 
         std::cout << "[Engine] MSAA successfully changed to " << newSamples << " samples." << std::endl;
     }
@@ -4489,6 +4669,7 @@ namespace Crescendo {
             if (transparentPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, transparentPipeline, nullptr);
             if (opaquePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, opaquePipeline, nullptr);
             if (waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, waterPipeline, nullptr);
+            if (atmospherePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, atmospherePipeline, nullptr);
             if (bloomPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bloomPipeline, nullptr);
             if (compositePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, compositePipeline, nullptr);
             if (shadowPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, shadowPipeline, nullptr);

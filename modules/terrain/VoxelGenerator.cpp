@@ -1,5 +1,6 @@
 #include "VoxelGenerator.hpp"
 #include "MarchingCubesTables.hpp"
+#include <cstdint>
 #include <glm/gtc/noise.hpp>
 
 namespace Crescendo {
@@ -8,25 +9,42 @@ namespace Terrain {
     // The threshold where terrain becomes solid air
     const float ISO_LEVEL = 0.0f; 
 
-    float VoxelGenerator::EvaluateDensity(const glm::vec3& worldPos, const VoxelSettings& settings) {
-        // 1. The Base Sphere (now using settings!)
+    // 1. ADD 'int lod' TO THE SIGNATURE
+    float VoxelGenerator::EvaluateDensity(const glm::vec3& worldPos, const VoxelSettings& settings, int lod) {
         float baseDistance = glm::length(worldPos) - settings.radius; 
-
-        // 2. Fractional Brownian Motion (fBM) Variables
         float noiseValue = 0.0f;
-        glm::vec3 samplePos = worldPos;
         float currentAmplitude = settings.amplitude;
         float currentFrequency = settings.frequency;
+        float weight = 1.0f; 
 
-        // 3. Layer the noise!
-        for (int i = 0; i < settings.octaves; i++) {
-            noiseValue += glm::simplex(samplePos * currentFrequency) * currentAmplitude;
-            currentAmplitude *= 0.5f; 
+        // --- LOD CULLING MAGIC ---
+        // If we are far away (LOD >= 2), only calculate 2 octaves.
+        // If we are in orbit (LOD >= 4), only calculate 1 octave!
+        int activeOctaves = settings.octaves;
+        if (lod >= 2) activeOctaves = 2;
+        if (lod >= 4) activeOctaves = 1;
+
+        for (int i = 0; i < activeOctaves; i++) {
+            float v = glm::simplex(worldPos * currentFrequency);
+            v = 1.0f - std::abs(v);
+            v *= v;
+            noiseValue += v * currentAmplitude * weight;
             currentFrequency *= 2.0f; 
+            currentAmplitude *= 0.5f; 
+            weight = glm::clamp(v * 2.0f, 0.0f, 1.0f);
         }
 
-        // 4. Subtract the noise from the sphere's surface
         return baseDistance - noiseValue; 
+    }
+
+    glm::vec3 VoxelGenerator::CalculateNormal(const glm::vec3& p, const VoxelSettings& settings) {
+        const float h = 0.01f;
+
+        float dx = EvaluateDensity(p + glm::vec3(h, 0, 0), settings) - EvaluateDensity(p - glm::vec3(h, 0, 0), settings);
+        float dy = EvaluateDensity(p + glm::vec3(0, h, 0), settings) - EvaluateDensity(p - glm::vec3(0, h, 0), settings);
+        float dz = EvaluateDensity(p + glm::vec3(0, 0, h), settings) - EvaluateDensity(p - glm::vec3(0, 0, h), settings);
+
+        return glm::normalize(glm::vec3(dx, dy, dz));
     }
 
     glm::vec3 VoxelGenerator::VertexInterp(float isolevel, const glm::vec3& p1, const glm::vec3& p2, float valp1, float valp2) {
@@ -39,7 +57,8 @@ namespace Terrain {
         return p1 + mu * (p2 - p1);
     }
 
-    ChunkData VoxelGenerator::GenerateChunk(const glm::vec3& origin, int resolution, float size, const VoxelSettings& settings) {
+    // 1. Update the signature here too!
+    ChunkData VoxelGenerator::GenerateChunk(const glm::vec3& origin, int resolution, float size, const VoxelSettings& settings, int lod) {
         ChunkData chunk;
         float step = size / resolution;
 
@@ -62,10 +81,10 @@ namespace Terrain {
                         pos + glm::vec3(0, 1, 0) * step
                     };
 
-                    // Sample the density at each corner
+                    // 2. Sample the density at each corner AND PASS THE LOD!
                     float values[8];
                     for (int i = 0; i < 8; i++) {
-                        values[i] = EvaluateDensity(corners[i], settings); // <-- Add settings here!
+                        values[i] = EvaluateDensity(corners[i], settings, lod); 
                     }
 
                     // Determine the 8-bit index of the cube configuration
@@ -105,8 +124,9 @@ namespace Terrain {
                         v3.pos = vertList[triTable[cubeIndex][i + 2]];
 
                         // Calculate face normal (cross product)
-                        glm::vec3 normal = glm::normalize(glm::cross(v2.pos - v1.pos, v3.pos - v1.pos));
-                        v1.normal = normal; v2.normal = normal; v3.normal = normal;
+                        v1.normal = CalculateNormal(v1.pos, settings);
+                        v2.normal = CalculateNormal(v2.pos, settings);
+                        v3.normal = CalculateNormal(v3.pos, settings);
                         
                         // Default color/UV
                         v1.color = glm::vec3(0.4f, 0.8f, 0.4f); 
@@ -129,5 +149,49 @@ namespace Terrain {
 
         return chunk;
     }
+
+    void VoxelGenerator::GenerateWaterSphere(float radius, int segments, int rings, std::vector<Vertex>& outVertices, std::vector<uint32_t>& outIndices) {
+        outVertices.clear();
+        outIndices.clear();
+
+        // Generate Vertices
+        for (int y = 0; y <= rings; ++y) {
+            float v = (float)y / (float)rings;
+            float phi = v * glm::pi<float>(); // 0 to pi
+
+            for (int x = 0; x <= segments; ++x) {
+                float u = (float)x / (float)segments;
+                float theta = u * glm::pi<float>() * 2.0f; // 0 to 2*PI
+
+                // Spherical to cartesian coordinates
+                float xPos = std::cos(theta) * std::sin(phi);
+                float yPos = std::cos(phi);
+                float zPos = std::sin(theta) * std::sin(phi);
+
+                Vertex vertex{};
+                vertex.pos = glm::vec3(xPos, yPos, zPos) * radius;
+                vertex.normal = glm::normalize(glm::vec3(xPos, yPos, zPos));
+                vertex.texCoord = glm::vec2(u, v);
+
+                outVertices.push_back(vertex);
+            }
+        }
+
+        // Generate Indices 
+        for (int y = 0; y < rings; ++y) {
+            for (int x = 0; x < segments; ++x) {
+                uint32_t i0 = (y + 1) * (segments + 1) + x;
+                uint32_t i1 = y * (segments + 1) + x;
+                uint32_t i2 = y * (segments + 1) + x + 1;
+                uint32_t i3 = (y + 1) * (segments + 1) + x + 1;
+
+                // Two triangles per quad
+                outIndices.push_back(i0); outIndices.push_back(i2); outIndices.push_back(i1);
+                outIndices.push_back(i0); outIndices.push_back(i3); outIndices.push_back(i2);
+
+            }
+        }
+    }
+
 }
 }

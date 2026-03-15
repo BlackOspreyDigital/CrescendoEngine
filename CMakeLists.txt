@@ -71,6 +71,8 @@ set(SHADER_FILES
     assets/shaders/opaque.frag
     assets/shaders/sky.vert
     assets/shaders/sky.frag
+    assets/shaders/atmosphere.frag 
+    assets/shaders/atmosphere.vert
     assets/shaders/water.vert
     assets/shaders/water.frag
     assets/shaders/bloom_bright.frag

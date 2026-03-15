@@ -51,7 +51,8 @@ void main() {
     }
     else {
         // --- 2: HDR CUBEMAP IBL ---
-        // Vulkan natively knows how to sample a cube using our 3D ray!
+        // The swizzle is removed. Because you invert the projection in C++, 
+        // viewDir is already correctly mapped for the Cubemap!
         vec3 hdrColor = texture(skybox, viewDir).rgb;
         outColor = vec4(hdrColor, 1.0);
     }

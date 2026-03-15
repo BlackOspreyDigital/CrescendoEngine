@@ -4,90 +4,80 @@ layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec2 fragUV;
 layout(location = 3) in vec3 fragPos;
+layout(location = 4) in vec4 fragClipSpace; // Back to Clip Space!
 layout(location = 6) in flat int inEntityIndex;
 
 layout(location = 0) out vec4 outColor;
-layout(location = 1) out vec4 outNormalRoughness; // [NEW] G-Buffer Output
+layout(location = 1) out vec4 outNormalRoughness;
 
 layout(binding = 0) uniform sampler2D texSampler[100];
 layout(binding = 1) uniform samplerCube skyTexture;
 
-// --- SSBO ---
 struct EntityData {
-    vec4 pos;
-    vec4 rot;
-    vec4 scale;
-    vec4 sphereBounds;
-    vec4 albedoTint;
-    vec4 pbrParams;    
-    vec4 volumeParams; 
-    vec4 volumeColor;
-    vec4 advancedPbr;  
-    vec4 extendedPbr;
-    vec4 padding1;
-    vec4 padding2;
+    vec4 pos; vec4 rot; vec4 scale; vec4 sphereBounds;
+    vec4 albedoTint; vec4 pbrParams; vec4 volumeParams; vec4 volumeColor;
+    vec4 advancedPbr; vec4 extendedPbr; vec4 padding1; vec4 padding2;
 };
-
-layout(std430, set = 0, binding = 2) readonly buffer ObjectBuffer { 
-    EntityData entities[];
-};
-
-struct PointLight {
-    vec4 positionAndRadius;
-    vec4 colorAndIntensity;
-};
+layout(std430, set = 0, binding = 2) readonly buffer ObjectBuffer { EntityData entities[]; };
 
 layout(set = 0, binding = 3) uniform GlobalUniforms {
-    mat4 viewProj;
-    mat4 view;
-    mat4 proj;
-    mat4 lightSpaceMatrices[4];
-    vec4 cascadeSplits;
-    vec4 cameraPos;
-    vec4 sunDirection;
-    vec4 sunColor;
-    vec4 params;
-    vec4 fogColor;
-    vec4 fogParams;
-    vec4 skyColor;
-    vec4 groundColor;
-    
-    // --- POINT LIGHTS ---
-    vec4 pointLightParams; // x = count
-    PointLight pointLights[16];
+    mat4 viewProj; mat4 view; mat4 proj; mat4 lightSpaceMatrices[4];
+    vec4 cascadeSplits; vec4 cameraPos; vec4 sunDirection; vec4 sunColor;
+    vec4 params; vec4 fogColor; vec4 fogParams; vec4 skyColor; vec4 groundColor;
 } global;
 
-layout(push_constant) uniform Constants {
-    uint entityIndex;
-} PushConsts;
+layout(binding = 5) uniform sampler2D refractionMap;
 
-vec2 SampleSphericalMap(vec3 v) {
-    vec2 uv = vec2(atan(v.y, v.x), asin(v.z));
-    uv *= vec2(0.1591, 0.3183); 
-    uv += 0.5;
-    return uv;
-}
+layout(push_constant) uniform Constants { uint entityIndex; } PushConsts;
 
 void main() {
     EntityData ent = entities[inEntityIndex];
-    int texID = int(ent.albedoTint.w);
     float roughness = ent.pbrParams.x;
     float time = global.params.x;
 
-    // --- Distortion ---
-    vec2 distortion = vec2(sin(fragUV.y * 10.0 + time), cos(fragUV.x * 10.0 + time)) * 0.01;
-    vec2 rippleUV = fragUV + distortion;
+    // 1. CAMERA-LOCKED REFRACTION (Fixes the Sliding)
+    vec2 ndc = fragClipSpace.xy / fragClipSpace.w;
+    vec2 screenUV = ndc * 0.5 + 0.5;
 
-    vec4 textureColor = texture(texSampler[texID], rippleUV);
+    // [Vulkan Projection Note]
+    // If you invert your view projection in C++, the refraction image might appear upside down.
+    // If your underwater terrain is flipped vertically, simply uncomment this line:
+    // screenUV.y = 1.0 - screenUV.y; 
 
-    // --- Reflection ---
+    // Subtle distortion
+    vec2 distortion = vec2(sin(fragUV.y * 10.0 + time), cos(fragUV.x * 10.0 + time)) * 0.005;
+
+    // KEEP textureLod to prevent Mipmap Panic (the black triangle tearing)
+    vec3 refractColor = textureLod(refractionMap, screenUV + distortion, 0.0).rgb;
+
+    // 2. Z-UP PROCEDURAL SKY REFLECTION (Fixes the Equator Highlights)
+    vec3 V = normalize(fragPos - global.cameraPos.xyz);
     vec3 N = normalize(fragNormal);
-    vec3 V = normalize(fragPos - global.cameraPos.xyz); // Use Global Camera
     vec3 R = reflect(V, N); 
 
-    vec3 reflection = texture(skyTexture, normalize(R)).rgb;
+    // --- THE FIX: R.z is the vertical axis in your engine! ---
+    float skyBlend = clamp(R.z * 2.0 + 0.2, 0.0, 1.0); 
+    vec3 reflection = mix(global.groundColor.rgb, global.skyColor.rgb, skyBlend);
 
-    vec3 finalColor = mix(textureColor.rgb, reflection, 0.5);
-    outColor = vec4(finalColor, 0.8);
-    outNormalRoughness = vec4(normalize(N), roughness);
+    // Sun Reflection
+    vec3 sunDir = normalize(global.sunDirection.xyz);
+    float sunDot = max(dot(R, sunDir), 0.0);
+    float sunGlow = pow(sunDot, 256.0) * global.sunDirection.w; 
+    reflection += global.sunColor.rgb * sunGlow;
+
+    // 3. Fresnel Effect
+    float fresnel = max(0.0, 1.0 - max(dot(-V, N), 0.0));
+    fresnel = pow(fresnel, 3.0); 
+    fresnel = mix(0.1, 0.8, fresnel); 
+
+    // 4. Mix Refraction and Water Tint
+    vec3 waterTint = ent.albedoTint.rgb;
+    float waterOpacity = 0.4; 
+    vec3 baseColor = mix(refractColor, waterTint, waterOpacity);
+
+    // Apply Fresnel Reflection
+    vec3 finalColor = mix(baseColor, reflection, fresnel);
+
+    outColor = vec4(finalColor, 1.0);
+    outNormalRoughness = vec4(N, roughness);
 }
