@@ -351,27 +351,28 @@ namespace Crescendo {
         // ONLY allow camera movement if we are actually in Editor Mode!
         if (engineState == EngineState::Editor) {
             if (!io.WantCaptureKeyboard || ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-                 if (io.MouseWheel != 0.0f) {
-                     camera.Zoom -= io.MouseWheel; 
-                     if (camera.Zoom < 1.0f) camera.Zoom = 1.0f;
-                     if (camera.Zoom > 120.0f) camera.Zoom = 120.0f;
-                     camera.fov = camera.Zoom; 
-                 }
-                 
-                 if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-                     // INVERTED MOUSE X HERE (-io.MouseDelta.x)
-                     camera.Rotate(-io.MouseDelta.x, -io.MouseDelta.y); 
-                     
-                     float moveSpeed = 15.0f * io.DeltaTime; 
-                     if (ImGui::IsKeyDown(ImGuiKey_LeftShift)) moveSpeed *= 33.0f; 
-
-                     if (ImGui::IsKeyDown(ImGuiKey_W)) camera.Position += camera.Front * moveSpeed;
-                     if (ImGui::IsKeyDown(ImGuiKey_S)) camera.Position -= camera.Front * moveSpeed;
-                     if (ImGui::IsKeyDown(ImGuiKey_D)) camera.Position += camera.Right * moveSpeed;
-                     if (ImGui::IsKeyDown(ImGuiKey_A)) camera.Position -= camera.Right * moveSpeed;
-                     if (ImGui::IsKeyDown(ImGuiKey_Q)) camera.Position += camera.WorldUp * moveSpeed; 
-                     if (ImGui::IsKeyDown(ImGuiKey_E)) camera.Position -= camera.WorldUp * moveSpeed; 
-                 }
+                if (io.MouseWheel != 0.0f) {
+                    camera.Zoom -= io.MouseWheel; 
+                    if (camera.Zoom < 1.0f) camera.Zoom = 1.0f;
+                    if (camera.Zoom > 120.0f) camera.Zoom = 120.0f;
+                    camera.fov = camera.Zoom; 
+                }
+                
+                if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+                    camera.Rotate(-io.MouseDelta.x, -io.MouseDelta.y); 
+                    
+                    // CLAMP THE DELTA TIME: Never allow a frame step larger than 50ms
+                    float safeDelta = io.DeltaTime;
+                    if (safeDelta > 0.05f) safeDelta = 0.05f;
+                    float moveSpeed = 15.0f * safeDelta; 
+                    if (ImGui::IsKeyDown(ImGuiKey_LeftShift)) moveSpeed *= 33.0f; 
+                    if (ImGui::IsKeyDown(ImGuiKey_W)) camera.Position += camera.Front * moveSpeed;
+                    if (ImGui::IsKeyDown(ImGuiKey_S)) camera.Position -= camera.Front * moveSpeed;
+                    if (ImGui::IsKeyDown(ImGuiKey_D)) camera.Position += camera.Right * moveSpeed;
+                    if (ImGui::IsKeyDown(ImGuiKey_A)) camera.Position -= camera.Right * moveSpeed;
+                    if (ImGui::IsKeyDown(ImGuiKey_Q)) camera.Position += camera.WorldUp * moveSpeed; 
+                    if (ImGui::IsKeyDown(ImGuiKey_E)) camera.Position -= camera.WorldUp * moveSpeed; 
+                }
             }
         }
 
@@ -407,7 +408,7 @@ namespace Crescendo {
 
                 auto planetComp = planet->GetComponent<ProceduralPlanetComponent>();
                 
-                // --- THE FIX: NO MAN'S SKY SCALE ---
+                // PPG SCALE ---
                 planetComp->settings.radius = 3000.0f;     // A massive 6km wide planet!
                 planetComp->settings.amplitude = 150.0f;   // Mountains that reach into the clouds
                 planetComp->settings.frequency = 0.002f;   // Stretch the noise so it forms continents
@@ -419,25 +420,52 @@ namespace Crescendo {
                     glm::vec3(0.0f), planetSize, 6 
                 );
 
-                // --- THE FIX: Initialize the new Manager! ---
+                // Initialize the Manager!
                 planetComp->chunkManager = std::make_unique<Crescendo::Terrain::TerrainManager>();
 
+                // GENERATE THE ATMOSPHERE MESH ---
+                std::vector<Vertex> atmoVerts;
+                std::vector<uint32_t> atmoIndices;
+                
+                // Scale the atmosphere based on the component's variable
+                float atmoRadius = planetComp->settings.radius * planetComp->atmosphereScale; 
+                
+                // 64x64 segments makes it incredibly smooth from space!
+                Crescendo::Terrain::VoxelGenerator::GenerateWaterSphere(atmoRadius, 64, 64, atmoVerts, atmoIndices);
+
+                // --- Send to vram ---
+                planetComp->atmosphereMeshID = sceneManager->GetRenderer()->acquireMesh("PROCEDURAL", "Atmosphere", atmoVerts, atmoIndices);
+                
+                // ==========================================
+                // 2. GENERATE THE OCEAN MESH
+                // ==========================================
+                std::vector<Vertex> waterVerts;
+                std::vector<uint32_t> waterIndices;
+                
+                // THE FIX: Generate a radius of 1.0 so the Entity scale applies correctly!
+                Crescendo::Terrain::VoxelGenerator::GenerateWaterSphere(1.0f, 64, 64, waterVerts, waterIndices);
+
+                // Upload to GPU and get the ID
+                int waterMeshID = sceneManager->GetRenderer()->acquireMesh("PROCEDURAL", "Ocean", waterVerts, waterIndices);
+
+                // ==========================================
+                // 3. CREATE THE OCEAN ENTITY
+                // ==========================================
+                CBaseEntity* ocean = scene->CreateEntity("prop_water"); 
+                ocean->targetName = "Procedural Ocean";
+                
+                // Make sure it spawns at the planet origin!
+                // (If your planet entity is named something other than 'newEnt', change it here!)
+                ocean->origin = planet->origin;
+                
+                // Now that the ocean exists AND the mesh exists, we can link them!
+                ocean->modelIndex = waterMeshID;
                 planet->modelIndex = -1; 
                 planet->albedoColor = glm::vec3(0.2f, 0.6f, 0.3f); 
                 planet->roughness = 0.9f;
                 planet->metallic = 0.0f;
 
-                // --- SPAWN MASSIVE OCEAN ---
-                std::vector<Vertex> waterVerts;
-                std::vector<uint32_t> waterIndices;
-                Crescendo::Terrain::VoxelGenerator::GenerateWaterSphere(1.0f, 64, 64, waterVerts, waterIndices);
-                int waterMeshID = rendererRef->acquireMesh("PROCEDURAL", "OceanSphere", waterVerts, waterIndices);
-
-                CBaseEntity* ocean = scene->CreateEntity("prop_water"); 
-                ocean->targetName = "Ocean";
-                ocean->modelIndex = waterMeshID;
-                ocean->origin = planet->origin; 
-                ocean->scale = glm::vec3(planetComp->settings.radius + 15.0f); // Water level
+                ocean->scale = glm::vec3(planetComp->settings.radius + 15.0f);     // Water level
                 ocean->albedoColor = glm::vec3(0.0f, 0.2f, 0.6f); 
                 ocean->roughness = 0.1f; 
                 ocean->transmission = 1.0f; 
@@ -449,8 +477,8 @@ namespace Crescendo {
             if (ImGui::MenuItem("Point Light")) {
                 CBaseEntity* point = scene->CreateEntity("light_point");
                 point->targetName = "Point Light";
-                point->origin = camera.Position + camera.Front * 5.0f; // Spawn in front of you
-                point->albedoColor = glm::vec3(1.0f, 0.4f, 0.1f);      // Warm fire orange
+                point->origin = camera.Position + camera.Front * 5.0f;                  // Spawn in front of you
+                point->albedoColor = glm::vec3(1.0f, 0.4f, 0.1f);               // Warm fire orange
                 point->emission = 25.0f;  // Intensity
                 point->scale.x = 15.0f;   // RADIUS: How far the light reaches!
                 selectedObjectIndex = scene->entities.size() - 1;
@@ -695,7 +723,6 @@ namespace Crescendo {
 
         // --- NEW SCENE MODAL ---
         /* 
-
 
         // Need to refactor this, putting a pin in it for now its not important
         // We will need to modularize this into its own component or module system 

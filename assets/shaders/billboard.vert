@@ -27,14 +27,18 @@ layout(location = 0) out vec2 outUV;
 void main() {
     vec2 localPos = quadPositions[gl_VertexIndex];
 
+    mat4 rotView = mat4(mat3(ubo.view));
+
     // 1. Transform the center of the entity directly into View Space
-    vec4 viewSpacePos = ubo.view * vec4(pc.worldPosition, 1.0);
+    vec4 viewSpacePos = rotView * vec4(pc.worldPosition, 1.0);
 
     // 2. Add the billboard scale perfectly flat against the camera lens
     viewSpacePos.xy += localPos * pc.scale;
 
     // 3. Project it onto the screen
-    gl_Position = ubo.proj * viewSpacePos;
+    vec4 clipPos = ubo.proj * viewSpacePos;
+
+    gl_Position = clipPos.xyww;
 
     // 4. Flip the V coordinate to fix the upside-down Vulkan texture
     outUV = vec2(localPos.x + 0.5, 0.5 - localPos.y);

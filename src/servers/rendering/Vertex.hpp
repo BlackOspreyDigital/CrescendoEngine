@@ -9,14 +9,13 @@
 #include <glm/glm.hpp>
 #include <glm/gtx/hash.hpp> 
 #include <array>
-#include <vector>
 
 struct Vertex {
     glm::vec3 pos;
     glm::vec3 color;
     glm::vec3 normal;
     glm::vec2 texCoord;
-    glm::vec2 texCoord1; // Second UV Channel
+    glm::vec2 texCoord1; 
     glm::vec3 tangent;
     glm::vec3 bitangent;
     glm::vec2 lightmapUV;

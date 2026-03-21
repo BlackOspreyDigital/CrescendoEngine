@@ -12,7 +12,7 @@ namespace Crescendo::Terrain {
     public:
         std::vector<OctreeNode*> chunkQueue;
         std::atomic<int> activeThreads{0};
-        const int MAX_THREADS = 4; // Safely capped to 4 cores!
+        const int MAX_THREADS = 8; // Safely capped to 4 cores!
 
         // 1. Add chunks to the waiting list
         void EnqueueChunk(OctreeNode* node) {

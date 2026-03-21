@@ -35,6 +35,9 @@ public:
 
     void InstantiatePrefab(std::shared_ptr<Scene> prefabScene, const glm::vec3& position);
 
+    RenderingServer* GetRenderer() const { return rendererRef; }
+    
+
 private:
     RenderingServer* rendererRef = nullptr;
     std::vector<std::shared_ptr<Scene>> openScenes;

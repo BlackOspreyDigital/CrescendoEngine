@@ -34,7 +34,6 @@ namespace Crescendo {
     class DisplayServer;
     class Scene;
     
-    
     struct MeshResource {
         std::string name;
         VulkanBuffer vertexBuffer;
@@ -146,12 +145,12 @@ namespace Crescendo {
     };
 
     struct AtmospherePush {
-        glm::mat4 invViewProj;       // 64 bytes
-        glm::vec4 camPos_pRadius;    // 16 bytes
-        glm::vec4 pCenter_aRadius;   // 16 bytes
-        glm::vec4 sunDir_intensity;  // 16 bytes (Renamed from sunDir_padding!)
-        glm::vec4 rayleigh_mie;      // 16 bytes (xyz = Rayleigh, w = Mie)
-    }; // Total: 128 Bytes
+        glm::mat4 vp;                              // 64 bytes
+        glm::vec4 sunDirection_planetRadius;       // 16 bytes
+        glm::vec4 planetCenter_atmosphereRadius;   // 16 bytes
+        glm::vec4 cameraPos_sunIntensity;          // 16 bytes
+        glm::vec4 rayleigh_mie;                    // 16 bytes
+    }; // Exactly 128 Bytes!
     
     struct PostProcessPushConstants {
        float exposure;
@@ -344,6 +343,7 @@ namespace Crescendo {
         VkPipeline bakePipeline;
 
         bool createBakePipeline();
+        bool createSkyPipeline();
 
         // Viewport (HDR)
         VulkanImage viewportImage;
@@ -433,6 +433,7 @@ namespace Crescendo {
         bool createBloomPipeline();
         bool createCompositePipeline();
         bool createOutlinePipeline();
+        bool createBillboardPipeline();
         bool createHDRImage(const std::string& path, VulkanImage& outImage);
         void updateCompositeDescriptors();
         void recreateSwapChain(SDL_Window* window);

@@ -167,6 +167,8 @@ namespace Crescendo {
         
         // --- wireframe view ---
         if (!createOutlinePipeline()) return false;
+        // if (!createBillboardPipeline()) return false;
+       
 
         if (!createFramebuffers()) return false;
 
@@ -890,12 +892,20 @@ namespace Crescendo {
         brdfBinding.pImmutableSamplers = nullptr;
         brdfBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
+        // Binding 9: Scene Depth Map
+        VkDescriptorSetLayoutBinding depthBinding{};
+        depthBinding.binding = 9;
+        depthBinding.descriptorCount = 1;
+        depthBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        depthBinding.pImmutableSamplers = nullptr;
+        depthBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
 
         globalBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         
-        std::array<VkDescriptorSetLayoutBinding, 9> bindings = { 
+        std::array<VkDescriptorSetLayoutBinding, 10> bindings = { 
             samplerLayoutBinding, skyLayoutBinding, ssboBinding, globalBinding, 
-            shadowBinding, refractionBinding, irradianceBinding, prefilterBinding, brdfBinding 
+            shadowBinding, refractionBinding, irradianceBinding, prefilterBinding, brdfBinding, depthBinding 
         };
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
@@ -1154,13 +1164,28 @@ namespace Crescendo {
             brdfWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             brdfWrite.descriptorCount = 1;
             brdfWrite.pImageInfo = &brdfInfo;
-                        
 
-            std::array<VkWriteDescriptorSet, 9> writes = {
+            // 9 Depth map
+            VkDescriptorImageInfo depthInfo{};
+            depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            depthInfo.imageView = viewportDepthImage.view; 
+            depthInfo.sampler = viewportSampler;
+
+            VkWriteDescriptorSet depthWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            depthWrite.dstSet = descriptorSets[i];
+            depthWrite.dstBinding = 9;
+            depthWrite.dstArrayElement = 0;
+            depthWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            depthWrite.descriptorCount = 1;
+            depthWrite.pImageInfo = &depthInfo;
+
+            // Update the array size to 10 and add depthWrite to the end
+            std::array<VkWriteDescriptorSet, 10> writes = {
                 descriptorWrite, skyWrite, ssboWrite, globalWrite, shadowWrite, refWrite,
-                irradianceWrite, prefilterWrite, brdfWrite
+                irradianceWrite, prefilterWrite, brdfWrite, depthWrite
             };
             vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+            
         } // End of the frames-in-flight loop
 
         // -----------------------------------------------------------
@@ -1376,9 +1401,13 @@ namespace Crescendo {
 
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        depthStencil.depthTestEnable = VK_TRUE; // changed for viewport test
-        depthStencil.depthWriteEnable = VK_TRUE; // changed for viewport test
-        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+        depthStencil.depthTestEnable = VK_TRUE; 
+        depthStencil.depthWriteEnable = VK_FALSE; 
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+        // Infinity sky trick
+        depthStencil.depthBoundsTestEnable = VK_FALSE;
+        depthStencil.stencilTestEnable = VK_FALSE;
 
         VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
         
@@ -1566,7 +1595,7 @@ namespace Crescendo {
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depthStencil.depthTestEnable = VK_TRUE;
-        depthStencil.depthWriteEnable = VK_TRUE;
+        depthStencil.depthWriteEnable = VK_FALSE;
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
         VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
@@ -1850,8 +1879,17 @@ namespace Crescendo {
             {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragShaderModule, "main", nullptr}
         };
 
-        // Empty Vertex Input (We use the gl_VertexIndex trick in the shader to draw the quad)
+        // 1. THE VERTEX FIX: Tell Vulkan how to read your 3D Vertex structure!
+        // The Atmosphere MUST have standard 3D vertex bindings!
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
         VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
         VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         inputAssembly.primitiveRestartEnable = VK_FALSE;
@@ -1865,32 +1903,38 @@ namespace Crescendo {
         viewportState.scissorCount = 1;
         viewportState.pScissors = &scissor;
 
+        // 2. THE CULLING: Render both the inside and outside of the sphere
         VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_NONE; // Fullscreen quad
+        rasterizer.cullMode = VK_CULL_MODE_NONE; 
         rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-        multisampling.rasterizationSamples = msaaSamples; // Inherit your dynamic MSAA settings!
+        multisampling.rasterizationSamples = msaaSamples; 
 
-        // No Depth Testing - We want this to draw as a background layer!
+        // 3. THE DEPTH: Test against the planet, but don't overwrite it
         VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-        depthStencil.depthTestEnable = VK_FALSE; 
+        depthStencil.depthTestEnable = VK_TRUE; 
         depthStencil.depthWriteEnable = VK_FALSE; 
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 
-        // BLENDING: Allow the procedural skybox behind it to show through!
+        // 4. THE BLENDING: Pure Additive Blending (One + One)
         VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
+
+        // Primary Color Buffer
         colorBlendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
         colorBlendAttachments[0].blendEnable = VK_TRUE;
-        colorBlendAttachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        colorBlendAttachments[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorBlendAttachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachments[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
         colorBlendAttachments[0].colorBlendOp = VK_BLEND_OP_ADD;
         colorBlendAttachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         colorBlendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
         colorBlendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
+
+        // G-Buffer Normal (We shouldn't write normals for transparent air)
+        colorBlendAttachments[1] = colorBlendAttachments[0];
         
-        colorBlendAttachments[1] = colorBlendAttachments[0]; // G-Buffer Normal
 
         VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
         colorBlending.attachmentCount = 2;
@@ -1910,7 +1954,7 @@ namespace Crescendo {
         pipelineInfo.pDepthStencilState = &depthStencil;
         pipelineInfo.pColorBlendState = &colorBlending;
         pipelineInfo.pDynamicState = &dynamicState;
-        pipelineInfo.layout = pipelineLayout; // Use your main layout!
+        pipelineInfo.layout = pipelineLayout; 
         pipelineInfo.renderPass = viewportRenderPass;
         pipelineInfo.subpass = 0;
 
@@ -2537,7 +2581,16 @@ namespace Crescendo {
         
         return true;
     }
-    
+
+    bool RenderingServer::createSkyPipeline() {
+        auto vertShaderCode = readFile("assets/shaders/sky.vert.spv");
+        auto fragShaderCode = readFile("assets/shaders/sky.frag.spv");
+            
+        // The Skybox MUST have an empty vertex input!
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        // (No binding descriptions here!)
+    }
+   
 
     //===============================================
     // RENDER STAGING
@@ -2937,6 +2990,7 @@ namespace Crescendo {
         glm::mat4 vp = proj * view;
 
         // 2. Sun Logic (Grab defaults from EditorUI/Scene Environment)
+        // strip this for the new refactor 
         glm::vec3 sunDirection = glm::normalize(scene->environment.sunDirection);
         glm::vec3 sunColor = scene->environment.sunColor;
         float sunIntensity = scene->environment.sunIntensity;
@@ -3106,50 +3160,46 @@ namespace Crescendo {
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
             {
-                struct SkyboxPush { glm::mat4 invViewProj; } skyPush;
+                // 1. The new 112-Byte struct (Perfectly aligned with vec4, no padding needed!)
+                struct SkyboxPush {
+                    glm::mat4 invViewProj;  // 64 bytes
+                    glm::vec4 sunDirection; // 16 bytes (xyz = dir, w = intensity)
+                    glm::vec4 zenithColor;  // 16 bytes
+                    glm::vec4 horizonColor; // 16 bytes
+                } skyPush;
+
                 glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view));
                 skyPush.invViewProj = glm::inverse(proj * viewNoTrans);
+
+                // 2. Set beautiful Deep Space defaults
+                glm::vec3 sunDir = scene->environment.sunDirection;
+                float sunIntensity = 20.0f; 
+                glm::vec3 zenith = glm::vec3(0.01f, 0.01f, 0.02f); // Pitch black/blue space
+                glm::vec3 horizon = glm::vec3(0.05f, 0.10f, 0.20f); // Faint background glow
+
+                // (Optional) Dynamically pull colors from your Editor UI if the entity exists!
+                for (auto* ent : scene->entities) {
+                    if (ent && ent->targetName == "Procedural Sky") {
+                        zenith = ent->albedoColor;
+                        
+                        // --- THE FIX: Add the Horizon color sync! ---
+                        horizon = ent->attenuationColor; 
+                        
+                        sunIntensity = ent->emission;
+                        break;
+                    }
+                }
+
+                // 3. Pack everything into the struct
+                skyPush.sunDirection = glm::vec4(sunDir, sunIntensity);
+                skyPush.zenithColor = glm::vec4(zenith, 1.0f);
+                skyPush.horizonColor = glm::vec4(horizon, 1.0f);
                 
                 vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
                                    0, sizeof(SkyboxPush), &skyPush);
             }
             vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
-
-            // -----------------------------------------------------------------
-            // DRAW ATMOSPHERE ( Only for voxel ents )
-            // -----------------------------------------------------------------
-            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, atmospherePipeline);
-            
-            for (auto* ent : scene->entities) {
-                if (ent && ent->HasComponent<ProceduralPlanetComponent>()) {
-                    auto planet = ent->GetComponent<ProceduralPlanetComponent>();
-
-                    AtmospherePush atmosPush{};
-                    
-                    // --- THE FIX 1: FULL VIEW MATRIX ---
-                    // Using 'view' instead of 'viewNoTrans' locks the bubble to the planet
-                    atmosPush.invViewProj = glm::inverse(proj * view); 
-                    
-                    atmosPush.camPos_pRadius = glm::vec4(camPos, planet->settings.radius);
-                    
-                    // --- THE FIX 2: HOOK UP THE SLIDERS ---
-                    // 1. Multiply radius by the dynamic UI Scale slider
-                    atmosPush.pCenter_aRadius = glm::vec4(ent->origin, planet->settings.radius * planet->atmosphereScale); 
-                    
-                    // 2. Pack the Intensity into the W component of the Sun Direction
-                    atmosPush.sunDir_intensity = glm::vec4(sunDirection, planet->atmosphereIntensity); 
-                    
-                    // 3. Pack Rayleigh and Mie into the new vec4
-                    atmosPush.rayleigh_mie = glm::vec4(planet->rayleigh, planet->mie);
-
-                    vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
-                                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
-                                       0, sizeof(AtmospherePush), &atmosPush);
-                    
-                    vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
-                }
-            }
                     
             // -----------------------------------------------------------------
             // DRAW ENTITIES (OPAQUE & TRANSPARENT)
@@ -3212,7 +3262,7 @@ namespace Crescendo {
 
                     // 1. Thread Sync & LOD Updates
                     // This mathematically shatters the chunk grid as you fly closer!
-                    planet->rootNode->Update(camPos - ent->origin, planet->lodSplitThreshold); 
+                    planet->rootNode->Update(camPos - ent->origin, planet->lodSplitThreshold, planet->chunkManager.get());
                     
                     // Safely scoops up any background meshes that finished baking this frame
                     planet->rootNode->CheckForFinishedMeshes(this); 
@@ -3223,6 +3273,10 @@ namespace Crescendo {
                     // 2. Recursive Octree Streaming Lambda
                     auto drawOctree = [&](auto& self, Crescendo::Terrain::OctreeNode* node) -> void {
                         if (!node) return;
+
+                        // --- THE MISSING CULLING CHECK ---
+                        // Instantly abort this branch if it is on the dark side of the planet!
+                        if (!node->isVisible) return; 
 
                         if (node->isLeaf) {
                             if (node->meshID != -1) {
@@ -3237,9 +3291,6 @@ namespace Crescendo {
                                     vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConsts), &push);
                                     vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
                                 }
-                            } else {
-                                // If we don't have a mesh, kick off a background thread to make one!
-                                planet->chunkManager->EnqueueChunk(node);
                             }
                         } else {
                             // If it's not a leaf, traverse deeper into the high-res children
@@ -3255,11 +3306,61 @@ namespace Crescendo {
                     // Sort the queue and dispatch the closest 4 chunks!
                     // Changed . to -> 
                     planet->chunkManager->ProcessQueue(camPos - ent->origin, planet->settings);
+
+                    // VOLUMETRICS ++
+                    // -----------------------------------------------------------------
+                    // 
+                    // -----------------------------------------------------------------
+                    
                 }
             }
 
-            // Close the opaque pass so we can snapshot it for the glass refraction!
+            // Close the opaque pass so the depth buffer transitions to READ_ONLY
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
+
+            // -----------------------------------------------------------------
+            // 2.5 DRAW VOLUMETRIC ATMOSPHERE (In the Read-Only Transparent Pass!)
+            // -----------------------------------------------------------------
+            for (auto* ent : scene->entities) {
+                if (ent && ent->HasComponent<ProceduralPlanetComponent>()) {
+                    auto planet = ent->GetComponent<ProceduralPlanetComponent>();
+                    if (planet->atmosphereMeshID != -1) {
+                        
+                        VkRenderPassBeginInfo transPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+                        transPassInfo.renderPass = transparentRenderPass; 
+                        transPassInfo.framebuffer = viewportFramebuffer; 
+                        transPassInfo.renderArea.extent = swapChainExtent;
+                        
+                        vkCmdBeginRenderPass(commandBuffers[currentFrame], &transPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+                        
+                        vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, atmospherePipeline);
+                        
+                        AtmospherePush atmoPush{};
+                        atmoPush.vp = proj * view; 
+                        atmoPush.sunDirection_planetRadius = glm::vec4(sunDirection, planet->settings.radius);
+                        atmoPush.planetCenter_atmosphereRadius = glm::vec4(ent->origin, planet->settings.radius * planet->atmosphereScale);
+                        atmoPush.cameraPos_sunIntensity = glm::vec4(mainCamera.Position, planet->atmosphereIntensity);
+                        atmoPush.rayleigh_mie = glm::vec4(planet->rayleigh, planet->mie);
+
+                        vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
+                                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
+                                           0, sizeof(AtmospherePush), &atmoPush);
+
+                        MeshResource& atmoMesh = meshes[planet->atmosphereMeshID];
+                        if (atmoMesh.vertexBuffer.handle != VK_NULL_HANDLE) {
+                            VkBuffer vBuffers[] = { atmoMesh.vertexBuffer.handle };
+                            VkDeviceSize offsets[] = {0};
+                            vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
+                            vkCmdBindIndexBuffer(commandBuffers[currentFrame], atmoMesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
+                            vkCmdDrawIndexed(commandBuffers[currentFrame], atmoMesh.indexCount, 1, 0, 0, 0);
+                        }
+                        
+                        vkCmdEndRenderPass(commandBuffers[currentFrame]);
+                    }
+                }
+            }
+            
+            
 
             // -----------------------------------------------------------------
             // 3. ITERATIVE REFRACTION (TRANSPARENT PASS)
@@ -4268,15 +4369,52 @@ namespace Crescendo {
 
         // --- 2. Transparent Render Pass ---
         std::vector<VkAttachmentDescription2> loadAttachments = attachments;
+        
+        // Color Target
         loadAttachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         loadAttachments[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        
+        // Normal Target
         loadAttachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
         loadAttachments[1].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        
+        // Depth Target (MSAA or 1x)
+        // If MSAA is off, it must be READ_ONLY so the shader can sample it.
+        // If MSAA is on, it must stay ATTACHMENT_OPTIMAL to do transparent depth testing.
+        VkImageLayout transparentDepthLayout = useMSAA ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        
         loadAttachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-        loadAttachments[2].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        loadAttachments[2].initialLayout = transparentDepthLayout;
+        loadAttachments[2].finalLayout = transparentDepthLayout;
+
+        VkAttachmentReference2 transDepthRef{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2, nullptr, 2, transparentDepthLayout, 0};
+        
+        VkSubpassDescription2 transSubpass = subpass;
+        transSubpass.pDepthStencilAttachment = &transDepthRef;
+
+        if (useMSAA) {
+            // Color Resolve
+            loadAttachments[3].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            loadAttachments[3].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            
+            // Normal Resolve
+            loadAttachments[4].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            loadAttachments[4].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            // Depth Resolve (The 1x Depth Buffer we sample in the shader!)
+            // We must preserve its data from the opaque pass and keep it perfectly READ_ONLY.
+            loadAttachments[5].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            loadAttachments[5].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            loadAttachments[5].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            loadAttachments[5].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+            // Remove depth resolve from this subpass so we don't overwrite it while reading it
+            transSubpass.pNext = nullptr; 
+        }
 
         VkRenderPassCreateInfo2 transRpInfo = rpInfo;
         transRpInfo.pAttachments = loadAttachments.data();
+        transRpInfo.pSubpasses = &transSubpass;
 
         if (vkCreateRenderPass2(device, &transRpInfo, nullptr, &transparentRenderPass) != VK_SUCCESS) return false;
 
@@ -4583,8 +4721,23 @@ namespace Crescendo {
             refWrite.descriptorCount = 1;
             refWrite.pImageInfo = &refInfo;
 
-            vkUpdateDescriptorSets(device, 1, &refWrite, 0, nullptr);
+            // New Depth Map Update (Binding 9)
+            VkDescriptorImageInfo depthInfo{};
+            depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            depthInfo.imageView = viewportDepthImage.view;
+            depthInfo.sampler = viewportSampler;
+
+            VkWriteDescriptorSet depthWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            depthWrite.dstSet = descriptorSets[i]; 
+            depthWrite.dstBinding = 9;
+            depthWrite.dstArrayElement = 0;
+            depthWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            depthWrite.descriptorCount = 1;
+            depthWrite.pImageInfo = &depthInfo;
+
+            vkUpdateDescriptorSets(device, 1, &depthWrite, 0, nullptr);
         }
+        
     } 
 
     void RenderingServer::cleanupSwapChain() {
@@ -4676,6 +4829,8 @@ namespace Crescendo {
             if (ssrPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, ssrPipeline, nullptr);
             if (equirectToCubePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, equirectToCubePipeline, nullptr);
             if (outlinePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, outlinePipeline, nullptr);
+            // if (billboardPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, billboardPipeline, nullptr);
+            
 
             if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
             if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);

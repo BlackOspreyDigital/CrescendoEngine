@@ -77,6 +77,42 @@ namespace Crescendo {
             return proj;
         }
 
+        struct ViewFrustum {
+            glm::vec4 planes[6];
+        };
+
+        ViewFrustum GetFrustum(float aspectRatio) {
+            ViewFrustum frustum;
+            glm::mat4 proj = GetProjectionMatrix(aspectRatio);
+            glm::mat4 view = GetViewMatrix();
+            glm::mat4 vp = proj* view;
+
+            // Extract 6 planes of the camera view
+            frustum.planes[0] = glm::vec4(vp[0][3] + vp[0][0], vp[1][3] + vp[1][0],vp[2][3] + vp[2][0], vp[3][3] + vp[3][0]);   // Left
+            frustum.planes[1] = glm::vec4(vp[0][3] - vp[0][0], vp[1][3] - vp[1][0],vp[2][3] - vp[2][0], vp[3][3] - vp[3][0]);   // Right
+            frustum.planes[2] = glm::vec4(vp[0][3] + vp[0][1], vp[1][3] + vp[1][1],vp[2][3] + vp[2][1], vp[3][3] + vp[3][2]);   // Bottom
+            frustum.planes[3] = glm::vec4(vp[0][3] - vp[0][1], vp[1][3] - vp[1][1],vp[2][3] + vp[2][2], vp[3][3] - vp[3][1]);   // Top
+            frustum.planes[4] = glm::vec4(vp[0][3] - vp[0][2], vp[1][3] + vp[1][2],vp[2][3] + vp[2][2], vp[3][3] + vp[3][2]);   // Near
+            frustum.planes[5] = glm::vec4(vp[0][3] - vp[0][2], vp[1][3] - vp[1][2],vp[2][3] - vp[2][2], vp[3][3] - vp[3][2]);   // Far
+
+            // Normalize the planes
+            for (int i = 0; i < 6; i++) {
+                float length = glm::length(glm::vec3(frustum.planes[i]));
+                frustum.planes[i] /= length;
+            }
+            return frustum;
+        }
+
+        bool IsSphereInFrustum(const ViewFrustum& f, const glm::vec3& center, float radius) const {
+            for (int i = 0; i < 6; i++) {
+                // If sphere is completely behind any of the 6 planes, it is invisible.
+                if (glm::dot(glm::vec3(f.planes[i]), center) + f.planes[i].w < -radius) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         
         // Process Keyboard (WASD + QE)
         void Update(float deltaTime) {

@@ -48,7 +48,12 @@ list(APPEND SOURCES "src/servers/audio/AudioServer.cpp")
 list(APPEND SOURCES "src/servers/interface/SymbolServer.cpp")
 
 file(GLOB_RECURSE JOLT_SOURCES "modules/Jolt/JoltPhysics/Jolt/*.cpp")
+
+
 file(GLOB_RECURSE MODULE_SOURCES "modules/gltf/*.cpp" "modules/ktx/*.cpp" "modules/image/*.cpp" "modules/terrain/*.cpp")
+
+# Force OctreeNode to be included
+list(APPEND MODULE_SOURCES "modules/terrain/OctreeNode.cpp")
  
 set(IMGUI_SOURCES 
     deps/imgui/imgui.cpp 
