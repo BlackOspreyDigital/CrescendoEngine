@@ -120,6 +120,7 @@ namespace Crescendo {
         // 1. BUILD COMPUTE PIPELINES FIRST
         // ---------------------------------------------------------
         if (!createComputePipelines()) return false;
+        if (!createTerrainComputePipelines()) return false;
 
         // ---------------------------------------------------------
         // 2. FIRE THE LASER (Bake the Cubemap so skyImage exists!)
@@ -2494,6 +2495,176 @@ namespace Crescendo {
         return true;
     }
 
+    bool RenderingServer::createTerrainComputePipelines() {
+        // 1. Descriptor Set Layout
+        std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+        
+        bindings[0].binding = 0;
+        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[0].descriptorCount = 1;
+        bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        
+        bindings[1].binding = 1;
+        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[1].descriptorCount = 1;
+        bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        
+        bindings[2].binding = 2;
+        bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[2].descriptorCount = 1;
+        bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        
+        bindings[3].binding = 3;
+        bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        bindings[3].descriptorCount = 1;
+        bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+        layoutInfo.pBindings = bindings.data();
+        
+        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &terrainComputeDescriptorLayout) != VK_SUCCESS) return false;
+        
+        VkPushConstantRange pushConstant{};
+        pushConstant.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pushConstant.offset = 0;
+        pushConstant.size = sizeof(TerrainComputePush);
+        
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &terrainComputeDescriptorLayout;
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &pushConstant;
+        
+        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &terrainComputePipelineLayout) != VK_SUCCESS) return false;
+        
+        // 2. Load the Compute Shaders
+        auto densityCode = readFile("assets/shaders/terrain_density.comp.spv");
+        auto marchingCode = readFile("assets/shaders/terrain_marching_cubes.comp.spv");
+        
+        VkShaderModule densityModule = createShaderModule(densityCode);
+        VkShaderModule marchingModule = createShaderModule(marchingCode);
+        
+        // Setup Density Pipeline
+        VkPipelineShaderStageCreateInfo densityStage{};
+        densityStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        densityStage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        densityStage.module = densityModule;
+        densityStage.pName = "main";
+        
+        VkComputePipelineCreateInfo computeInfo{};
+        computeInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        computeInfo.layout = terrainComputePipelineLayout;
+        computeInfo.stage = densityStage;
+        
+        vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computeInfo, nullptr, &densityComputePipeline);
+        
+        // Swap to Marching Cubes Pipeline
+        VkPipelineShaderStageCreateInfo marchingStage{};
+        marchingStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        marchingStage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        marchingStage.module = marchingModule;
+        marchingStage.pName = "main";
+        
+        computeInfo.stage = marchingStage;
+        vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computeInfo, nullptr, &marchingCubesComputePipeline);
+        
+        vkDestroyShaderModule(device, densityModule, nullptr);
+        vkDestroyShaderModule(device, marchingModule, nullptr);
+        
+        // 3. Allocate the VRAM Workspace (SSBOs)
+        const VkDeviceSize DENSITY_SIZE = 33 * 33 * 33 * sizeof(float);
+        const VkDeviceSize MAX_VERTS_SIZE = 10 * 1024 * 1024; // 10MB
+        const VkDeviceSize MAX_INDICES_SIZE = 2 * 1024 * 1024; // 2MB
+        const VkDeviceSize COUNTER_SIZE = 2 * sizeof(uint32_t);
+
+        densityBuffer = VulkanBuffer(allocator, DENSITY_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+        computeVertexBuffer = VulkanBuffer(allocator, MAX_VERTS_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+        computeIndexBuffer = VulkanBuffer(allocator, MAX_INDICES_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+
+        // --- THE VMA 3.0 FIX ---
+        // Explicitly configure VMA to allow the CPU to map and read the vertex counters!
+        VkBufferCreateInfo counterBufInfo{};
+        counterBufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        counterBufInfo.size = COUNTER_SIZE;
+        counterBufInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+        VmaAllocationCreateInfo counterAllocInfo{};
+        counterAllocInfo.usage = VMA_MEMORY_USAGE_AUTO; // The new VMA 3.0 standard
+        counterAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT; // The missing key!
+
+        vmaCreateBuffer(allocator, &counterBufInfo, &counterAllocInfo, &counterBuffer.handle, &counterBuffer.allocation, nullptr);
+        // -----------------------
+        // 4. Bind the Buffers to the Descriptor Set
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = descriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &terrainComputeDescriptorLayout;
+        
+        vkAllocateDescriptorSets(device, &allocInfo, &terrainComputeDescriptorSet);
+        
+        VkDescriptorBufferInfo dInfo{};
+        dInfo.buffer = densityBuffer.handle;
+        dInfo.offset = 0;
+        dInfo.range = VK_WHOLE_SIZE;
+        
+        VkDescriptorBufferInfo vInfo{};
+        vInfo.buffer = computeVertexBuffer.handle;
+        vInfo.offset = 0;
+        vInfo.range = VK_WHOLE_SIZE;
+        
+        VkDescriptorBufferInfo iInfo{};
+        iInfo.buffer = computeIndexBuffer.handle;
+        iInfo.offset = 0;
+        iInfo.range = VK_WHOLE_SIZE;
+        
+        VkDescriptorBufferInfo cInfo{};
+        cInfo.buffer = counterBuffer.handle;
+        cInfo.offset = 0;
+        cInfo.range = VK_WHOLE_SIZE;
+        
+        std::array<VkWriteDescriptorSet, 4> writes{};
+        
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = terrainComputeDescriptorSet;
+        writes[0].dstBinding = 0;
+        writes[0].dstArrayElement = 0;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[0].descriptorCount = 1;
+        writes[0].pBufferInfo = &dInfo;
+        
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = terrainComputeDescriptorSet;
+        writes[1].dstBinding = 1;
+        writes[1].dstArrayElement = 0;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[1].descriptorCount = 1;
+        writes[1].pBufferInfo = &vInfo;
+        
+        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[2].dstSet = terrainComputeDescriptorSet;
+        writes[2].dstBinding = 2;
+        writes[2].dstArrayElement = 0;
+        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[2].descriptorCount = 1;
+        writes[2].pBufferInfo = &iInfo;
+        
+        writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[3].dstSet = terrainComputeDescriptorSet;
+        writes[3].dstBinding = 3;
+        writes[3].dstArrayElement = 0;
+        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[3].descriptorCount = 1;
+        writes[3].pBufferInfo = &cInfo;
+        
+        vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+        
+        return true;
+    }
+
     bool RenderingServer::createOutlinePipeline() {
         auto vertShaderCode = readFile("assets/shaders/shader.vert.spv"); 
         auto fragShaderCode = readFile("assets/shaders/outline.frag.spv"); 
@@ -2589,6 +2760,97 @@ namespace Crescendo {
         // The Skybox MUST have an empty vertex input!
         VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         // (No binding descriptions here!)
+    }
+
+    //===============================================
+    void RenderingServer::generateChunkGPU(VkCommandBuffer cmd, const TerrainComputePush& pushData) {
+        // 1. Reset the vertex/index counters to 0
+        vkCmdFillBuffer(cmd, counterBuffer.handle, 0, 2 * sizeof(uint32_t), 0);
+
+        // Barrier: Wait for the fill to finish before the shader tries to write to it
+        VkBufferMemoryBarrier fillBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        fillBarrier.buffer = counterBuffer.handle;
+        fillBarrier.offset = 0; fillBarrier.size = VK_WHOLE_SIZE;
+        
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 1, &fillBarrier, 0, nullptr);
+
+        // 2. Bind the Descriptor Set (Our Workspace)
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, terrainComputePipelineLayout, 0, 1, &terrainComputeDescriptorSet, 0, nullptr);
+
+        // 3. PASS 1: Density Generation
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, densityComputePipeline);
+        vkCmdPushConstants(cmd, terrainComputePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TerrainComputePush), &pushData);
+        
+        // Dispatch (Resolution / 8 because our shader uses local_size = 8)
+        uint32_t groups = (pushData.resolution / 8) + 1;
+        vkCmdDispatch(cmd, groups, groups, groups);
+
+        // Barrier: Wait for Density Pass to finish before Marching Cubes starts
+        VkBufferMemoryBarrier densityBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        densityBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        densityBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        densityBarrier.buffer = densityBuffer.handle;
+        densityBarrier.offset = 0; densityBarrier.size = VK_WHOLE_SIZE;
+        
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 1, &densityBarrier, 0, nullptr);
+
+        // 4. PASS 2: Marching Cubes
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, marchingCubesComputePipeline);
+        vkCmdDispatch(cmd, groups, groups, groups);
+
+        // Barrier: Ensure vertices are fully written before the Graphics queue tries to draw them
+        std::array<VkBufferMemoryBarrier, 2> geomBarriers{};
+        geomBarriers[0] = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, computeVertexBuffer.handle, 0, VK_WHOLE_SIZE};
+        geomBarriers[1] = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, computeIndexBuffer.handle, 0, VK_WHOLE_SIZE};
+        
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 2, geomBarriers.data(), 0, nullptr);
+    }
+
+    int RenderingServer::buildChunkMesh(const TerrainComputePush& pushData) {
+        // 1. Tell GPU to calculate the noise and build the mesh
+        VkCommandBuffer cmd = beginSingleTimeCommands();
+        generateChunkGPU(cmd, pushData);
+        endSingleTimeCommands(cmd); // Wait for the GPU to finish!
+
+        // 2. Read the Atomic Counters to see exactly how many vertices it made
+        uint32_t* counters;
+        vmaMapMemory(allocator, counterBuffer.allocation, (void**)&counters);
+        uint32_t vertexCount = counters[0];
+        uint32_t indexCount = counters[1];
+        vmaUnmapMemory(allocator, counterBuffer.allocation);
+
+        // If the chunk is empty space (like high in the sky), abort!
+        if (vertexCount == 0 || indexCount == 0) return -1;
+
+        // 3. Allocate a permanent VRAM home for this exact chunk size
+        MeshResource newMesh;
+        newMesh.name = "GPU_Chunk";
+        newMesh.indexCount = indexCount;
+        newMesh.textureID = 0; 
+
+        // 21 floats per vertex! (Must perfectly match the shader!)
+        VkDeviceSize vertSize = vertexCount * 21 * sizeof(float); 
+        VkDeviceSize indSize = indexCount * sizeof(uint32_t);
+
+        newMesh.vertexBuffer = VulkanBuffer(allocator, vertSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+        newMesh.indexBuffer = VulkanBuffer(allocator, indSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+
+        // 4. Instantly copy the data from the Workspace to the Permanent Home
+        cmd = beginSingleTimeCommands();
+        
+        VkBufferCopy vertCopy{0, 0, vertSize};
+        vkCmdCopyBuffer(cmd, computeVertexBuffer.handle, newMesh.vertexBuffer.handle, 1, &vertCopy);
+
+        VkBufferCopy indCopy{0, 0, indSize};
+        vkCmdCopyBuffer(cmd, computeIndexBuffer.handle, newMesh.indexBuffer.handle, 1, &indCopy);
+
+        endSingleTimeCommands(cmd);
+
+        // 5. Save the mesh and return its ID
+        meshes.push_back(std::move(newMesh));
+        return meshes.size() - 1;
     }
    
 
@@ -3254,33 +3516,54 @@ namespace Crescendo {
             // First, draw standard opaque models (like the player, ships, etc)
             DrawList(opaqueList);
 
-            // Now, traverse and stream the Procedural Planets!
+            // Now, traverse and stream the Procedural Planets! [Updated GPU method]
             for (auto* ent : scene->entities) {
                 if (ent && ent->HasComponent<ProceduralPlanetComponent>()) {
                     auto planet = ent->GetComponent<ProceduralPlanetComponent>();
                     if (!planet->rootNode) continue;
 
-                    // 1. Thread Sync & LOD Updates
-                    // This mathematically shatters the chunk grid as you fly closer!
+                    // 1. Cull the tree and queue up missing chunks
                     planet->rootNode->Update(camPos - ent->origin, planet->lodSplitThreshold, planet->chunkManager.get());
-                    
-                    // Safely scoops up any background meshes that finished baking this frame
-                    planet->rootNode->CheckForFinishedMeshes(this); 
+
+                    // 2. Sort the queue so chunks closest to the camera generate FIRST
+                    std::sort(planet->chunkManager->chunkQueue.begin(), planet->chunkManager->chunkQueue.end(), [&](Crescendo::Terrain::OctreeNode* a, Crescendo::Terrain::OctreeNode* b) {
+                        return glm::length((camPos - ent->origin) - a->center) < glm::length((camPos - ent->origin) - b->center); 
+                    });
+
+                    // 3. Generate up to 3 chunks THIS FRAME directly on the GPU!
+                    int chunksGenerated = 0;
+                    while (!planet->chunkManager->chunkQueue.empty() && chunksGenerated < 3) {
+                        auto* node = planet->chunkManager->chunkQueue.front();
+                        planet->chunkManager->chunkQueue.erase(planet->chunkManager->chunkQueue.begin());
+
+                        TerrainComputePush push{};
+                        // Calculate exact local coordinates
+                        push.chunkOrigin = node->center - glm::vec3(node->size / 2.0f);
+                        push.chunkSize = node->size;
+                        push.planetCenter = glm::vec3(0.0f); // Local space!
+                        push.planetRadius = planet->settings.radius;
+                        push.amplitude = planet->settings.amplitude;
+                        push.frequency = planet->settings.frequency;
+                        push.octaves = planet->settings.octaves;
+                        push.resolution = 32; // 32x32x32 Voxels
+                        push.lod = node->lod;
+
+                        // Blast it to the GPU and get the Mesh ID back instantly!
+                        node->meshID = buildChunkMesh(push);
+                        node->isGenerating = false; 
+                        chunksGenerated++;
+                    }
 
                     PushConsts push{};
                     push.entityIndex = entityGPUIndices[ent];
 
-                    // 2. Recursive Octree Streaming Lambda
+                    // 4. Recursive Octree Streaming Lambda
                     auto drawOctree = [&](auto& self, Crescendo::Terrain::OctreeNode* node) -> void {
                         if (!node) return;
-
-                        // --- THE MISSING CULLING CHECK ---
-                        // Instantly abort this branch if it is on the dark side of the planet!
-                        if (!node->isVisible) return; 
+                        if (!node->isVisible) return; // Cull the dark side only
 
                         if (node->isLeaf) {
                             if (node->meshID != -1) {
-                                // The chunk is baked, in VRAM, and ready to draw!
                                 MeshResource& mesh = meshes[node->meshID];
                                 if (mesh.vertexBuffer.handle != VK_NULL_HANDLE) {
                                     VkBuffer vBuffers[] = { mesh.vertexBuffer.handle };
@@ -3293,25 +3576,14 @@ namespace Crescendo {
                                 }
                             }
                         } else {
-                            // If it's not a leaf, traverse deeper into the high-res children
                             for (auto& child : node->children) {
                                 self(self, child.get());
                             }
                         }
                     };
 
-                    // 3. Fire the laser!
+                    // 5. Fire the draw calls!
                     drawOctree(drawOctree, planet->rootNode.get());
-
-                    // Sort the queue and dispatch the closest 4 chunks!
-                    // Changed . to -> 
-                    planet->chunkManager->ProcessQueue(camPos - ent->origin, planet->settings);
-
-                    // VOLUMETRICS ++
-                    // -----------------------------------------------------------------
-                    // 
-                    // -----------------------------------------------------------------
-                    
                 }
             }
 
@@ -3360,8 +3632,6 @@ namespace Crescendo {
                 }
             }
             
-            
-
             // -----------------------------------------------------------------
             // 3. ITERATIVE REFRACTION (TRANSPARENT PASS)
             // -----------------------------------------------------------------
@@ -4830,6 +5100,8 @@ namespace Crescendo {
             if (equirectToCubePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, equirectToCubePipeline, nullptr);
             if (outlinePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, outlinePipeline, nullptr);
             // if (billboardPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, billboardPipeline, nullptr);
+            vkDestroyPipelineLayout(device, terrainComputePipelineLayout, nullptr);
+            vkDestroyDescriptorSetLayout(device, terrainComputeDescriptorLayout, nullptr);
             
 
             if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);

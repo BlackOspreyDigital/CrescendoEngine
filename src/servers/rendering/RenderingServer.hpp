@@ -8,6 +8,7 @@
 #include <map>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
+#include <glm/glm.hpp>
 
 #include "vulkan/VulkanResources.hpp"
 #include <vector>
@@ -232,6 +233,35 @@ namespace Crescendo {
         Camera mainCamera;
         std::vector<MeshResource> meshes;
         int waterTextureID = 0;
+
+        // --- TERRAIN COMPUTE GPU WORKSPACE ---
+        VkDescriptorSetLayout terrainComputeDescriptorLayout = VK_NULL_HANDLE;
+        VkPipelineLayout terrainComputePipelineLayout = VK_NULL_HANDLE;
+        VkPipeline densityComputePipeline = VK_NULL_HANDLE;
+        VkPipeline marchingCubesComputePipeline = VK_NULL_HANDLE;
+
+        VulkanBuffer densityBuffer;
+        VulkanBuffer computeVertexBuffer;
+        VulkanBuffer computeIndexBuffer;
+        VulkanBuffer counterBuffer;
+        
+        VkDescriptorSet terrainComputeDescriptorSet = VK_NULL_HANDLE;
+
+        // The Push Constant Struct (Memory aligned to perfectly match GLSL!)
+        struct TerrainComputePush {
+            alignas(16) glm::vec3 chunkOrigin; float chunkSize;
+            alignas(16) glm::vec3 planetCenter; float planetRadius;
+            alignas(4) float amplitude;
+            alignas(4) float frequency;
+            alignas(4) int octaves;
+            alignas(4) int resolution;
+            alignas(4) int lod;
+        };
+
+        // The function signatures!
+        bool createTerrainComputePipelines();
+        void generateChunkGPU(VkCommandBuffer cmd, const TerrainComputePush& pushData);
+        int buildChunkMesh(const TerrainComputePush& pushData);
         
 
         // Constants
