@@ -22,19 +22,19 @@ namespace Crescendo {
         float     sunIntensity = 1.2f;
         
         // GI and Fog
-            glm::vec4 fogColor     = glm::vec4(0.5f, 0.6f, 0.7f, 0.02f); 
-            glm::vec4 fogParams    = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); 
-            glm::vec3 skyColor     = glm::vec3(0.5f, 0.7f, 1.0f);
-            glm::vec3 groundColor  = glm::vec3(0.0f, 0.0f, 0.0f);
+        glm::vec4 fogColor     = glm::vec4(0.5f, 0.6f, 0.7f, 0.02f); 
+        glm::vec4 fogParams    = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); 
+        glm::vec3 skyColor     = glm::vec3(0.5f, 0.7f, 1.0f);
+        glm::vec3 groundColor  = glm::vec3(0.0f, 0.0f, 0.0f);
         
         // Post Processing
         float bloomIntensity = 1.0f;
         float exposure       = 1.0f;
         float gamma          = 2.2f; 
         
-        // Cascaded Shadows
-        float shadowBiasConstant = 1.25f;
-        float shadowBiasSlope = 1.75;
+        // Cascaded Shadow Maps
+        float shadowBiasConstant = 1.25f; 
+        float shadowBiasSlope = 1.75f;
     };
 
     class PhysicsServer;

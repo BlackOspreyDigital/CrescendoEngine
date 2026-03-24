@@ -427,8 +427,8 @@ namespace Crescendo {
                 std::vector<Vertex> atmoVerts;
                 std::vector<uint32_t> atmoIndices;
                 
-                // Scale the atmosphere based on the component's variable
-                float atmoRadius = planetComp->settings.radius * planetComp->atmosphereScale; 
+                // Change atmosphereScale to atmosphereCeiling
+                float atmoRadius = planetComp->settings.radius * planetComp->atmosphereCeiling;
                 
                 // 64x64 segments makes it incredibly smooth from space!
                 Crescendo::Terrain::VoxelGenerator::GenerateWaterSphere(atmoRadius, 64, 64, atmoVerts, atmoIndices);
@@ -1142,8 +1142,9 @@ namespace Crescendo {
                     
                         // ---> PASTE THE ATMOSPHERE UI BLOCK RIGHT HERE! <---
                         if (ImGui::CollapsingHeader("Atmosphere Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
-                            ImGui::DragFloat("Atmo Ceiling (Scale)", &atmosphereCeiling, 0.01f, 1.0f, 3.0f);
-                            ImGui::DragFloat("Atmo Floor (Offset)", &atmosphereFloor, 1.0f, -500.0f, 500.0f);
+                            // Add the pointer to the variables! (change 'planet' to 'planetComp' if that's what is used in this block)
+                            ImGui::DragFloat("Atmo Ceiling (Scale)", &planetComponent->atmosphereCeiling, 0.01f, 1.0f, 3.0f);
+                            ImGui::DragFloat("Atmo Floor (Offset)", &planetComponent->atmosphereFloor, 1.0f, -500.0f, 500.0f);
                             ImGui::SliderFloat("Atmo Intensity", &planetComponent->atmosphereIntensity, 1.0f, 50.0f, "%.1f");
 
                             ImGui::ColorEdit3("Rayleigh", glm::value_ptr(planetComponent->rayleigh), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);

@@ -2580,11 +2580,28 @@ namespace Crescendo {
         const VkDeviceSize MAX_INDICES_SIZE = 10 * 1024 * 1024;
         const VkDeviceSize COUNTER_SIZE = 2 * sizeof(uint32_t);
 
+        // (Your existing GPU-Only allocations)
         densityBuffer = VulkanBuffer(allocator, DENSITY_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
         computeVertexBuffer = VulkanBuffer(allocator, MAX_VERTS_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
         computeIndexBuffer = VulkanBuffer(allocator, MAX_INDICES_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
 
-        // --- THE VMA 3.0 FIX ---
+        // --- NEW: VMA 3.0 HOST-VISIBLE STAGING BUFFERS (FOR JOLT PHYSICS) ---
+        VkBufferCreateInfo sVertInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        sVertInfo.size = MAX_VERTS_SIZE;
+        sVertInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        
+        VmaAllocationCreateInfo sAlloc{};
+        sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
+        sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT; // The magic readback flag!
+        
+        vmaCreateBuffer(allocator, &sVertInfo, &sAlloc, &stagingVertBuffer.handle, &stagingVertBuffer.allocation, nullptr);
+
+        VkBufferCreateInfo sIndInfo = sVertInfo;
+        sIndInfo.size = MAX_INDICES_SIZE;
+        vmaCreateBuffer(allocator, &sIndInfo, &sAlloc, &stagingIndexBuffer.handle, &stagingIndexBuffer.allocation, nullptr);
+        // --------------------------------------------------------------------
+
+        // --- THE VMA 3.0 FIX (Your existing counter buffer) ---
         // Explicitly configure VMA to allow the CPU to map and read the vertex counters!
         VkBufferCreateInfo counterBufInfo{};
         counterBufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -2592,8 +2609,8 @@ namespace Crescendo {
         counterBufInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 
         VmaAllocationCreateInfo counterAllocInfo{};
-        counterAllocInfo.usage = VMA_MEMORY_USAGE_AUTO; // The new VMA 3.0 standard
-        counterAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT; // The missing key!
+        counterAllocInfo.usage = VMA_MEMORY_USAGE_AUTO; 
+        counterAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT; 
 
         vmaCreateBuffer(allocator, &counterBufInfo, &counterAllocInfo, &counterBuffer.handle, &counterBuffer.allocation, nullptr);
         // -----------------------
@@ -3283,6 +3300,7 @@ namespace Crescendo {
         // Now the sliders will perfectly push into the shader!
         globalData.sunDirection = glm::vec4(sunDirection, sunIntensity);
         globalData.sunColor = glm::vec4(sunColor, 1.0f);
+        // Explicitly cast the strongly-typed enum to a float for the shader packing!
         float skyTypeFloat = static_cast<float>(scene->environment.skyType);
         globalData.params = glm::vec4(SDL_GetTicks() / 1000.0f, skyTypeFloat, viewportSize.x, viewportSize.y);
         globalData.fogColor = scene->environment.fogColor;
@@ -3590,6 +3608,10 @@ namespace Crescendo {
                         AtmospherePush atmoPush{};
                         atmoPush.vp = proj * view; 
                         // W components act as the Floor and Ceiling for the raymarcher
+                        // Calculate explicit inner and outer bounds
+                        float innerRadius = planet->settings.radius + planet->atmosphereFloor;
+                        float outerRadius = planet->settings.radius * planet->atmosphereCeiling;
+
                         atmoPush.sunDirection_planetRadius = glm::vec4(sunDirection, innerRadius);
                         atmoPush.planetCenter_atmosphereRadius = glm::vec4(ent->origin, outerRadius);
                         atmoPush.cameraPos_sunIntensity = glm::vec4(mainCamera.Position, planet->atmosphereIntensity);
@@ -5137,6 +5159,14 @@ namespace Crescendo {
                 vmaDestroyBuffer(allocator, counterBuffer.handle, counterBuffer.allocation);
             }
             
+            // --- staging buffer cleanup 2 ---
+            if (stagingVertBuffer.handle != VK_NULL_HANDLE) {
+                vmaDestroyBuffer(allocator, stagingVertBuffer.handle, stagingVertBuffer.allocation);
+            }
+            if (stagingIndexBuffer.handle != VK_NULL_HANDLE) {
+                vmaDestroyBuffer(allocator, stagingIndexBuffer.handle, stagingIndexBuffer.allocation);
+            }
+                        
             // 5. Cleanup Meshes & Textures
             for (auto& mesh : meshes) {
                 mesh.vertexBuffer.destroy();
@@ -5176,8 +5206,6 @@ namespace Crescendo {
                 globalUniformBuffers[i].destroy();
             }
 
-            
-                
             // 9. Cleanup Swapchain
             cleanupSwapChain();
         

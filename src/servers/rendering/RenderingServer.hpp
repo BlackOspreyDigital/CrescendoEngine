@@ -152,6 +152,16 @@ namespace Crescendo {
         glm::vec4 cameraPos_sunIntensity;          // 16 bytes
         glm::vec4 rayleigh_mie;                    // 16 bytes
     }; // Exactly 128 Bytes!
+
+    struct ChunkBakeResult {
+        int meshID = -2; // -2 empty
+        std::vector<float>collisionVerts;
+        std::vector<uint32_t> collisionIndices;
+    };
+
+    ChunkBakeResult buildChunkMesh(const struct TerrainComputePush& pushData, bool needsCollision);
+
+    
     
     struct PostProcessPushConstants {
        float exposure;
@@ -420,6 +430,10 @@ namespace Crescendo {
         #else
             const bool enableValidationLayers = true;
         #endif
+
+        // VMA
+        VulkanBuffer stagingVertBuffer;
+        VulkanBuffer stagingIndexBuffer;
 
         // Internal Helpers
         QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
