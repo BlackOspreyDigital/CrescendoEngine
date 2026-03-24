@@ -2834,74 +2834,115 @@ namespace Crescendo {
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, terrainComputePipelineLayout, 0, 1, &terrainComputeDescriptorSet, 0, nullptr);
         // --------------------------------------------------------------
         
+        // Pass 1: Density (Padded to 33x33x33 to prevent boundary walls)
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, densityComputePipeline);
         vkCmdPushConstants(cmd, terrainComputePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TerrainComputePush), &pushData);
-        vkCmdDispatch(cmd, 32 / 8, 32 / 8, 32 / 8); 
+        vkCmdDispatch(cmd, 5, 5, 5); // <--- CHANGED THIS TO 5!
         
         VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
         barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
         
+        // Pass 2: Marching Cubes (Still 32x32x32 cubes)
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, marchingCubesComputePipeline);
         vkCmdPushConstants(cmd, terrainComputePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TerrainComputePush), &pushData);
-        vkCmdDispatch(cmd, 32 / 8, 32 / 8, 32 / 8);
+        vkCmdDispatch(cmd, 4, 4, 4); // <--- CHANGED TO 4 (Same as 32 / 8)
         
         endSingleTimeCommands(cmd);
         
-        // 2. READ COUNTERS
+        // 2. Read back vertex/index counts
         uint32_t* counters;
         vmaMapMemory(allocator, counterBuffer.allocation, (void**)&counters);
         uint32_t vertexCount = counters[0];
         uint32_t indexCount = counters[1];
         vmaUnmapMemory(allocator, counterBuffer.allocation);
-        
-        // Reset counters (Re-using 'cmd' without redeclaring it)
-        cmd = beginSingleTimeCommands();
-        vkCmdFillBuffer(cmd, counterBuffer.handle, 0, 8, 0);
-        endSingleTimeCommands(cmd);
-        
-        if (vertexCount == 0 || indexCount == 0) return result;
-        
-        // 3. ALLOCATE & COPY
+
+        // --- THE CRASH FIX: Prevent Memory Overflow ---
+        // Clamp the vertices so we never write past the end of the staging buffer!
+        const uint32_t MAX_SAFE_VERTICES = 60000; 
+        if (vertexCount > MAX_SAFE_VERTICES) vertexCount = MAX_SAFE_VERTICES;
+        if (indexCount > MAX_SAFE_VERTICES * 3) indexCount = MAX_SAFE_VERTICES * 3;
+        // ----------------------------------------------
+
+        if (vertexCount == 0 || indexCount == 0) {
+            // Still need to reset counters if the chunk was empty air
+            cmd = beginSingleTimeCommands();
+            vkCmdFillBuffer(cmd, counterBuffer.handle, 0, 8, 0);
+            endSingleTimeCommands(cmd);
+            return result;
+        }
+
+        // 3. Allocate permanent VRAM (For Graphics)
         VkDeviceSize vertSize = vertexCount * sizeof(Vertex);
         VkDeviceSize indSize = indexCount * sizeof(uint32_t);
-        
+
         MeshResource newMesh;
         newMesh.name = "GPU_Chunk";
         newMesh.indexCount = indexCount;
         newMesh.textureID = 0;
         newMesh.vertexBuffer = VulkanBuffer(allocator, vertSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
         newMesh.indexBuffer = VulkanBuffer(allocator, indSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-        
+
+        // --- THE CRASH FIX: Exact-Size Dynamic Staging Buffers ---
+        VkBuffer tempVertBuf = VK_NULL_HANDLE, tempIndBuf = VK_NULL_HANDLE;
+        VmaAllocation tempVertAlloc = VK_NULL_HANDLE, tempIndAlloc = VK_NULL_HANDLE;
+
+        if (needsCollision) {
+            // Create raw VMA buffers matched EXACTLY to the vertSize and indSize
+            VkBufferCreateInfo vInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+            vInfo.size = vertSize; vInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+            VkBufferCreateInfo iInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+            iInfo.size = indSize; iInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+            VmaAllocationCreateInfo allocInfo{};
+            allocInfo.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
+
+            vmaCreateBuffer(allocator, &vInfo, &allocInfo, &tempVertBuf, &tempVertAlloc, nullptr);
+            vmaCreateBuffer(allocator, &iInfo, &allocInfo, &tempIndBuf, &tempIndAlloc, nullptr);
+        }
+        // ---------------------------------------------------------
+
+        // 4. Data Transfer AND Counter Reset
         cmd = beginSingleTimeCommands();
+
+        // Copy the geometry to GPU memory
         VkBufferCopy vCopy{0, 0, vertSize}, iCopy{0, 0, indSize};
         vkCmdCopyBuffer(cmd, computeVertexBuffer.handle, newMesh.vertexBuffer.handle, 1, &vCopy);
         vkCmdCopyBuffer(cmd, computeIndexBuffer.handle, newMesh.indexBuffer.handle, 1, &iCopy);
-        
+
         if (needsCollision) {
-            vkCmdCopyBuffer(cmd, computeVertexBuffer.handle, stagingVertBuffer.handle, 1, &vCopy);
-            vkCmdCopyBuffer(cmd, computeIndexBuffer.handle, stagingIndexBuffer.handle, 1, &iCopy);
+            // Copy to our exactly-sized temporary staging buffers
+            vkCmdCopyBuffer(cmd, computeVertexBuffer.handle, tempVertBuf, 1, &vCopy);
+            vkCmdCopyBuffer(cmd, computeIndexBuffer.handle, tempIndBuf, 1, &iCopy);
         }
-        endSingleTimeCommands(cmd);
-    
-        // 4. DATA copy
+
+        // Reset counters to prevent CPU stall
+        vkCmdFillBuffer(cmd, counterBuffer.handle, 0, 8, 0);
+        endSingleTimeCommands(cmd); 
+
+        // 5. Data Extraction
         if (needsCollision) {
             const int STRIDE = sizeof(Vertex) / sizeof(float);
             float* rawVerts;
-            vmaMapMemory(allocator, stagingVertBuffer.allocation, (void**)&rawVerts);
+            vmaMapMemory(allocator, tempVertAlloc, (void**)&rawVerts);
             result.collisionVerts.assign(rawVerts, rawVerts + (vertexCount * STRIDE));
-            vmaUnmapMemory(allocator, stagingVertBuffer.allocation);
+            vmaUnmapMemory(allocator, tempVertAlloc);
         
             uint32_t* rawInds;
-            vmaMapMemory(allocator, stagingIndexBuffer.allocation, (void**)&rawInds);
+            vmaMapMemory(allocator, tempIndAlloc, (void**)&rawInds);
             result.collisionIndices.assign(rawInds, rawInds + indexCount);
-            vmaUnmapMemory(allocator, stagingIndexBuffer.allocation);
+            vmaUnmapMemory(allocator, tempIndAlloc);
+
+            // --- CLEANUP: Destroy the temporary buffers immediately! ---
+            vmaDestroyBuffer(allocator, tempVertBuf, tempVertAlloc);
+            vmaDestroyBuffer(allocator, tempIndBuf, tempIndAlloc);
         }
-    
+
         meshes.push_back(std::move(newMesh));
         result.meshID = static_cast<int>(meshes.size() - 1);
-        return result; 
+        return result;
     }
    
     //===============================================
@@ -3564,7 +3605,7 @@ namespace Crescendo {
 
                     // 3. Process the Bake Queue
                     int chunksGenerated = 0;
-                    while (!planet->chunkManager->chunkQueue.empty() && chunksGenerated < 3) {
+                    while (!planet->chunkManager->chunkQueue.empty() && chunksGenerated < 1) {
                         auto* node = planet->chunkManager->chunkQueue.front();
                         planet->chunkManager->chunkQueue.erase(planet->chunkManager->chunkQueue.begin());
 

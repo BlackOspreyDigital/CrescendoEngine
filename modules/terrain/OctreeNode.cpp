@@ -2,6 +2,7 @@
 #include "TerrainManager.hpp"
 #include "modules/terrain/VoxelGenerator.hpp"
 #include "servers/rendering/RenderingServer.hpp"
+#include <algorithm> // Required for std::remove
 
 namespace Crescendo::Terrain {
     
@@ -27,10 +28,27 @@ namespace Crescendo::Terrain {
         return false;
     }
 
+    // --- THE NEW, SAFE MERGE FUNCTION ---
+    void OctreeNode::Merge(TerrainManager* manager) {
+        if (isLeaf) return;
+        
+        for (int i = 0; i < 8; ++i) {
+            if (children[i]) {
+                children[i]->Merge(manager); 
+                
+                // Yank this child out of the bake queue before it is destroyed
+                auto& queue = manager->chunkQueue;
+                queue.erase(std::remove(queue.begin(), queue.end(), children[i].get()), queue.end());
+                
+                children[i].reset();
+            }
+        }
+        isLeaf = true;
+    }
+
     void OctreeNode::Update(const glm::vec3& localCameraPos, float splitThreshold, TerrainManager* manager) {
         float distance = glm::distance(localCameraPos, center);
         
-        // 1. Use the permanent class variable instead of a local bool
         isVisible = true;
         
         if (glm::length(center) > 1.0f) {
@@ -40,8 +58,7 @@ namespace Crescendo::Terrain {
         }
 
         if (!isVisible && lod < 4) {
-            // ONLY merge if no background threads are active!
-            if (!isLeaf && !IsGeneratingTree()) Merge();
+            if (!isLeaf && !IsGeneratingTree()) Merge(manager); 
             
             if (isLeaf && meshID == -1 && !isGenerating) manager->EnqueueChunk(this);
             return; 
@@ -55,8 +72,7 @@ namespace Crescendo::Terrain {
                 if (child) child->Update(localCameraPos, splitThreshold, manager);
             }
         } else {
-            // ONLY merge if no background threads are active!
-            if (!isLeaf && !IsGeneratingTree()) Merge();
+            if (!isLeaf && !IsGeneratingTree()) Merge(manager); 
             
             if (isLeaf && meshID == -1 && !isGenerating) {
                 manager->EnqueueChunk(this);

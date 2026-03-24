@@ -6,11 +6,13 @@
 #include <future>
 #include "VoxelGenerator.hpp"
 
-// Forward declare what we need as pointers! No #includes for these here!
+// Forward declare RenderingServer in the main namespace
 namespace Crescendo { class RenderingServer; }
-namespace Crescendo::Terrain { class TerrainManager; }
 
 namespace Crescendo::Terrain {
+    
+    // Forward declare TerrainManager inside the Terrain namespace!
+    class TerrainManager;
 
     class OctreeNode {
     public:
@@ -40,11 +42,12 @@ namespace Crescendo::Terrain {
             return false;
         }
 
-        // ONLY DECLARE THE FUNCTIONS HERE. No {} brackets!
+        // --- CLEAN SIGNATURES ---
         bool CheckForFinishedMeshes(Crescendo::RenderingServer* renderer);
         void Update(const glm::vec3& localCameraPos, float splitThreshold, TerrainManager* manager);
+        void Merge(TerrainManager* manager);
+        // ------------------------
         
-        // Subdivide and Merge don't use external classes, so they can stay inline.
         void Subdivide() {
             isLeaf = false;
             float newSize = size / 2.0f;
@@ -58,11 +61,6 @@ namespace Crescendo::Terrain {
                 };
                 children[i] = std::make_unique<OctreeNode>(center + offset, newSize, lod - 1);
             }
-        }
-
-        void Merge() {
-            for (auto& child : children) child.reset(); 
-            isLeaf = true;
         }
     };
 }

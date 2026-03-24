@@ -114,19 +114,39 @@ public:
     uint32_t CreateTerrainCollider(const std::vector<float>& verts, const std::vector<uint32_t>& inds, const glm::vec3& chunkOrigin, int stride) {
         if (!bodyInterface || verts.empty() || inds.empty()) return 0;
 
-        JPH::VertexList joltVerts;
-        joltVerts.reserve(verts.size() / stride);
+        // 1. Calculate the exact number of valid vertices
+        size_t numVertices = verts.size() / stride;
         
-        // Build the vertices using the dynamic stride
+        JPH::VertexList joltVerts;
+        joltVerts.reserve(numVertices);
+        
         for(size_t i = 0; i < verts.size(); i += stride) {
-            joltVerts.push_back(JPH::Float3(verts[i] + chunkOrigin.x, verts[i+1] + chunkOrigin.y, verts[i+2] + chunkOrigin.z));
+            // Keep the + chunkOrigin removed!
+            joltVerts.push_back(JPH::Float3(verts[i], verts[i+1], verts[i+2]));
         }
 
         JPH::IndexedTriangleList joltInds;
         joltInds.reserve(inds.size() / 3);
-        for (size_t i = 0; i < inds.size(); i += 3) {
-            joltInds.push_back(JPH::IndexedTriangle(inds[i], inds[i+1], inds[i+2]));
+        
+        // --- THE CRASH FIX: Sanitize the Indices ---
+        for (size_t i = 0; i + 2 < inds.size(); i += 3) {
+            uint32_t i0 = inds[i];
+            uint32_t i1 = inds[i+1];
+            uint32_t i2 = inds[i+2];
+
+            // CRITICAL: Ensure no index tries to read a vertex that doesn't exist!
+            // If an index points to vertex 65000, but we only have 60000 vertices,
+            // Jolt will read garbage memory and crash the entire engine.
+            if (i0 < numVertices && i1 < numVertices && i2 < numVertices) {
+                // Ensure it's not a degenerate triangle (a line or a point)
+                if (i0 != i1 && i1 != i2 && i0 != i2) {
+                    joltInds.push_back(JPH::IndexedTriangle(i0, i1, i2));
+                }
+            }
         }
+        // -------------------------------------------
+
+        if (joltInds.empty()) return 0; // Don't build empty collision!
 
         JPH::MeshShapeSettings meshSettings(joltVerts, joltInds);
         JPH::ShapeSettings::ShapeResult result = meshSettings.Create();
