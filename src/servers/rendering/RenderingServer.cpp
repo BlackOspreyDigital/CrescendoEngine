@@ -3589,8 +3589,9 @@ namespace Crescendo {
                         
                         AtmospherePush atmoPush{};
                         atmoPush.vp = proj * view; 
-                        atmoPush.sunDirection_planetRadius = glm::vec4(sunDirection, planet->settings.radius);
-                        atmoPush.planetCenter_atmosphereRadius = glm::vec4(ent->origin, planet->settings.radius * planet->atmosphereScale);
+                        // W components act as the Floor and Ceiling for the raymarcher
+                        atmoPush.sunDirection_planetRadius = glm::vec4(sunDirection, innerRadius);
+                        atmoPush.planetCenter_atmosphereRadius = glm::vec4(ent->origin, outerRadius);
                         atmoPush.cameraPos_sunIntensity = glm::vec4(mainCamera.Position, planet->atmosphereIntensity);
                         atmoPush.rayleigh_mie = glm::vec4(planet->rayleigh, planet->mie);
 

@@ -1142,7 +1142,8 @@ namespace Crescendo {
                     
                         // ---> PASTE THE ATMOSPHERE UI BLOCK RIGHT HERE! <---
                         if (ImGui::CollapsingHeader("Atmosphere Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
-                            ImGui::SliderFloat("Atmo Scale", &planetComponent->atmosphereScale, 1.01f, 3.0f, "%.3f");
+                            ImGui::DragFloat("Atmo Ceiling (Scale)", &atmosphereCeiling, 0.01f, 1.0f, 3.0f);
+                            ImGui::DragFloat("Atmo Floor (Offset)", &atmosphereFloor, 1.0f, -500.0f, 500.0f);
                             ImGui::SliderFloat("Atmo Intensity", &planetComponent->atmosphereIntensity, 1.0f, 50.0f, "%.1f");
 
                             ImGui::ColorEdit3("Rayleigh", glm::value_ptr(planetComponent->rayleigh), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);

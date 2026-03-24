@@ -21,6 +21,8 @@ namespace Crescendo {
             // read shadows
             config.shadowBiasConstant = tbl["Shadows"]["bias_constant"].value_or(config.shadowBiasConstant);
             config.shadowBiasSlope    = tbl["Shadows"]["bias_slope"].value_or(config.shadowBiasSlope);
+            config.shadowDistance     = tbl["Shadows"]["shadow_distance"].value_or(config.shadowDistance);
+            config.cascadeSplitLambda = tbl["Shadows"]["cascade_split"].value_or(config.cascadeSplitLambda);
 
             // read sun colors
             if (auto sunArr = tbl["Environment"]["sun_color"].as_array()) {
@@ -50,7 +52,9 @@ namespace Crescendo {
             }},
             { "Shadows", toml::table{
                 { "bias_constant", config.shadowBiasConstant },
-                { "bias_slope", config.shadowBiasSlope }
+                { "bias_slope", config.shadowBiasSlope },
+                { "shadow_distance", config.shadowDistance },
+                { "cascade_split", config.cascadeSplitLambda }
             }},
             { "Environment", toml::table{
                 { "sun_intensity", config.sunIntensity },

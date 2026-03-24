@@ -24,8 +24,10 @@ namespace Crescendo {
         
         // --- THE TWO NEW VARIABLES ---
         int atmosphereMeshID = -1;
-        float atmosphereScale = 1.50f; 
-        // -----------------------------
+        
+        // --- ATMOSPHERE BOUNDS ---
+        float atmosphereCeiling = 1.15f; // Multiplier for the outer edge
+        float atmosphereFloor = 0.0f;    // Offset from the exact terrain radius
         
         // Atmosphere shading variables
         float atmosphereIntensity = 15.0f;
