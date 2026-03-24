@@ -111,6 +111,41 @@ public:
     ObjectVsBroadPhaseLayerFilterImpl object_vs_broadphase_layer_filter;
     ObjectLayerPairFilterImpl object_vs_object_layer_filter;
 
+    uint32_t CreateTerrainCollider(const std::vector<float>& verts, const std::vector<uint32_t>& inds, const glm::vec3& chunkOrigin, int stride) {
+        if (!bodyInterface || verts.empty() || inds.empty()) return 0;
+
+        JPH::VertexList joltVerts;
+        joltVerts.reserve(verts.size() / stride);
+        
+        // Build the vertices using the dynamic stride
+        for(size_t i = 0; i < verts.size(); i += stride) {
+            joltVerts.push_back(JPH::Float3(verts[i] + chunkOrigin.x, verts[i+1] + chunkOrigin.y, verts[i+2] + chunkOrigin.z));
+        }
+
+        JPH::IndexedTriangleList joltInds;
+        joltInds.reserve(inds.size() / 3);
+        for (size_t i = 0; i < inds.size(); i += 3) {
+            joltInds.push_back(JPH::IndexedTriangle(inds[i], inds[i+1], inds[i+2]));
+        }
+
+        JPH::MeshShapeSettings meshSettings(joltVerts, joltInds);
+        JPH::ShapeSettings::ShapeResult result = meshSettings.Create();
+        
+        if (result.HasError()) {
+            std::cerr << "[Physics] Failed to create Terrain Collider: " << result.GetError().c_str() << std::endl;
+            return 0;
+        }
+
+        BodyCreationSettings settings(result.Get(), JPH::Vec3::sZero(), JPH::Quat::sIdentity(), EMotionType::Static, Layers::NON_MOVING);
+        Body* body = bodyInterface->CreateBody(settings);
+        
+        if (body) {
+            bodyInterface->AddBody(body->GetID(), EActivation::DontActivate);
+            return body->GetID().GetIndexAndSequenceNumber();
+        }
+        return 0;
+    }
+
     BodyInterface* bodyInterface = nullptr;
     std::unordered_map<int, BodyID> entityBodyMap;
 

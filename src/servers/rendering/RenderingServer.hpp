@@ -34,6 +34,24 @@ namespace tinygltf { class Model; class Node; }
 namespace Crescendo {
     class DisplayServer;
     class Scene;
+
+    struct ChunkBakeResult {
+        int meshID = -1; 
+        std::vector<float> collisionVerts;
+        std::vector<uint32_t> collisionIndices;
+    };
+
+    struct TerrainComputePush {
+        alignas(16) glm::vec3 chunkOrigin;
+        alignas(4)  float chunkSize;
+        alignas(16) glm::vec3 planetCenter;
+        alignas(4)  float planetRadius;
+        alignas(4)  float amplitude;
+        alignas(4)  float frequency;
+        alignas(4)  int   octaves;
+        alignas(4)  int   resolution;
+        alignas(4)  int   lod;
+    };
     
     struct MeshResource {
         std::string name;
@@ -153,16 +171,6 @@ namespace Crescendo {
         glm::vec4 rayleigh_mie;                    // 16 bytes
     }; // Exactly 128 Bytes!
 
-    struct ChunkBakeResult {
-        int meshID = -2; // -2 empty
-        std::vector<float>collisionVerts;
-        std::vector<uint32_t> collisionIndices;
-    };
-
-    ChunkBakeResult buildChunkMesh(const struct TerrainComputePush& pushData, bool needsCollision);
-
-    
-    
     struct PostProcessPushConstants {
        float exposure;
        float gamma;
@@ -187,7 +195,6 @@ namespace Crescendo {
         friend class AssetLoader;
         RenderingServer();
         
-        
         bool initialize(DisplayServer* display);
         void shutdown();
         // Update this signature to take the state by reference
@@ -202,7 +209,7 @@ namespace Crescendo {
         int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
         int acquireTexture(const std::string& path);
         VkDescriptorSet getImGuiTextureID(const std::string& path);
-        // --- 1. UPDATE THIS SIGNATURE ---
+       
         void loadSkybox(const std::string& path, Scene * scene);
         TextureResource UploadCubemap(void* pixels, size_t totalSize, uint32_t width, uint32_t height, uint32_t mipLevels);
         TextureResource loadKTXCubemap(const std::string& filePath);
@@ -253,20 +260,12 @@ namespace Crescendo {
         VulkanBuffer densityBuffer;
         VulkanBuffer computeVertexBuffer;
         VulkanBuffer computeIndexBuffer;
-        VulkanBuffer counterBuffer;
+        
         
         VkDescriptorSet terrainComputeDescriptorSet = VK_NULL_HANDLE;
 
-        // The Push Constant Struct (Memory aligned to perfectly match GLSL!)
-        struct TerrainComputePush {
-            alignas(16) glm::vec3 chunkOrigin; float chunkSize;
-            alignas(16) glm::vec3 planetCenter; float planetRadius;
-            alignas(4) float amplitude;
-            alignas(4) float frequency;
-            alignas(4) int octaves;
-            alignas(4) int resolution;
-            alignas(4) int lod;
-        };
+        // Voxel Bake
+        ChunkBakeResult buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision);
 
         // The function signatures!
         bool createTerrainComputePipelines();
@@ -434,6 +433,8 @@ namespace Crescendo {
         // VMA
         VulkanBuffer stagingVertBuffer;
         VulkanBuffer stagingIndexBuffer;
+        VulkanBuffer counterBuffer;
+        
 
         // Internal Helpers
         QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);

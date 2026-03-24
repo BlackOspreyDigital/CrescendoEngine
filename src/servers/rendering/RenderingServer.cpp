@@ -30,7 +30,7 @@
 #include <glm/gtx/matrix_decompose.hpp> 
 #include "backends/imgui_impl_vulkan.h"
 #include "modules/terrain/TerrainManager.hpp"
-  
+#include "servers/physics/PhysicsServer.hpp"
 #include <vulkan/vulkan_core.h>  
 #include "servers/display/DisplayServer.hpp"
 #include "servers/rendering/RenderingServer.hpp"
@@ -2777,9 +2777,9 @@ namespace Crescendo {
         // The Skybox MUST have an empty vertex input!
         VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         // (No binding descriptions here!)
+        return true;
     }
 
-    //===============================================
     void RenderingServer::generateChunkGPU(VkCommandBuffer cmd, const TerrainComputePush& pushData) {
         // 1. Reset the vertex/index counters to 0
         vkCmdFillBuffer(cmd, counterBuffer.handle, 0, 2 * sizeof(uint32_t), 0);
@@ -2825,49 +2825,83 @@ namespace Crescendo {
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 2, geomBarriers.data(), 0, nullptr);
     }
 
-    int RenderingServer::buildChunkMesh(const TerrainComputePush& pushData) {
-        // 1. Tell GPU to calculate the noise and build the mesh
+    ChunkBakeResult RenderingServer::buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) {
+        ChunkBakeResult result;
+        
+        // 1. DISPATCH
         VkCommandBuffer cmd = beginSingleTimeCommands();
-        generateChunkGPU(cmd, pushData);
-        endSingleTimeCommands(cmd); // Wait for the GPU to finish!
-
-        // 2. Read the Atomic Counters to see exactly how many vertices it made
+        // --- THE MISSING LINK: Plug the GPU memory into the shader! ---
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, terrainComputePipelineLayout, 0, 1, &terrainComputeDescriptorSet, 0, nullptr);
+        // --------------------------------------------------------------
+        
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, densityComputePipeline);
+        vkCmdPushConstants(cmd, terrainComputePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TerrainComputePush), &pushData);
+        vkCmdDispatch(cmd, 32 / 8, 32 / 8, 32 / 8); 
+        
+        VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+        
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, marchingCubesComputePipeline);
+        vkCmdPushConstants(cmd, terrainComputePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TerrainComputePush), &pushData);
+        vkCmdDispatch(cmd, 32 / 8, 32 / 8, 32 / 8);
+        
+        endSingleTimeCommands(cmd);
+        
+        // 2. READ COUNTERS
         uint32_t* counters;
         vmaMapMemory(allocator, counterBuffer.allocation, (void**)&counters);
         uint32_t vertexCount = counters[0];
         uint32_t indexCount = counters[1];
         vmaUnmapMemory(allocator, counterBuffer.allocation);
-
-        // If the chunk is empty space (like high in the sky), abort!
-        if (vertexCount == 0 || indexCount == 0) return -2;
-
-        // 3. Allocate a permanent VRAM home for this exact chunk size
+        
+        // Reset counters (Re-using 'cmd' without redeclaring it)
+        cmd = beginSingleTimeCommands();
+        vkCmdFillBuffer(cmd, counterBuffer.handle, 0, 8, 0);
+        endSingleTimeCommands(cmd);
+        
+        if (vertexCount == 0 || indexCount == 0) return result;
+        
+        // 3. ALLOCATE & COPY
+        VkDeviceSize vertSize = vertexCount * sizeof(Vertex);
+        VkDeviceSize indSize = indexCount * sizeof(uint32_t);
+        
         MeshResource newMesh;
         newMesh.name = "GPU_Chunk";
         newMesh.indexCount = indexCount;
-        newMesh.textureID = 0; 
-
-        // 21 floats per vertex! (Must perfectly match the shader!)
-        VkDeviceSize vertSize = vertexCount * 21 * sizeof(float); 
-        VkDeviceSize indSize = indexCount * sizeof(uint32_t);
-
-        newMesh.vertexBuffer = VulkanBuffer(allocator, vertSize, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-        newMesh.indexBuffer = VulkanBuffer(allocator, indSize, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-
-        // 4. Instantly copy the data from the Workspace to the Permanent Home
-        cmd = beginSingleTimeCommands();
+        newMesh.textureID = 0;
+        newMesh.vertexBuffer = VulkanBuffer(allocator, vertSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
+        newMesh.indexBuffer = VulkanBuffer(allocator, indSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
         
-        VkBufferCopy vertCopy{0, 0, vertSize};
-        vkCmdCopyBuffer(cmd, computeVertexBuffer.handle, newMesh.vertexBuffer.handle, 1, &vertCopy);
-
-        VkBufferCopy indCopy{0, 0, indSize};
-        vkCmdCopyBuffer(cmd, computeIndexBuffer.handle, newMesh.indexBuffer.handle, 1, &indCopy);
-
+        cmd = beginSingleTimeCommands();
+        VkBufferCopy vCopy{0, 0, vertSize}, iCopy{0, 0, indSize};
+        vkCmdCopyBuffer(cmd, computeVertexBuffer.handle, newMesh.vertexBuffer.handle, 1, &vCopy);
+        vkCmdCopyBuffer(cmd, computeIndexBuffer.handle, newMesh.indexBuffer.handle, 1, &iCopy);
+        
+        if (needsCollision) {
+            vkCmdCopyBuffer(cmd, computeVertexBuffer.handle, stagingVertBuffer.handle, 1, &vCopy);
+            vkCmdCopyBuffer(cmd, computeIndexBuffer.handle, stagingIndexBuffer.handle, 1, &iCopy);
+        }
         endSingleTimeCommands(cmd);
-
-        // 5. Save the mesh and return its ID
+    
+        // 4. DATA copy
+        if (needsCollision) {
+            const int STRIDE = sizeof(Vertex) / sizeof(float);
+            float* rawVerts;
+            vmaMapMemory(allocator, stagingVertBuffer.allocation, (void**)&rawVerts);
+            result.collisionVerts.assign(rawVerts, rawVerts + (vertexCount * STRIDE));
+            vmaUnmapMemory(allocator, stagingVertBuffer.allocation);
+        
+            uint32_t* rawInds;
+            vmaMapMemory(allocator, stagingIndexBuffer.allocation, (void**)&rawInds);
+            result.collisionIndices.assign(rawInds, rawInds + indexCount);
+            vmaUnmapMemory(allocator, stagingIndexBuffer.allocation);
+        }
+    
         meshes.push_back(std::move(newMesh));
-        return meshes.size() - 1;
+        result.meshID = static_cast<int>(meshes.size() - 1);
+        return result; 
     }
    
     //===============================================
@@ -3528,32 +3562,38 @@ namespace Crescendo {
                         return glm::length((camPos - ent->origin) - a->center) < glm::length((camPos - ent->origin) - b->center); 
                     });
 
-                    // 3. Generate up to 3 chunks THIS FRAME directly on the GPU!
+                    // 3. Process the Bake Queue
                     int chunksGenerated = 0;
                     while (!planet->chunkManager->chunkQueue.empty() && chunksGenerated < 3) {
                         auto* node = planet->chunkManager->chunkQueue.front();
                         planet->chunkManager->chunkQueue.erase(planet->chunkManager->chunkQueue.begin());
 
-                        TerrainComputePush push{};
-                        // Calculate exact local coordinates
-                        push.chunkOrigin = node->center - glm::vec3(node->size / 2.0f);
-                        push.chunkSize = node->size;
-                        push.planetCenter = glm::vec3(0.0f); // Local space!
-                        push.planetRadius = planet->settings.radius;
-                        push.amplitude = planet->settings.amplitude;
-                        push.frequency = planet->settings.frequency;
-                        push.octaves = planet->settings.octaves;
-                        push.resolution = 32; // 32x32x32 Voxels
-                        push.lod = node->lod;
+                        TerrainComputePush pushData{}; // Name this 'pushData' to match!
+                        pushData.chunkOrigin = node->center - glm::vec3(node->size / 2.0f);
+                        pushData.chunkSize = node->size;
+                        pushData.planetCenter = glm::vec3(0.0f);
+                        pushData.planetRadius = planet->settings.radius;
+                        pushData.amplitude = planet->settings.amplitude;
+                        pushData.frequency = planet->settings.frequency;
+                        pushData.octaves = planet->settings.octaves;
+                        pushData.resolution = 32;
+                        pushData.lod = node->lod;
 
-                        // Blast it to the GPU and get the Mesh ID back instantly!
-                        node->meshID = buildChunkMesh(push);
+                        bool needsCollision = (node->lod <= 1);
+                        
+                        // 1. Call the function
+                        ChunkBakeResult result = buildChunkMesh(pushData, needsCollision);
+                        node->meshID = result.meshID;
+
+                        // 2. Hand data to Physics (scene->physics is valid here!)
+                        if (needsCollision && result.meshID >= 0 && scene->physics) {
+                            int stride = sizeof(Vertex) / sizeof(float);
+                            scene->physics->CreateTerrainCollider(result.collisionVerts, result.collisionIndices, pushData.chunkOrigin, stride);
+                        }
+
                         node->isGenerating = false; 
                         chunksGenerated++;
                     }
-
-                    PushConsts push{};
-                    push.entityIndex = entityGPUIndices[ent];
 
                     // 4. Recursive Octree Streaming Lambda
                     auto drawOctree = [&](auto& self, Crescendo::Terrain::OctreeNode* node) -> void {
@@ -3569,7 +3609,12 @@ namespace Crescendo {
                                     vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
                                     vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
                                     
+                                    // --- THE FIX: Define the push constant here! ---
+                                    PushConsts push{};
+                                    push.entityIndex = entityGPUIndices[ent];
                                     vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConsts), &push);
+                                    // -----------------------------------------------
+
                                     vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
                                 }
                             }
