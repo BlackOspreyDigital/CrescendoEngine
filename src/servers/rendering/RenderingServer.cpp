@@ -1596,7 +1596,7 @@ namespace Crescendo {
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depthStencil.depthTestEnable = VK_TRUE;
-        depthStencil.depthWriteEnable = VK_FALSE;
+        depthStencil.depthWriteEnable = VK_TRUE;
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
 
         VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
@@ -2576,8 +2576,8 @@ namespace Crescendo {
         
         // 3. Allocate the VRAM Workspace (SSBOs)
         const VkDeviceSize DENSITY_SIZE = 33 * 33 * 33 * sizeof(float);
-        const VkDeviceSize MAX_VERTS_SIZE = 10 * 1024 * 1024; // 10MB
-        const VkDeviceSize MAX_INDICES_SIZE = 2 * 1024 * 1024; // 2MB
+        const VkDeviceSize MAX_VERTS_SIZE = 50 * 1024 * 1024;
+        const VkDeviceSize MAX_INDICES_SIZE = 10 * 1024 * 1024;
         const VkDeviceSize COUNTER_SIZE = 2 * sizeof(uint32_t);
 
         densityBuffer = VulkanBuffer(allocator, DENSITY_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
@@ -2822,7 +2822,7 @@ namespace Crescendo {
         vmaUnmapMemory(allocator, counterBuffer.allocation);
 
         // If the chunk is empty space (like high in the sky), abort!
-        if (vertexCount == 0 || indexCount == 0) return -1;
+        if (vertexCount == 0 || indexCount == 0) return -2;
 
         // 3. Allocate a permanent VRAM home for this exact chunk size
         MeshResource newMesh;
@@ -2853,7 +2853,6 @@ namespace Crescendo {
         return meshes.size() - 1;
     }
    
-
     //===============================================
     // RENDER STAGING
     //===============================================
@@ -3470,25 +3469,6 @@ namespace Crescendo {
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
                                     pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
             
-            // -----------------------------------------------------------------
-            // 1. SEPARATE AND SORT DRAW ENTITIES
-            // -----------------------------------------------------------------
-            
-            for (auto* ent : scene->entities) {
-                if (!ent || ent->modelIndex >= meshes.size() || ent->className == "prop_water") continue;
-                if (ent->transmission > 0.0f) {
-                    float distSq = glm::dot(ent->origin - camPos, ent->origin - camPos);
-                    transPairs.push_back({distSq, ent});
-                } else {
-                    opaqueList.push_back(ent);
-                }
-            }
-
-            // Sort transparent objects back-to-front
-            std::sort(transPairs.begin(), transPairs.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-            
-            for (auto& p : transPairs) transparentList.push_back(p.second);
-
             // Generic Draw Helper
             auto DrawList = [&](const std::vector<CBaseEntity*>& list) {
                 for (auto* ent : list) {
@@ -3563,7 +3543,7 @@ namespace Crescendo {
                         if (!node->isVisible) return; // Cull the dark side only
 
                         if (node->isLeaf) {
-                            if (node->meshID != -1) {
+                            if (node->meshID >= 0) { 
                                 MeshResource& mesh = meshes[node->meshID];
                                 if (mesh.vertexBuffer.handle != VK_NULL_HANDLE) {
                                     VkBuffer vBuffers[] = { mesh.vertexBuffer.handle };
@@ -5100,10 +5080,7 @@ namespace Crescendo {
             if (equirectToCubePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, equirectToCubePipeline, nullptr);
             if (outlinePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, outlinePipeline, nullptr);
             // if (billboardPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, billboardPipeline, nullptr);
-            vkDestroyPipelineLayout(device, terrainComputePipelineLayout, nullptr);
-            vkDestroyDescriptorSetLayout(device, terrainComputeDescriptorLayout, nullptr);
             
-
             if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
             if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
             if (shadowPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
@@ -5118,6 +5095,20 @@ namespace Crescendo {
             // 2. Destroy Core Render Passes
             if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
             if (shadowRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, shadowRenderPass, nullptr);
+
+            // --- DESTROY TERRAIN COMPUTE PIPELINES ---
+            if (densityComputePipeline != VK_NULL_HANDLE) {
+                vkDestroyPipeline(device, densityComputePipeline, nullptr);
+            }
+            if (marchingCubesComputePipeline != VK_NULL_HANDLE) {
+                vkDestroyPipeline(device, marchingCubesComputePipeline, nullptr);
+            }
+            if (terrainComputePipelineLayout != VK_NULL_HANDLE) {
+                vkDestroyPipelineLayout(device, terrainComputePipelineLayout, nullptr);
+            }
+            if (terrainComputeDescriptorLayout != VK_NULL_HANDLE) {
+                vkDestroyDescriptorSetLayout(device, terrainComputeDescriptorLayout, nullptr);
+            }
 
             // 3. Cleanup Shadow Resources
             for (auto fb : shadowFramebuffers) vkDestroyFramebuffer(device, fb, nullptr);
@@ -5134,9 +5125,28 @@ namespace Crescendo {
             textureImage.destroy();
             positionBakeImage.destroy();
             normalBakeImage.destroy();
+
+            // --- THE FIX: CLEANUP COMPUTE WORKSPACE ---
+            densityBuffer.destroy();
+            computeVertexBuffer.destroy();
+            computeIndexBuffer.destroy();
+            
+            // Because we bypassed the wrapper to allocate this, we MUST manually destroy it!
+            if (counterBuffer.handle != VK_NULL_HANDLE) {
+                vmaDestroyBuffer(allocator, counterBuffer.handle, counterBuffer.allocation);
+            }
             
             // 5. Cleanup Meshes & Textures
+            for (auto& mesh : meshes) {
+                mesh.vertexBuffer.destroy();
+                mesh.indexBuffer.destroy();
+            }
             meshes.clear(); 
+            
+            // --- free the vram now
+            for (auto& tex : textureBank) {
+                tex.image.destroy();
+            }
             textureBank.clear();
             textureMap.clear();
 
@@ -5164,6 +5174,8 @@ namespace Crescendo {
                 entityStorageBuffers[i].destroy();
                 globalUniformBuffers[i].destroy();
             }
+
+            
                 
             // 9. Cleanup Swapchain
             cleanupSwapChain();

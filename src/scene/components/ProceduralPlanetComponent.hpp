@@ -24,7 +24,7 @@ namespace Crescendo {
         
         // --- THE TWO NEW VARIABLES ---
         int atmosphereMeshID = -1;
-        float atmosphereScale = 1.15f; 
+        float atmosphereScale = 1.50f; 
         // -----------------------------
         
         // Atmosphere shading variables
