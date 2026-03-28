@@ -1,5 +1,6 @@
 #pragma once
 #include "RenderTypes.hpp"
+#include "core/EngineState.hpp"
 #include <memory>
 
 namespace Crescendo {
@@ -7,8 +8,7 @@ namespace Crescendo {
     class DisplayServer;
     class Scene;
     class SceneManager;
-    struct EngineState;
-
+    
     class IRenderer {
     public:
         virtual ~IRenderer() = default;

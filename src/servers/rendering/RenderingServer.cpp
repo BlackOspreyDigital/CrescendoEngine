@@ -170,7 +170,6 @@ namespace Crescendo {
         if (!createOutlinePipeline()) return false;
         // if (!createBillboardPipeline()) return false;
        
-
         if (!createFramebuffers()) return false;
 
         // --- Assets ---
@@ -193,7 +192,7 @@ namespace Crescendo {
     bool RenderingServer::createInstance() {
         VkApplicationInfo appInfo{};
         appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        appInfo.pApplicationName = "Crescendo Engine v0.6a";
+        appInfo.pApplicationName = "Crescendo Engine v0.7a";
         appInfo.apiVersion = VK_API_VERSION_1_3;
 
         uint32_t extensionCount = 0;

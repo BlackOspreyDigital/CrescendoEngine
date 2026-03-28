@@ -3,22 +3,27 @@
 #include <vector>
 #include <glm/glm.hpp>
 
-// --- THE PLATFORM BRIDGE ---
-#ifdef __EMSCRIPTEN__
-    // WebGL uses simple integers (GLuint) to track memory on the GPU
-    typedef unsigned int GPUBufferHandle;
-#else
-    // Desktop uses your custom Vulkan RAII wrappers
+#ifndef __EMSCRIPTEN__
     #include "vulkan/VulkanResources.hpp"
-    typedef VulkanBuffer GPUBufferHandle;
 #endif
 
 namespace Crescendo {
     
+    // --- THE PLATFORM BRIDGE ---
+    #ifdef __EMSCRIPTEN__
+        // WebGL uses simple integers (GLuint) to track memory on the GPU
+        typedef unsigned int GPUBufferHandle;
+    #else
+        // Desktop uses your custom Vulkan RAII wrappers
+        // THE FIX: Explicitly define the namespace path!
+        typedef Crescendo::VulkanBuffer GPUBufferHandle; 
+    #endif
+
     struct MeshResource {
+       
         std::string name;
-        GPUBufferHandle vertexBuffer; // <--- Uses the Bridge!
-        GPUBufferHandle indexBuffer;  // <--- Uses the Bridge!
+        GPUBufferHandle vertexBuffer;
+        GPUBufferHandle indexBuffer; 
         uint32_t indexCount;
         uint32_t textureID; // 0 default
 

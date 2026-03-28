@@ -27,7 +27,7 @@ namespace Crescendo {
         renderer = std::make_unique<RenderingServer>();
         if (!renderer->initialize(&displayServer)) return false;
 
-        // Pass the raw pointer from our unique_ptr
+    
         // Note: If SceneManager expects a RenderingServer*, you may need to cast it: 
         // static_cast<RenderingServer*>(renderer.get())
         sceneManager = std::make_unique<SceneManager>(static_cast<RenderingServer*>(renderer.get()));

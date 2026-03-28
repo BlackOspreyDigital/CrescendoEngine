@@ -1,6 +1,7 @@
 // src/main.cpp
 #include <iostream>
 #include "core/Engine.hpp"
+#include "servers/rendering/RenderingServer.hpp"
 
 int main(int argc, char* argv[]) {
     Crescendo::Engine engine;
@@ -11,7 +12,7 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
-    auto& camera = engine.renderingServer.mainCamera;
+    auto& camera = static_cast<Crescendo::RenderingServer*>(engine.renderer.get())->mainCamera;
     camera.SetPosition(glm::vec3(0.0f, -10.0f, 5.0f)); 
     camera.SetRotation(glm::vec3(0.0f, 90.0f, 0.0f)); 
 

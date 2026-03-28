@@ -37,47 +37,6 @@ namespace Crescendo {
     class DisplayServer;
     class Scene;
 
-    struct MeshResource {
-        std::string name;
-        VulkanBuffer vertexBuffer;
-        VulkanBuffer indexBuffer;
-        uint32_t indexCount;
-        uint32_t textureID; // 0 default
-
-        MeshResource() = default;
-        MeshResource(const MeshResource&) = delete;
-        MeshResource& operator=(const MeshResource&) = delete;
-        MeshResource(MeshResource&& other) noexcept = default;
-        MeshResource& operator=(MeshResource&& other) noexcept = default;
-    };
-
-    struct ChunkBakeResult {
-        MeshResource generatedMesh;
-        bool hasMesh = false;
-        uint32_t physicsBodyID = 0;
-        std::vector<float> collisionVerts;
-        std::vector<uint32_t> collisionIndices;
-
-        // Added these 5 lines to force the compiler to allow Thread-to-Thread moving!
-        ChunkBakeResult() = default;
-        ChunkBakeResult(const ChunkBakeResult&) = delete;
-        ChunkBakeResult& operator=(const ChunkBakeResult&) = delete;
-        ChunkBakeResult(ChunkBakeResult&&) noexcept = default;
-        ChunkBakeResult& operator=(ChunkBakeResult&&) noexcept = default;
-    };
-
-    struct TerrainComputePush {
-        alignas(16) glm::vec3 chunkOrigin;
-        alignas(4)  float chunkSize;
-        alignas(16) glm::vec3 planetCenter;
-        alignas(4)  float planetRadius;
-        alignas(4)  float amplitude;
-        alignas(4)  float frequency;
-        alignas(4)  int   octaves;
-        alignas(4)  int   resolution;
-        alignas(4)  int   lod;
-    };
-
     struct TextureResource {
         VulkanImage image;
         uint32_t id;
@@ -216,7 +175,7 @@ namespace Crescendo {
 
         void render(Scene* scene, SceneManager* sceneManager, EngineState& engineState) override;
         ChunkBakeResult buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) override;
-
+        void calculateCascades(Scene* scene, Camera& camera, float aspectRatio, GlobalUniforms& globalData);
         void SetMSAASamples(VkSampleCountFlagBits newSamples);
 
         VkSampleCountFlagBits pendingMsaaSamples = VK_SAMPLE_COUNT_4_BIT;
@@ -280,9 +239,6 @@ namespace Crescendo {
         VulkanBuffer computeIndexBuffer;
         
         VkDescriptorSet terrainComputeDescriptorSet = VK_NULL_HANDLE;
-
-        // Voxel Bake
-        ChunkBakeResult buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision);
 
         // Voxel Gen
         bool createTerrainComputePipelines();
@@ -508,8 +464,6 @@ namespace Crescendo {
         std::vector<glm::vec4> getFrustumCornersWorldSpace(const glm::mat4& proj, const glm::mat4& view);
         
         void updateUniformBuffer(uint32_t currentImage, Scene* scene);
-
-        void calculateCascades(Scene* scene, Camera& camera, float aspectRatio, GlobalUniforms& globalData);
 
         // --- SHADOW RESOURCES ---
         VulkanImage shadowImage; 
