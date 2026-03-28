@@ -7,7 +7,12 @@
 #include "scene/BaseEntity.hpp"
 #include "servers/networking/NetworkingServer.hpp"
 #include "modules/gltf/AssetLoader.hpp"
-#include "servers/rendering/RenderingServer.hpp"
+// --- THE RHI SWITCH ---
+#ifdef __EMSCRIPTEN__
+    #include "servers/rendering/webgl/WebRenderer.hpp"
+#else
+    #include "servers/rendering/RenderingServer.hpp"
+#endif
 
 #include "IO/SceneManager.hpp"
 
@@ -22,6 +27,19 @@ namespace Crescendo {
         JPH::Factory::sInstance = new JPH::Factory();
         
         if (!displayServer.initialize(title, width, height)) return false;
+
+        // --- PLATFORM RENDERER INJECTION ---
+        #ifdef __EMSCRIPTEN__
+                renderer = std::make_unique<WebRenderer>();
+                // Note: SceneManager & AssetLoader currently require a RenderingServer*. 
+                // We will need to pass nullptr for the web player right now until we decouple them!
+                if (!renderer->initialize(&displayServer)) return false;
+                sceneManager = std::make_unique<SceneManager>(nullptr);
+        #else
+                renderer = std::make_unique<RenderingServer>();
+                if (!renderer->initialize(&displayServer)) return false;
+                sceneManager = std::make_unique<SceneManager>(static_cast<RenderingServer*>(renderer.get()));
+        #endif
         
         // Create the Vulkan renderer and hook it up!
         renderer = std::make_unique<RenderingServer>();
@@ -246,12 +264,20 @@ namespace Crescendo {
     }
 
     void Engine::Shutdown() {
-        // Clean up player if we closed the engine while in Play mode
+        std::cout << "[Engine] Commencing Shutdown..." << std::endl;
+
         if (activePlayer) {
             delete activePlayer;
             activePlayer = nullptr;
         }
 
+        // 1. CLEAR THE SCENE DATA FIRST
+        // This ensures all MeshResources and Buffers owned by entities 
+        // are dropped while the Vulkan Allocator is still 100% alive.
+        sceneManager.reset(); 
+        scene.entities.clear(); 
+
+        // 2. Now it is safe to clean up systems
         physicsServer.Cleanup(); 
         renderer->shutdown();
         displayServer.shutdown();

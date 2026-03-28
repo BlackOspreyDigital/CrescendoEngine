@@ -5297,11 +5297,29 @@ namespace Crescendo {
     }
 
     void RenderingServer::shutdown() {
+        
+        // shits fucked, unfuck it bryan 
         if (device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device);
 
             symbolServer.Cleanup(device);
             editorUI.Shutdown(device);
+            
+            // --- THE ROBUST CLEANUP LAMBDA ---
+            auto robustCleanup = [&](VulkanBuffer& buffer) {
+                if (buffer.handle != VK_NULL_HANDLE && buffer.allocation != VK_NULL_HANDLE) {
+                    VmaAllocationInfo info;
+                    vmaGetAllocationInfo(allocator, buffer.allocation, &info);
+                    // If VMA says it's mapped, force it to let go
+                    if (info.pMappedData != nullptr) {
+                        vmaUnmapMemory(allocator, buffer.allocation);
+                    }
+                    vmaDestroyBuffer(allocator, buffer.handle, buffer.allocation);
+                    // CRITICAL: Set handles to null so RAII destructors don't try again!
+                    buffer.handle = VK_NULL_HANDLE;
+                    buffer.allocation = VK_NULL_HANDLE;
+                }
+            };
         
             // 1. Destroy Pipelines & Layouts
             if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, skyPipeline, nullptr);
@@ -5363,38 +5381,46 @@ namespace Crescendo {
             positionBakeImage.destroy();
             normalBakeImage.destroy();
 
-            // --- THE FIX: CLEANUP COMPUTE WORKSPACE ---
+            // --- CONSOLIDATED BUFFER CLEANUP ---
+            // This lambda is the "Universal Janitor". It checks if a buffer is mapped,
+            // unmaps it if necessary, and then destroys it safely.
+            auto robustCleanup = [&](VulkanBuffer& buffer) {
+                if (buffer.handle != VK_NULL_HANDLE && buffer.allocation != VK_NULL_HANDLE) {
+                    VmaAllocationInfo info;
+                    vmaGetAllocationInfo(allocator, buffer.allocation, &info);
+                    // Only unmap if VMA confirms the CPU is currently holding a pointer
+                    if (info.pMappedData != nullptr) {
+                        vmaUnmapMemory(allocator, buffer.allocation);
+                    }
+                    vmaDestroyBuffer(allocator, buffer.handle, buffer.allocation);
+                    buffer.handle = VK_NULL_HANDLE;
+                    buffer.allocation = VK_NULL_HANDLE;
+                }
+            };
+
+            // A. Cleanup Procedural/Voxel Workspace
             densityBuffer.destroy();
             computeVertexBuffer.destroy();
             computeIndexBuffer.destroy();
             
-            // Because we bypassed the wrapper to allocate this, we MUST manually destroy it!
-            if (counterBuffer.handle != VK_NULL_HANDLE) {
-                vmaDestroyBuffer(allocator, counterBuffer.handle, counterBuffer.allocation);
-            }
-            
-            // --- staging buffer cleanup 2 ---
-            if (stagingVertBuffer.handle != VK_NULL_HANDLE) {
-                vmaDestroyBuffer(allocator, stagingVertBuffer.handle, stagingVertBuffer.allocation);
-            }
-            if (stagingIndexBuffer.handle != VK_NULL_HANDLE) {
-                vmaDestroyBuffer(allocator, stagingIndexBuffer.handle, stagingIndexBuffer.allocation);
-            }
-                        
-            // 5. Cleanup Meshes & Textures
-            meshes.clear();
-            
-            // --- free the vram now
+            // B. Cleanup Staging & Counters (Using the robust check)
+            robustCleanup(counterBuffer);
+            robustCleanup(stagingVertBuffer);
+            robustCleanup(stagingIndexBuffer);
+
+            // 3. Cleanup Meshes & Textures
+            // Clearing meshes here is safe because we killed the scene in Engine.cpp
+            meshes.clear(); 
             for (auto& tex : textureBank) {
                 tex.image.destroy();
             }
             textureBank.clear();
-            textureMap.clear();
 
-            vkDestroyPipeline(device, bakePipeline, nullptr);
-            vkDestroyPipelineLayout(device, bakePipelineLayout, nullptr);
-            vkDestroyFramebuffer(device, bakeFramebuffer, nullptr);
-            vkDestroyRenderPass(device, bakeRenderPass, nullptr);
+            // C. Cleanup Bake Infrastructure
+            if (bakePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bakePipeline, nullptr);
+            if (bakePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, bakePipelineLayout, nullptr);
+            if (bakeFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, bakeFramebuffer, nullptr);
+            if (bakeRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, bakeRenderPass, nullptr);
             
             // 6. Cleanup Samplers
             if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(device, textureSampler, nullptr);
@@ -5402,21 +5428,17 @@ namespace Crescendo {
             
             // 7. Cleanup Descriptors & Pools
             if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
-            if (descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool, nullptr); // <-- THIS WAS MISSING
+            if (descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool, nullptr);
             
-            // 8. Cleanup SSBO & UBO
+            // 4. Cleanup UBOs/SSBOs (The persistent ones)
             for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-                if (entityStorageBuffersMapped[i]) {
-                    vmaUnmapMemory(allocator, entityStorageBuffers[i].allocation);
-                }
-                if (globalUniformBuffersMapped[i]) {
-                    vmaUnmapMemory(allocator, globalUniformBuffers[i].allocation);
-                }
-                entityStorageBuffers[i].destroy();
-                globalUniformBuffers[i].destroy();
+                robustCleanup(entityStorageBuffers[i]);
+                robustCleanup(globalUniformBuffers[i]);
+                entityStorageBuffersMapped[i] = nullptr;
+                globalUniformBuffersMapped[i] = nullptr;
             }
 
-            // 9. Cleanup Swapchain
+            // 5. Cleanup remaining infrastructure
             cleanupSwapChain();
         
             // 10. Cleanup Sync Objects
