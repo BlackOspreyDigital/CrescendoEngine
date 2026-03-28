@@ -2592,17 +2592,14 @@ namespace Crescendo {
         
         VmaAllocationCreateInfo sAlloc{};
         sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
-        sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT; // The magic readback flag!
+        sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT; 
         
         vmaCreateBuffer(allocator, &sVertInfo, &sAlloc, &stagingVertBuffer.handle, &stagingVertBuffer.allocation, nullptr);
 
         VkBufferCreateInfo sIndInfo = sVertInfo;
         sIndInfo.size = MAX_INDICES_SIZE;
         vmaCreateBuffer(allocator, &sIndInfo, &sAlloc, &stagingIndexBuffer.handle, &stagingIndexBuffer.allocation, nullptr);
-        // --------------------------------------------------------------------
-
-        // --- THE VMA 3.0 FIX (Your existing counter buffer) ---
-        // Explicitly configure VMA to allow the CPU to map and read the vertex counters!
+        
         VkBufferCreateInfo counterBufInfo{};
         counterBufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         counterBufInfo.size = COUNTER_SIZE;
@@ -2613,7 +2610,7 @@ namespace Crescendo {
         counterAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT; 
 
         vmaCreateBuffer(allocator, &counterBufInfo, &counterAllocInfo, &counterBuffer.handle, &counterBuffer.allocation, nullptr);
-        // -----------------------
+        
         // 4. Bind the Buffers to the Descriptor Set
         VkDescriptorSetAllocateInfo allocInfo{};
         allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -2711,7 +2708,6 @@ namespace Crescendo {
         viewportState.viewportCount = 1;
         viewportState.scissorCount = 1;
 
-        // --- THE MAGIC IS HERE ---
         VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
         rasterizer.depthClampEnable = VK_FALSE;
         rasterizer.rasterizerDiscardEnable = VK_FALSE;
@@ -2793,7 +2789,7 @@ namespace Crescendo {
         
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 1, &fillBarrier, 0, nullptr);
 
-        // 2. Bind the Descriptor Set (Our Workspace)
+        // 2. Bind the Descriptor Set
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, terrainComputePipelineLayout, 0, 1, &terrainComputeDescriptorSet, 0, nullptr);
 
         // 3. PASS 1: Density Generation
@@ -2827,13 +2823,13 @@ namespace Crescendo {
 
     ChunkBakeResult RenderingServer::buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) {
         ChunkBakeResult result;
+        VkCommandPool localPool;
         
         // 1. DISPATCH
-        VkCommandBuffer cmd = beginSingleTimeCommands();
-        // --- THE MISSING LINK: Plug the GPU memory into the shader! ---
+        VkCommandBuffer cmd = beginAsyncCommands(localPool);
+        // Plug the GPU memory into the shader! 
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, terrainComputePipelineLayout, 0, 1, &terrainComputeDescriptorSet, 0, nullptr);
-        // --------------------------------------------------------------
-        
+                
         // Pass 1: Density (Padded to 33x33x33 to prevent boundary walls)
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, densityComputePipeline);
         vkCmdPushConstants(cmd, terrainComputePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TerrainComputePush), &pushData);
@@ -2849,7 +2845,7 @@ namespace Crescendo {
         vkCmdPushConstants(cmd, terrainComputePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TerrainComputePush), &pushData);
         vkCmdDispatch(cmd, 4, 4, 4); // <--- CHANGED TO 4 (Same as 32 / 8)
         
-        endSingleTimeCommands(cmd);
+        endAsyncCommands(cmd, localPool);
         
         // 2. Read back vertex/index counts
         uint32_t* counters;
@@ -2858,7 +2854,7 @@ namespace Crescendo {
         uint32_t indexCount = counters[1];
         vmaUnmapMemory(allocator, counterBuffer.allocation);
 
-        // --- THE CRASH FIX: Prevent Memory Overflow ---
+        // Safe memory overflow
         // Clamp the vertices so we never write past the end of the staging buffer!
         const uint32_t MAX_SAFE_VERTICES = 60000; 
         if (vertexCount > MAX_SAFE_VERTICES) vertexCount = MAX_SAFE_VERTICES;
@@ -2867,9 +2863,11 @@ namespace Crescendo {
 
         if (vertexCount == 0 || indexCount == 0) {
             // Still need to reset counters if the chunk was empty air
-            cmd = beginSingleTimeCommands();
+            cmd = beginAsyncCommands(localPool);
+
             vkCmdFillBuffer(cmd, counterBuffer.handle, 0, 8, 0);
-            endSingleTimeCommands(cmd);
+
+            endAsyncCommands(cmd, localPool);
             return result;
         }
 
@@ -2884,7 +2882,7 @@ namespace Crescendo {
         newMesh.vertexBuffer = VulkanBuffer(allocator, vertSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
         newMesh.indexBuffer = VulkanBuffer(allocator, indSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
 
-        // --- THE CRASH FIX: Exact-Size Dynamic Staging Buffers ---
+        // Exact-Size Dynamic Staging Buffers
         VkBuffer tempVertBuf = VK_NULL_HANDLE, tempIndBuf = VK_NULL_HANDLE;
         VmaAllocation tempVertAlloc = VK_NULL_HANDLE, tempIndAlloc = VK_NULL_HANDLE;
 
@@ -2905,7 +2903,7 @@ namespace Crescendo {
         // ---------------------------------------------------------
 
         // 4. Data Transfer AND Counter Reset
-        cmd = beginSingleTimeCommands();
+        cmd = beginAsyncCommands(localPool);
 
         // Copy the geometry to GPU memory
         VkBufferCopy vCopy{0, 0, vertSize}, iCopy{0, 0, indSize};
@@ -2920,7 +2918,7 @@ namespace Crescendo {
 
         // Reset counters to prevent CPU stall
         vkCmdFillBuffer(cmd, counterBuffer.handle, 0, 8, 0);
-        endSingleTimeCommands(cmd); 
+        endAsyncCommands(cmd, localPool);
 
         // 5. Data Extraction
         if (needsCollision) {
@@ -2940,8 +2938,8 @@ namespace Crescendo {
             vmaDestroyBuffer(allocator, tempIndBuf, tempIndAlloc);
         }
 
-        meshes.push_back(std::move(newMesh));
-        result.meshID = static_cast<int>(meshes.size() - 1);
+        result.generatedMesh = std::move(newMesh);
+        result.hasMesh = true;
         return result;
     }
    
@@ -3032,12 +3030,27 @@ namespace Crescendo {
     bool RenderingServer::createCommandPool() {
         QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
 
+        // 1. The Main Render Command Pool
         VkCommandPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         poolInfo.queueFamilyIndex = indices.graphicsFamily.value();
         poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 
-        return vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) == VK_SUCCESS;
+        if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS) {
+            return false;
+        }
+
+        // 2. The Background Async Command Pool
+        VkCommandPoolCreateInfo asyncPoolInfo{};
+        asyncPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        asyncPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        asyncPoolInfo.queueFamilyIndex = indices.graphicsFamily.value();
+
+        if (vkCreateCommandPool(device, &asyncPoolInfo, nullptr, &asyncCommandPool) != VK_SUCCESS) {
+            return false;
+        }
+
+        return true;
     }
 
     bool RenderingServer::createCommandBuffers() {
@@ -3088,6 +3101,19 @@ namespace Crescendo {
         vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
 
         endSingleTimeCommands(commandBuffer);
+    }
+
+    void RenderingServer::copyBufferAsync(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size) {
+        // Create a local pool specifically for this memory copy
+        VkCommandPool localPool;
+        VkCommandBuffer commandBuffer = beginAsyncCommands(localPool);
+
+        VkBufferCopy copyRegion{};
+        copyRegion.size = size;
+        vkCmdCopyBuffer(commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion);
+
+        // Queue mutex to safely submit, then it destroys the local pool!
+        endAsyncCommands(commandBuffer, localPool);
     }
 
     VulkanBuffer RenderingServer::createVertexBuffer(const std::vector<Vertex>& vertices) {
@@ -3256,6 +3282,63 @@ namespace Crescendo {
         }
 
         return true;
+    }
+
+    VkCommandBuffer RenderingServer::beginAsyncCommands(VkCommandPool& outLocalPool) {
+        // 1. Create a dedicated pool JUST for this specific background thread
+        VkCommandPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT; 
+        
+        // Grab the queue family index dynamically so it doesn't crash!
+        QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
+        poolInfo.queueFamilyIndex = indices.graphicsFamily.value();
+
+        vkCreateCommandPool(device, &poolInfo, nullptr, &outLocalPool);
+
+        // 2. Allocate the buffer from the new local pool
+        VkCommandBufferAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocInfo.commandPool = outLocalPool;
+        allocInfo.commandBufferCount = 1;
+
+        VkCommandBuffer commandBuffer;
+        vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+
+        VkCommandBufferBeginInfo beginInfo{};
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+        vkBeginCommandBuffer(commandBuffer, &beginInfo);
+        return commandBuffer;
+    }
+
+    void RenderingServer::endAsyncCommands(VkCommandBuffer commandBuffer, VkCommandPool localPool) {
+        vkEndCommandBuffer(commandBuffer);
+
+        VkSubmitInfo submitInfo{};
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &commandBuffer;
+
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VkFence fence;
+        vkCreateFence(device, &fenceInfo, nullptr, &fence);
+
+        {
+            // Traffic Light: Protect the actual Queue submission
+            std::lock_guard<std::mutex> lock(queueMutex);
+            vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence); 
+        }
+
+        // Wait for the background GPU work to finish
+        vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+        vkDestroyFence(device, fence, nullptr);
+
+        // Clean up the local pool (which automatically frees the command buffer!)
+        vkDestroyCommandPool(device, localPool, nullptr);
     }
 
     // --------------------------------------------------------------------
@@ -3589,7 +3672,7 @@ namespace Crescendo {
             // First, draw standard opaque models (like the player, ships, etc)
             DrawList(opaqueList);
 
-            // Now, traverse and stream the Procedural Planets! [Updated GPU method]
+            // Traverse and stream the Procedural Planets! [Updated GPU method]
             for (auto* ent : scene->entities) {
                 if (ent && ent->HasComponent<ProceduralPlanetComponent>()) {
                     auto planet = ent->GetComponent<ProceduralPlanetComponent>();
@@ -3599,17 +3682,23 @@ namespace Crescendo {
                     planet->rootNode->Update(camPos - ent->origin, planet->lodSplitThreshold, planet->chunkManager.get());
 
                     // 2. Sort the queue so chunks closest to the camera generate FIRST
-                    std::sort(planet->chunkManager->chunkQueue.begin(), planet->chunkManager->chunkQueue.end(), [&](Crescendo::Terrain::OctreeNode* a, Crescendo::Terrain::OctreeNode* b) {
-                        return glm::length((camPos - ent->origin) - a->center) < glm::length((camPos - ent->origin) - b->center); 
+                    auto& queue = planet->chunkManager->chunkQueue;
+                    std::sort(queue.begin(), queue.end(), [&](Crescendo::Terrain::OctreeNode* a, Crescendo::Terrain::OctreeNode* b) {
+                        float distA = glm::length((camPos - ent->origin) - a->center);
+                        float distB = glm::length((camPos - ent->origin) - b->center);
+                        return distA > distB; // > Descending order: Furthest at front, Closest at back
                     });
 
-                    // 3. Process the Bake Queue
-                    int chunksGenerated = 0;
-                    while (!planet->chunkManager->chunkQueue.empty() && chunksGenerated < 1) {
-                        auto* node = planet->chunkManager->chunkQueue.front();
-                        planet->chunkManager->chunkQueue.erase(planet->chunkManager->chunkQueue.begin());
+                    // 3. Process the Bake Queue (Launch Async Threads!)
+                    int chunksLaunched = 0;
+                    while (!queue.empty() && chunksLaunched < 1) { 
+                        auto* node = queue.back(); // Grab the closest chunk (O(1) fast!)
+                        queue.pop_back();          // Instantly remove it from the back
 
-                        TerrainComputePush pushData{}; // Name this 'pushData' to match!
+                        // Mark as generating so we don't accidentally queue it again
+                        node->isGenerating = true; 
+
+                        TerrainComputePush pushData{}; 
                         pushData.chunkOrigin = node->center - glm::vec3(node->size / 2.0f);
                         pushData.chunkSize = node->size;
                         pushData.planetCenter = glm::vec3(0.0f);
@@ -3622,26 +3711,54 @@ namespace Crescendo {
 
                         bool needsCollision = (node->lod <= 1);
                         
-                        // 1. Call the function
-                        ChunkBakeResult result = buildChunkMesh(pushData, needsCollision);
-                        node->meshID = result.meshID;
+                        // --- THE TRULY ASYNC LAUNCH ---
+                        auto* physicsServer = scene->physics; // Grab the pointer for the background thread
 
-                        // 2. Hand data to Physics (scene->physics is valid here!)
-                        if (needsCollision && result.meshID >= 0 && scene->physics) {
-                            int stride = sizeof(Vertex) / sizeof(float);
-                            scene->physics->CreateTerrainCollider(result.collisionVerts, result.collisionIndices, pushData.chunkOrigin, stride);
-                        }
-
-                        node->isGenerating = false; 
-                        chunksGenerated++;
+                        // Notice the variables added inside the [ ] brackets!
+                        node->pendingBakeResult = std::async(std::launch::async, [this, pushData, needsCollision, physicsServer]() -> Crescendo::ChunkBakeResult {
+                            
+                            // 1. GPU Compute (Runs in background)
+                            ChunkBakeResult result = this->buildChunkMesh(pushData, needsCollision);
+                            
+                            // 2. Jolt Physics (Runs in background!)
+                            if (needsCollision && result.hasMesh && physicsServer) {
+                                int stride = sizeof(Vertex) / sizeof(float);
+                                result.physicsBodyID = physicsServer->CreateTerrainCollider(result.collisionVerts, result.collisionIndices, pushData.chunkOrigin, stride);
+                                
+                                // OPTIMIZATION: Clear the heavy RAM arrays since Jolt has the data now!
+                                result.collisionVerts.clear();
+                                result.collisionIndices.clear();
+                            }
+                            
+                            return result; // Hand the completely finished package back
+                        });
+                        
+                        chunksLaunched++;
                     }
+
+                    // 4. Check for ANY finished background threads and integrate them!
+                    planet->rootNode->CheckForFinishedMeshes(this, scene, planet->rootNode->center - glm::vec3(planet->rootNode->size / 2.0f));
 
                     // 4. Recursive Octree Streaming Lambda
                     auto drawOctree = [&](auto& self, Crescendo::Terrain::OctreeNode* node) -> void {
                         if (!node) return;
                         if (!node->isVisible) return; // Cull the dark side only
 
-                        if (node->isLeaf) {
+                        // 1. Check if the high-res children are fully baked yet
+                        bool childrenReady = false;
+                        if (!node->isLeaf) {
+                            childrenReady = true;
+                            for (auto& child : node->children) {
+                                // If even one child is missing its mesh, they aren't ready!
+                                if (child && child->meshID == -1) { 
+                                    childrenReady = false;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // 2. DRAW THE PARENT IF: It is a leaf, OR its children are still generating in the background!
+                        if (node->isLeaf || !childrenReady) {
                             if (node->meshID >= 0) { 
                                 MeshResource& mesh = meshes[node->meshID];
                                 if (mesh.vertexBuffer.handle != VK_NULL_HANDLE) {
@@ -3650,16 +3767,17 @@ namespace Crescendo {
                                     vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
                                     vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
                                     
-                                    // --- THE FIX: Define the push constant here! ---
                                     PushConsts push{};
                                     push.entityIndex = entityGPUIndices[ent];
                                     vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConsts), &push);
-                                    // -----------------------------------------------
-
+                                    
                                     vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
                                 }
                             }
-                        } else {
+                        } 
+                        
+                        // 3. ONLY recurse and draw the children if they are all 100% ready to go
+                        if (childrenReady && !node->isLeaf) {
                             for (auto& child : node->children) {
                                 self(self, child.get());
                             }
@@ -3668,6 +3786,8 @@ namespace Crescendo {
 
                     // 5. Fire the draw calls!
                     drawOctree(drawOctree, planet->rootNode.get());
+
+                    
                 }
             }
 
@@ -3896,14 +4016,15 @@ namespace Crescendo {
         // --- THE OUTLINE DRAW CALL ---
         int selectedIndex = editorUI.GetSelectedObjectIndex();
 
-        if (editorUI.GetShowSelectionOutline() && selectedIndex >= 0 && selectedIndex < scene->entities.size()) {
+        // MASSIVE SAFETY CHECK: Ensure index is valid AND the pointer isn't null!
+        if (editorUI.GetShowSelectionOutline() && selectedIndex >= 0 && selectedIndex < scene->entities.size() && scene->entities[selectedIndex] != nullptr) {
             
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, outlinePipeline);
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
 
             // A recursive lambda to dig through the entity and all its children
             auto drawOutline = [&](auto& self, CBaseEntity* ent) -> void {
-                if (!ent) return;
+                if (!ent) return; // ASan caught this previously failing because ent was a dangling pointer
                 
                 // If this specific node has a mesh, draw it!
                 if (ent->modelIndex >= 0 && ent->modelIndex < meshes.size()) {
@@ -3915,7 +4036,7 @@ namespace Crescendo {
                         vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
 
                         PushConsts push{};
-                        push.entityIndex = entityGPUIndices[ent];
+                        push.entityIndex = entityGPUIndices[ent]; // <--- If ent is freed memory, this crashes!
                         vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConsts), &push);
 
                         vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
@@ -3924,7 +4045,10 @@ namespace Crescendo {
                 
                 // Recursively check all children
                 for (CBaseEntity* child : ent->children) {
-                    self(self, child);
+                    // One more safety check just in case the scene graph got mangled
+                    if (child != nullptr) {
+                        self(self, child);
+                    }
                 }
             };
 
@@ -4064,10 +4188,13 @@ namespace Crescendo {
         VkSemaphore signalSemaphores[] = {renderFinishedSemaphores[imageIndex]};
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = signalSemaphores;
-    
-        if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
-            throw std::runtime_error("failed to submit draw command!");
-        }
+
+        { 
+            std::lock_guard<std::mutex> lock(queueMutex);
+            if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
+                throw std::runtime_error("failed to submit draw command buffer!");
+            } 
+        
     
         VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         presentInfo.waitSemaphoreCount = 1;
@@ -4077,6 +4204,8 @@ namespace Crescendo {
         presentInfo.pImageIndices = &imageIndex;
     
         result = vkQueuePresentKHR(presentQueue, &presentInfo);
+
+        }
     
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
             recreateSwapChain(window);
@@ -5024,7 +5153,7 @@ namespace Crescendo {
     }
 
     // --------------------------------------------------------------------
-    // SERVER CLEANUP
+    // SERVER JANITOR LOOP
     // --------------------------------------------------------------------
 
     void RenderingServer::recreateSwapChain(SDL_Window* window) {
@@ -5254,11 +5383,7 @@ namespace Crescendo {
             }
                         
             // 5. Cleanup Meshes & Textures
-            for (auto& mesh : meshes) {
-                mesh.vertexBuffer.destroy();
-                mesh.indexBuffer.destroy();
-            }
-            meshes.clear(); 
+            meshes.clear();
             
             // --- free the vram now
             for (auto& tex : textureBank) {
@@ -5304,6 +5429,7 @@ namespace Crescendo {
                 vkDestroyFence(device, inFlightFences[i], nullptr);
             }
             
+            if (asyncCommandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, asyncCommandPool, nullptr);
             if (commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, commandPool, nullptr);
 
             // 11. Destroy Allocator
@@ -5322,6 +5448,8 @@ namespace Crescendo {
             if (func != nullptr) func(instance, debugMessenger, nullptr);
         }
         
-        if (instance != VK_NULL_HANDLE) vkDestroyInstance(instance, nullptr);    
+        if (instance != VK_NULL_HANDLE) vkDestroyInstance(instance, nullptr); 
+        
+        // this shit genuinely insane <3
     }
 }

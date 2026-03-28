@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "servers/rendering/IRenderer.hpp"
 #include "servers/rendering/Vertex.hpp"
 #include "Material.hpp"
 #include "tiny_obj_loader.h"
@@ -9,6 +10,7 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
 #include <glm/glm.hpp>
+#include <mutex>
 
 #include "vulkan/VulkanResources.hpp"
 #include <vector>
@@ -35,10 +37,33 @@ namespace Crescendo {
     class DisplayServer;
     class Scene;
 
+    struct MeshResource {
+        std::string name;
+        VulkanBuffer vertexBuffer;
+        VulkanBuffer indexBuffer;
+        uint32_t indexCount;
+        uint32_t textureID; // 0 default
+
+        MeshResource() = default;
+        MeshResource(const MeshResource&) = delete;
+        MeshResource& operator=(const MeshResource&) = delete;
+        MeshResource(MeshResource&& other) noexcept = default;
+        MeshResource& operator=(MeshResource&& other) noexcept = default;
+    };
+
     struct ChunkBakeResult {
-        int meshID = -1; 
+        MeshResource generatedMesh;
+        bool hasMesh = false;
+        uint32_t physicsBodyID = 0;
         std::vector<float> collisionVerts;
         std::vector<uint32_t> collisionIndices;
+
+        // Added these 5 lines to force the compiler to allow Thread-to-Thread moving!
+        ChunkBakeResult() = default;
+        ChunkBakeResult(const ChunkBakeResult&) = delete;
+        ChunkBakeResult& operator=(const ChunkBakeResult&) = delete;
+        ChunkBakeResult(ChunkBakeResult&&) noexcept = default;
+        ChunkBakeResult& operator=(ChunkBakeResult&&) noexcept = default;
     };
 
     struct TerrainComputePush {
@@ -51,21 +76,6 @@ namespace Crescendo {
         alignas(4)  int   octaves;
         alignas(4)  int   resolution;
         alignas(4)  int   lod;
-    };
-    
-    struct MeshResource {
-        std::string name;
-        VulkanBuffer vertexBuffer;
-        VulkanBuffer indexBuffer;
-        uint32_t indexCount;
-        uint32_t textureID; // 0 default
-
-        // Default Constructor
-        MeshResource() = default;
-        MeshResource(const MeshResource&) = delete;
-        MeshResource& operator=(const MeshResource&) = delete;
-        MeshResource(MeshResource&& other) noexcept = default;
-        MeshResource& operator=(MeshResource&& other) noexcept = default;
     };
 
     struct TextureResource {
@@ -169,7 +179,7 @@ namespace Crescendo {
         glm::vec4 planetCenter_atmosphereRadius;   // 16 bytes
         glm::vec4 cameraPos_sunIntensity;          // 16 bytes
         glm::vec4 rayleigh_mie;                    // 16 bytes
-    }; // Exactly 128 Bytes!
+    }; 
 
     struct PostProcessPushConstants {
        float exposure;
@@ -188,17 +198,24 @@ namespace Crescendo {
         bool halfResSSR = false;
     };
     
-    class RenderingServer {   
+    class RenderingServer : public IRenderer {   
     friend class KtxLoader;
     
     public:
+
         friend class AssetLoader;
         RenderingServer();
+
+        std::mutex queueMutex;
+        VkCommandPool asyncCommandPool = VK_NULL_HANDLE;
+        VkCommandBuffer beginAsyncCommands(VkCommandPool& outLocalPool);
+        void endAsyncCommands(VkCommandBuffer commandBuffer, VkCommandPool localPool);
         
-        bool initialize(DisplayServer* display);
-        void shutdown();
-        // Update this signature to take the state by reference
-        void render(Scene* scene, SceneManager* sceneManager, EngineState& engineState);
+        bool initialize(DisplayServer* display) override;
+        void shutdown() override;
+
+        void render(Scene* scene, SceneManager* sceneManager, EngineState& engineState) override;
+        ChunkBakeResult buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) override;
 
         void SetMSAASamples(VkSampleCountFlagBits newSamples);
 
@@ -206,6 +223,7 @@ namespace Crescendo {
         bool msaaNeedsRebuild = false;
 
         // Asset Management
+
         int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
         int acquireTexture(const std::string& path);
         VkDescriptorSet getImGuiTextureID(const std::string& path);
@@ -224,9 +242,9 @@ namespace Crescendo {
         bool isPlayMode = false;
         
         PostProcessPushConstants postProcessSettings{ 
-            0.0f,  // exposure
-            2.2f,  // gamma
-            1.0f, // bloomStrength
+            0.0f,        // exposure
+            2.2f,           // gamma
+            1.0f,   // bloomStrength
             1.0f   // bloomThreshold
         };
 
@@ -261,23 +279,22 @@ namespace Crescendo {
         VulkanBuffer computeVertexBuffer;
         VulkanBuffer computeIndexBuffer;
         
-        
         VkDescriptorSet terrainComputeDescriptorSet = VK_NULL_HANDLE;
 
         // Voxel Bake
         ChunkBakeResult buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision);
 
-        // The function signatures!
+        // Voxel Gen
         bool createTerrainComputePipelines();
         void generateChunkGPU(VkCommandBuffer cmd, const TerrainComputePush& pushData);
         int buildChunkMesh(const TerrainComputePush& pushData);
         
-
         // Constants
         const uint32_t SHADOW_DIM = 2048; 
         const uint32_t SHADOW_CASCADES = 4;
 
     private:
+    
         VkInstance instance = VK_NULL_HANDLE;
         VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
         VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -435,7 +452,6 @@ namespace Crescendo {
         VulkanBuffer stagingIndexBuffer;
         VulkanBuffer counterBuffer;
         
-
         // Internal Helpers
         QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device);
         SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device);
@@ -484,6 +500,7 @@ namespace Crescendo {
         void recreateSwapChain(SDL_Window* window);
         void cleanupSwapChain();
         void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
+        void copyBufferAsync(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
         void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
         void renderShadows(Scene* scene, const glm::vec3& lightDir, GlobalUniforms& globalUBO);
         

@@ -195,9 +195,10 @@ public:
         if (physicsSystem) delete physicsSystem;
         if (jobSystem) delete jobSystem;
         if (tempAllocator) delete tempAllocator;
-        if (Factory::sInstance) {
-            delete Factory::sInstance;
-            Factory::sInstance = nullptr;
+        // Clean up the Jolt Physics Factory
+        if (JPH::Factory::sInstance) {
+            delete JPH::Factory::sInstance;
+            JPH::Factory::sInstance = nullptr;
         }
     }
 

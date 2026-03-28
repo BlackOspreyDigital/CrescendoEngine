@@ -1,18 +1,30 @@
 #include "OctreeNode.hpp"
 #include "TerrainManager.hpp"
-#include "modules/terrain/VoxelGenerator.hpp"
-#include "servers/rendering/RenderingServer.hpp"
-#include <algorithm> // Required for std::remove
 
-namespace Crescendo::Terrain {
+#include "servers/rendering/RenderingServer.hpp"
+#include <algorithm> 
+
+
+namespace Crescendo::Terrain { 
     
-    bool OctreeNode::CheckForFinishedMeshes(Crescendo::RenderingServer* renderer) {
-        if (isGenerating && pendingData.valid()) {
-            if (pendingData.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                ChunkData data = pendingData.get();
-                if (!data.vertices.empty()) {
-                    meshID = renderer->acquireMesh("PROCEDURAL", "Chunk", data.vertices, data.indices);
+    bool OctreeNode::CheckForFinishedMeshes(Crescendo::RenderingServer* renderer, Crescendo::Scene* scene, const glm::vec3& chunkOrigin) {
+        if (isGenerating && pendingBakeResult.valid()) {
+            if (pendingBakeResult.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                
+                Crescendo::ChunkBakeResult result = pendingBakeResult.get();
+                
+                if (result.hasMesh) {
+                    // Hand the fully built GPU mesh to the renderer (Instant!)
+                    renderer->meshes.push_back(std::move(result.generatedMesh));
+                    meshID = static_cast<int>(renderer->meshes.size() - 1);
+                    
+                    // Note: We don't call CreateTerrainCollider here anymore! 
+                    // The background thread already did it, and the collision is active.
+                } else {
+                    // --- THE FIX ---
+                    meshID = -2; // -2 explicitly means "Empty air, but finished generating!"
                 }
+                
                 isGenerating = false;
                 return true;
             }
@@ -20,7 +32,7 @@ namespace Crescendo::Terrain {
 
         if (!isLeaf) {
             for (auto& child : children) {
-                if (child && child->CheckForFinishedMeshes(renderer)) {
+                if (child && child->CheckForFinishedMeshes(renderer, scene, child->center - glm::vec3(child->size / 2.0f))) {
                     return true;
                 }
             }
@@ -28,18 +40,18 @@ namespace Crescendo::Terrain {
         return false;
     }
 
-    // --- THE NEW, SAFE MERGE FUNCTION ---
     void OctreeNode::Merge(TerrainManager* manager) {
         if (isLeaf) return;
         
-        for (int i = 0; i < 8; ++i) {
+        for (int i = 0; i < 8; i++) {
             if (children[i]) {
-                children[i]->Merge(manager); 
+                children[i]->Merge(manager);
                 
-                // Yank this child out of the bake queue before it is destroyed
+                // Remove from the bake queue so we don't bake a deleted chunk!
                 auto& queue = manager->chunkQueue;
                 queue.erase(std::remove(queue.begin(), queue.end(), children[i].get()), queue.end());
                 
+                // THIS FREES THE MEMORY!
                 children[i].reset();
             }
         }

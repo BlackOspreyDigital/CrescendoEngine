@@ -1,11 +1,14 @@
 #pragma once
 
+#include <memory> // <--- 1. ADD THIS for std::unique_ptr
+
 #include "controllers/FPSController.hpp"
 #include "servers/display/DisplayServer.hpp"
-#include "servers/rendering/RenderingServer.hpp"
 #include "servers/audio/AudioServer.hpp"
 #include "servers/physics/PhysicsServer.hpp" 
 #include "core/ScriptSystem.hpp"
+
+#include "servers/rendering/IRenderer.hpp" 
 
 #include "scene/Scene.hpp"
 #include "core/EngineState.hpp"
@@ -20,8 +23,6 @@ namespace Crescendo {
         void Run();
         void Shutdown();
 
-        
-        
         EngineState currentState = EngineState::Editor;
         EngineState previousState = EngineState::Editor;
 
@@ -30,7 +31,11 @@ namespace Crescendo {
         bool playerSpawned = false;
         
         DisplayServer displayServer;
-        RenderingServer renderingServer;
+        
+        // --- 3. THE SWAP ---
+        std::unique_ptr<IRenderer> renderer;
+        // -------------------
+        
         PhysicsServer physicsServer;
         AudioServer audioServer;
 

@@ -22,10 +22,15 @@ namespace Crescendo {
         JPH::Factory::sInstance = new JPH::Factory();
         
         if (!displayServer.initialize(title, width, height)) return false;
-        if (!renderingServer.initialize(&displayServer)) return false;
+        
+        // Create the Vulkan renderer and hook it up!
+        renderer = std::make_unique<RenderingServer>();
+        if (!renderer->initialize(&displayServer)) return false;
 
-        // FIX: Change .get() to the memory address operator &
-        sceneManager = std::make_unique<SceneManager>(&renderingServer);
+        // Pass the raw pointer from our unique_ptr
+        // Note: If SceneManager expects a RenderingServer*, you may need to cast it: 
+        // static_cast<RenderingServer*>(renderer.get())
+        sceneManager = std::make_unique<SceneManager>(static_cast<RenderingServer*>(renderer.get()));
 
         // Start Physics 
         physicsServer.Initialize();
@@ -68,7 +73,8 @@ namespace Crescendo {
         float dt = 1.0f / 60.0f; 
         Input::Update();
        
-        auto& cam = renderingServer.mainCamera;
+        // Temporarily cast back to RenderingServer to grab the camera
+        auto& cam = static_cast<RenderingServer*>(renderer.get())->mainCamera;
         
         // NOTE: Editor Camera movement was DELETED from here!
         // It is now handled exclusively inside EditorUI::Prepare() so it respects the console.
@@ -111,7 +117,7 @@ namespace Crescendo {
             // Spawn Player model
             size_t priorCount = scene.entities.size();
             // load the model directly into the scene
-            Crescendo::AssetLoader::loadModel(&renderingServer, "assets/systemsymbols/defaultplayer.glb", &scene);
+            Crescendo::AssetLoader::loadModel(static_cast<RenderingServer*>(renderer.get()), "assets/systemsymbols/defaultplayer.glb", &scene);
 
             if (scene.entities.size() > priorCount) {
                 localPlayerModel = scene.entities[priorCount];
@@ -236,8 +242,7 @@ namespace Crescendo {
     }
 
     void Engine::Render() {
-        // Pass both the scene and sceneManager down to the renderer
-        renderingServer.render(&scene, sceneManager.get(), currentState);
+        renderer->render(&scene, sceneManager.get(), currentState);
     }
 
     void Engine::Shutdown() {
@@ -248,7 +253,7 @@ namespace Crescendo {
         }
 
         physicsServer.Cleanup(); 
-        renderingServer.shutdown();
+        renderer->shutdown();
         displayServer.shutdown();
     }
 }

@@ -1,17 +1,16 @@
 #pragma once
 #include <glm/glm.hpp>
-#include <vector>
+
 #include <memory>
 #include <array>
 #include <future>
-#include "VoxelGenerator.hpp"
 
-// Forward declare RenderingServer in the main namespace
-namespace Crescendo { class RenderingServer; }
+#include "servers/rendering/RenderingServer.hpp"
+
+namespace Crescendo { class Scene; }
 
 namespace Crescendo::Terrain {
-    
-    // Forward declare TerrainManager inside the Terrain namespace!
+
     class TerrainManager;
 
     class OctreeNode {
@@ -27,9 +26,8 @@ namespace Crescendo::Terrain {
 
         OctreeNode(glm::vec3 c, float s, int l) : center(c), size(s), lod(l) {}
 
-        std::future<ChunkData> pendingData;
+        std::future<Crescendo::ChunkBakeResult> pendingBakeResult; 
         bool isGenerating = false;
-
         bool isVisible = true;
 
         bool IsGeneratingTree()const {
@@ -42,12 +40,10 @@ namespace Crescendo::Terrain {
             return false;
         }
 
-        // --- CLEAN SIGNATURES ---
-        bool CheckForFinishedMeshes(Crescendo::RenderingServer* renderer);
+        bool CheckForFinishedMeshes(Crescendo::RenderingServer* renderer, Crescendo::Scene* scene, const glm::vec3& chunkOrigin);
         void Update(const glm::vec3& localCameraPos, float splitThreshold, TerrainManager* manager);
         void Merge(TerrainManager* manager);
-        // ------------------------
-        
+                
         void Subdivide() {
             isLeaf = false;
             float newSize = size / 2.0f;
