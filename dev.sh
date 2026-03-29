@@ -1,5 +1,5 @@
 #!/bin/bash
-
+#export SDL_VIDEO_WAYLAND_ALLOW_TEARING=0
 # 1. Check if build folder exists. If not, create it and run CMake.
 if [ ! -d "build" ]; then
     echo "[Script] Build directory missing. Generating..."

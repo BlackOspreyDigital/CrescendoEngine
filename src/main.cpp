@@ -1,4 +1,3 @@
-// src/main.cpp
 #include <iostream>
 #include "core/Engine.hpp"
 #include "servers/rendering/RenderingServer.hpp"

@@ -6,11 +6,14 @@
 namespace Crescendo {
 
     bool DisplayServer::initialize(const std::string& title, int width, int height) {
+        // 1. MUST BE BEFORE SDL_Init TO AFFECT SDL3/WAYLAND COMPAT LAYER
+        SDL_SetHint("SDL_VIDEO_WAYLAND_ALLOW_TEARING", "0");
+        
         if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) < 0) {
             std::cerr << "DisplayServer: SDL_Init Failed: " << SDL_GetError() << std::endl;
             return false;
         }
-
+        
         window = SDL_CreateWindow(
             title.c_str(),
             SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,

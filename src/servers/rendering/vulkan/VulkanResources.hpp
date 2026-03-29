@@ -13,11 +13,10 @@ namespace Crescendo {
         VmaAllocation allocation = VK_NULL_HANDLE;
         VmaAllocator allocator = nullptr;
 
-        // 1. Default Constructor (Empty)
         VulkanBuffer() = default;
 
-        // 2. Actual Constructor (Creates the Buffer)
-        VulkanBuffer(VmaAllocator allocator, VkDeviceSize size, VkBufferUsageFlags usage, VmaAllocationCreateFlags flags) 
+        // RESTORED: Added VmaMemoryUsage back to the signature!
+        VulkanBuffer(VmaAllocator allocator, VkDeviceSize size, VkBufferUsageFlags usage, VmaAllocationCreateFlags flags, VmaMemoryUsage vmaUsage = VMA_MEMORY_USAGE_AUTO)
             : allocator(allocator) {
             
             VkBufferCreateInfo bufferInfo{};
@@ -27,7 +26,7 @@ namespace Crescendo {
             bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
             VmaAllocationCreateInfo allocInfo = {};
-            allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+            allocInfo.usage = vmaUsage; // Now uses your requested memory type!
             allocInfo.flags = flags;
 
             if (vmaCreateBuffer(allocator, &bufferInfo, &allocInfo, &handle, &allocation, nullptr) != VK_SUCCESS) {
@@ -35,40 +34,31 @@ namespace Crescendo {
             }
         }
 
-        // 3. Destructor (Automatic Cleanup)
         ~VulkanBuffer() {
             destroy();
         }
 
-        // 4. Move Constructor (Transfer Ownership)
-        VulkanBuffer(VulkanBuffer&& other) noexcept {
-            *this = std::move(other);
-        }
-
-        // 5. Move Assignment Operator
+        // Move Logic
+        VulkanBuffer(VulkanBuffer&& other) noexcept { *this = std::move(other); }
         VulkanBuffer& operator=(VulkanBuffer&& other) noexcept {
             if (this != &other) {
-                destroy(); // Clean up our current mess first
-
-                // Steal resources
+                destroy();
                 handle = other.handle;
                 allocation = other.allocation;
                 allocator = other.allocator;
-
-                // Nullify source so it doesn't destroy them
                 other.handle = VK_NULL_HANDLE;
                 other.allocation = VK_NULL_HANDLE;
             }
             return *this;
         }
 
-        // Disable Copying (Prevents Double-Free)
-        VulkanBuffer(const VulkanBuffer&) = delete;
-        VulkanBuffer& operator=(const VulkanBuffer&) = delete;
-
-        // Helper to manually destroy if needed (rare)
         void destroy() {
             if (handle != VK_NULL_HANDLE && allocator != nullptr) {
+                VmaAllocationInfo info;
+                vmaGetAllocationInfo(allocator, allocation, &info);
+                if (info.pMappedData != nullptr) {
+                    vmaUnmapMemory(allocator, allocation);
+                }
                 vmaDestroyBuffer(allocator, handle, allocation);
                 handle = VK_NULL_HANDLE;
                 allocation = VK_NULL_HANDLE;

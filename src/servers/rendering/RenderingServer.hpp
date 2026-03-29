@@ -351,8 +351,8 @@ namespace Crescendo {
         std::vector<TextureResource> textureBank;
         std::unordered_map<std::string, int> textureMap;
 
-        VkPipelineLayout bakePipelineLayout;
-        VkPipeline bakePipeline;
+        VkPipelineLayout bakePipelineLayout = VK_NULL_HANDLE;
+        VkPipeline bakePipeline = VK_NULL_HANDLE;
 
         bool createBakePipeline();
         bool createSkyPipeline();
@@ -379,8 +379,8 @@ namespace Crescendo {
         VulkanImage positionBakeImage;
         VulkanImage normalBakeImage;
 
-        VkRenderPass bakeRenderPass;
-        VkFramebuffer bakeFramebuffer;
+        VkRenderPass bakeRenderPass = VK_NULL_HANDLE;
+        VkFramebuffer bakeFramebuffer = VK_NULL_HANDLE;
         
         bool createBakeRenderPass();
         bool createBakeFramebuffer();

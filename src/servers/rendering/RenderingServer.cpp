@@ -227,8 +227,11 @@ namespace Crescendo {
     bool RenderingServer::createSwapChain() {
         SwapChainSupportDetails swapChainSupport = querySwapChainSupport(physicalDevice);
         VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
-        VkPresentModeKHR presentMode = chooseSwapPresentMode(swapChainSupport.presentModes);
         VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities);
+        
+        // --- THE FIX: FORCE WAYLAND-SAFE V-SYNC ---
+        // VkPresentModeKHR presentMode = chooseSwapPresentMode(swapChainSupport.presentModes);
+        VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR; // Guaranteed safe fallback
 
         uint32_t imageCount = swapChainSupport.capabilities.minImageCount + 1;
         if (swapChainSupport.capabilities.maxImageCount > 0 && imageCount > swapChainSupport.capabilities.maxImageCount) {
@@ -5297,31 +5300,15 @@ namespace Crescendo {
     }
 
     void RenderingServer::shutdown() {
+        std::cout << "[RenderingServer] Executing Scorched Earth Shutdown..." << std::endl;
         
-        // shits fucked, unfuck it bryan 
         if (device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device);
-
+            // 1. DESTROY TOP LEVEL
             symbolServer.Cleanup(device);
             editorUI.Shutdown(device);
-            
-            // --- THE ROBUST CLEANUP LAMBDA ---
-            auto robustCleanup = [&](VulkanBuffer& buffer) {
-                if (buffer.handle != VK_NULL_HANDLE && buffer.allocation != VK_NULL_HANDLE) {
-                    VmaAllocationInfo info;
-                    vmaGetAllocationInfo(allocator, buffer.allocation, &info);
-                    // If VMA says it's mapped, force it to let go
-                    if (info.pMappedData != nullptr) {
-                        vmaUnmapMemory(allocator, buffer.allocation);
-                    }
-                    vmaDestroyBuffer(allocator, buffer.handle, buffer.allocation);
-                    // CRITICAL: Set handles to null so RAII destructors don't try again!
-                    buffer.handle = VK_NULL_HANDLE;
-                    buffer.allocation = VK_NULL_HANDLE;
-                }
-            };
-        
-            // 1. Destroy Pipelines & Layouts
+                    
+            // 2. DESTROY PIPELINES (With Null Checks!)
             if (skyPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, skyPipeline, nullptr);
             if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, graphicsPipeline, nullptr);
             if (transparentPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, transparentPipeline, nullptr);
@@ -5334,126 +5321,118 @@ namespace Crescendo {
             if (ssrPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, ssrPipeline, nullptr);
             if (equirectToCubePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, equirectToCubePipeline, nullptr);
             if (outlinePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, outlinePipeline, nullptr);
-            // if (billboardPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, billboardPipeline, nullptr);
             
             if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
             if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
             if (shadowPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
             if (ssrPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, ssrPipelineLayout, nullptr);
             if (computePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, computePipelineLayout, nullptr);
+            
             if (symbolTextureLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, symbolTextureLayout, nullptr);
-
             if (postProcessLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, postProcessLayout, nullptr);
             if (ssrDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, ssrDescriptorLayout, nullptr);
             if (computeDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, computeDescriptorLayout, nullptr);
-
-            // 2. Destroy Core Render Passes
+            if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+        
             if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
             if (shadowRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, shadowRenderPass, nullptr);
-
-            // --- DESTROY TERRAIN COMPUTE PIPELINES ---
-            if (densityComputePipeline != VK_NULL_HANDLE) {
-                vkDestroyPipeline(device, densityComputePipeline, nullptr);
+        
+            if (densityComputePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, densityComputePipeline, nullptr);
+            if (marchingCubesComputePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, marchingCubesComputePipeline, nullptr);
+            if (terrainComputePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, terrainComputePipelineLayout, nullptr);
+            if (terrainComputeDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, terrainComputeDescriptorLayout, nullptr);
+        
+            // 3. DESTROY SHADOWS
+            for (auto fb : shadowFramebuffers) {
+                if (fb != VK_NULL_HANDLE) vkDestroyFramebuffer(device, fb, nullptr);
             }
-            if (marchingCubesComputePipeline != VK_NULL_HANDLE) {
-                vkDestroyPipeline(device, marchingCubesComputePipeline, nullptr);
-            }
-            if (terrainComputePipelineLayout != VK_NULL_HANDLE) {
-                vkDestroyPipelineLayout(device, terrainComputePipelineLayout, nullptr);
-            }
-            if (terrainComputeDescriptorLayout != VK_NULL_HANDLE) {
-                vkDestroyDescriptorSetLayout(device, terrainComputeDescriptorLayout, nullptr);
-            }
-
-            // 3. Cleanup Shadow Resources
-            for (auto fb : shadowFramebuffers) vkDestroyFramebuffer(device, fb, nullptr);
             shadowFramebuffers.clear();
-            for (auto view : shadowCascadeViews) vkDestroyImageView(device, view, nullptr);
+            for (auto view : shadowCascadeViews) {
+                if (view != VK_NULL_HANDLE) vkDestroyImageView(device, view, nullptr);
+            }
             shadowCascadeViews.clear();
             if (shadowImageView != VK_NULL_HANDLE) vkDestroyImageView(device, shadowImageView, nullptr);
             if (shadowSampler != VK_NULL_HANDLE) vkDestroySampler(device, shadowSampler, nullptr);
             shadowImage.destroy();
             
-            // 4. Cleanup RAII Images
-            speakerTexture.destroy();
-            skyImage.destroy();
-            textureImage.destroy();
-            positionBakeImage.destroy();
-            normalBakeImage.destroy();
+            // --- ADD THESE MISSING RENDER PASSES & FRAMEBUFFERS ---
+            if (bloomRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, bloomRenderPass, nullptr);
+            if (compositeRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, compositeRenderPass, nullptr);
+            if (ssrRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, ssrRenderPass, nullptr);
+            if (viewportRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, viewportRenderPass, nullptr);
+            if (transparentRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, transparentRenderPass, nullptr);
 
-            // --- CONSOLIDATED BUFFER CLEANUP ---
-            // This lambda is the "Universal Janitor". It checks if a buffer is mapped,
-            // unmaps it if necessary, and then destroys it safely.
-            auto robustCleanup = [&](VulkanBuffer& buffer) {
-                if (buffer.handle != VK_NULL_HANDLE && buffer.allocation != VK_NULL_HANDLE) {
-                    VmaAllocationInfo info;
-                    vmaGetAllocationInfo(allocator, buffer.allocation, &info);
-                    // Only unmap if VMA confirms the CPU is currently holding a pointer
-                    if (info.pMappedData != nullptr) {
-                        vmaUnmapMemory(allocator, buffer.allocation);
-                    }
-                    vmaDestroyBuffer(allocator, buffer.handle, buffer.allocation);
-                    buffer.handle = VK_NULL_HANDLE;
-                    buffer.allocation = VK_NULL_HANDLE;
-                }
-            };
+            if (bloomFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, bloomFramebuffer, nullptr);
+            if (finalFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, finalFramebuffer, nullptr);
+            if (ssrFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, ssrFramebuffer, nullptr);
+            if (viewportFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, viewportFramebuffer, nullptr);
 
-            // A. Cleanup Procedural/Voxel Workspace
+            if (refractionImageView != VK_NULL_HANDLE) vkDestroyImageView(device, refractionImageView, nullptr);
+            if (refractionSampler != VK_NULL_HANDLE) vkDestroySampler(device, refractionSampler, nullptr);
+            if (viewportSampler != VK_NULL_HANDLE) vkDestroySampler(device, viewportSampler, nullptr);
+
+            // 4. DESTROY EVERY SINGLE IMAGE (Updated with the missing ones!)
+            speakerTexture.destroy(); 
+            skyImage.destroy(); 
+            textureImage.destroy(); 
+            positionBakeImage.destroy(); 
+            normalBakeImage.destroy(); 
+            
+            // The newly discovered stragglers:
+            colorImageMSAA.destroy();
+            normalImageMSAA.destroy();
+            depthImageMSAA.destroy();
+            ssrImage.destroy();
+            depthImage.destroy();
+            refractionImage.destroy();
+            viewportImage.destroy();
+            viewportNormalImage.destroy();
+            viewportDepthImage.destroy();
+            bloomBrightImage.destroy();
+            finalImage.destroy();
+            
+        
+            // 5. DESTROY BUFFERS
             densityBuffer.destroy();
             computeVertexBuffer.destroy();
             computeIndexBuffer.destroy();
-            
-            // B. Cleanup Staging & Counters (Using the robust check)
-            robustCleanup(counterBuffer);
-            robustCleanup(stagingVertBuffer);
-            robustCleanup(stagingIndexBuffer);
-
-            // 3. Cleanup Meshes & Textures
-            // Clearing meshes here is safe because we killed the scene in Engine.cpp
+            counterBuffer.destroy();
+            stagingVertBuffer.destroy();
+            stagingIndexBuffer.destroy();
+        
             meshes.clear(); 
-            for (auto& tex : textureBank) {
-                tex.image.destroy();
-            }
+            for (auto& tex : textureBank) tex.image.destroy();
             textureBank.clear();
-
-            // C. Cleanup Bake Infrastructure
+            textureMap.clear();
+        
             if (bakePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bakePipeline, nullptr);
             if (bakePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, bakePipelineLayout, nullptr);
             if (bakeFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, bakeFramebuffer, nullptr);
             if (bakeRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, bakeRenderPass, nullptr);
             
-            // 6. Cleanup Samplers
             if (textureSampler != VK_NULL_HANDLE) vkDestroySampler(device, textureSampler, nullptr);
             if (skySampler != VK_NULL_HANDLE) vkDestroySampler(device, skySampler, nullptr);
-            
-            // 7. Cleanup Descriptors & Pools
-            if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
             if (descriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(device, descriptorPool, nullptr);
             
-            // 4. Cleanup UBOs/SSBOs (The persistent ones)
-            for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-                robustCleanup(entityStorageBuffers[i]);
-                robustCleanup(globalUniformBuffers[i]);
-                entityStorageBuffersMapped[i] = nullptr;
-                globalUniformBuffersMapped[i] = nullptr;
-            }
+            for (auto& buf : entityStorageBuffers) buf.destroy();
+            entityStorageBuffers.clear();
 
-            // 5. Cleanup remaining infrastructure
-            cleanupSwapChain();
+            for (auto& buf : globalUniformBuffers) buf.destroy();
+            globalUniformBuffers.clear();
         
-            // 10. Cleanup Sync Objects
+            cleanupSwapChain();
+            
             for (size_t i = 0; i < imageAvailableSemaphores.size(); i++) { 
-                vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
-                vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
+                if (renderFinishedSemaphores[i] != VK_NULL_HANDLE) vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
+                if (imageAvailableSemaphores[i] != VK_NULL_HANDLE) vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
             }
             for (size_t i = 0; i < inFlightFences.size(); i++) {
-                vkDestroyFence(device, inFlightFences[i], nullptr);
+                if (inFlightFences[i] != VK_NULL_HANDLE) vkDestroyFence(device, inFlightFences[i], nullptr);
             }
             
             if (asyncCommandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, asyncCommandPool, nullptr);
             if (commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(device, commandPool, nullptr);
-
-            // 11. Destroy Allocator
+        
             if (allocator != nullptr) {
                 vmaDestroyAllocator(allocator);
                 allocator = nullptr;
@@ -5462,15 +5441,26 @@ namespace Crescendo {
             vkDestroyDevice(device, nullptr);
             device = VK_NULL_HANDLE;
         }
-
-        if (surface != VK_NULL_HANDLE) vkDestroySurfaceKHR(instance, surface, nullptr);
-        if (debugMessenger != VK_NULL_HANDLE) {
-            auto func = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
-            if (func != nullptr) func(instance, debugMessenger, nullptr);
+    
+        // 6. THESE MUST ALWAYS RUN IF INSTANCE EXISTS
+        if (instance != VK_NULL_HANDLE) {
+            if (surface != VK_NULL_HANDLE) {
+                vkDestroySurfaceKHR(instance, surface, nullptr);
+                surface = VK_NULL_HANDLE;
+            }
+            
+            if (debugMessenger != VK_NULL_HANDLE) {
+                auto func = (PFN_vkDestroyDebugUtilsMessengerEXT) vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT");
+                if (func != nullptr) func(instance, debugMessenger, nullptr);
+                debugMessenger = VK_NULL_HANDLE;
+            }
+            
+            vkDestroyInstance(instance, nullptr); 
+            instance = VK_NULL_HANDLE;
         }
         
-        if (instance != VK_NULL_HANDLE) vkDestroyInstance(instance, nullptr); 
-        
-        // this shit genuinely insane <3
+        std::cout << "[RenderingServer] Shutdown Complete." << std::endl;
     }
 }
+
+// This shit genuinely insane || Osprey "Far Above"

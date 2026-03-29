@@ -19,7 +19,9 @@
 namespace Crescendo {
 
     Engine::Engine() : isRunning(false) {}
-    Engine::~Engine() {}
+    Engine::~Engine() {
+        Shutdown();
+    }
 
     bool Engine::Initialize(const char* title, int width, int height) {
 
@@ -41,15 +43,6 @@ namespace Crescendo {
                 sceneManager = std::make_unique<SceneManager>(static_cast<RenderingServer*>(renderer.get()));
         #endif
         
-        // Create the Vulkan renderer and hook it up!
-        renderer = std::make_unique<RenderingServer>();
-        if (!renderer->initialize(&displayServer)) return false;
-
-    
-        // Note: If SceneManager expects a RenderingServer*, you may need to cast it: 
-        // static_cast<RenderingServer*>(renderer.get())
-        sceneManager = std::make_unique<SceneManager>(static_cast<RenderingServer*>(renderer.get()));
-
         // Start Physics 
         physicsServer.Initialize();
         scene.physics = &physicsServer;
@@ -264,22 +257,16 @@ namespace Crescendo {
     }
 
     void Engine::Shutdown() {
+        static bool hasShutdown = false;
+        if (hasShutdown) return;
+        hasShutdown = true;
+        
         std::cout << "[Engine] Commencing Shutdown..." << std::endl;
-
-        if (activePlayer) {
-            delete activePlayer;
-            activePlayer = nullptr;
-        }
-
-        // 1. CLEAR THE SCENE DATA FIRST
-        // This ensures all MeshResources and Buffers owned by entities 
-        // are dropped while the Vulkan Allocator is still 100% alive.
-        sceneManager.reset(); 
+        if (activePlayer) { delete activePlayer; activePlayer = nullptr; }
+        if (sceneManager) { sceneManager.reset(); }
         scene.entities.clear(); 
-
-        // 2. Now it is safe to clean up systems
         physicsServer.Cleanup(); 
-        renderer->shutdown();
+        if (renderer) { renderer->shutdown(); }
         displayServer.shutdown();
     }
 }
