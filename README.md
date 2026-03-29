@@ -1,4 +1,4 @@
-# CrescendoEngine BRAVO
+# CrescendoEngine ALPHA
 
 <p align="center">
   <img src="assets/textures/crescendologo.png" width=200" alt="Crescendo Engine Logo"
