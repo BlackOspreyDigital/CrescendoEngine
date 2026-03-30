@@ -7,12 +7,16 @@
 #include "core/Input.hpp"
 #include "scene/BaseEntity.hpp"
 #include "servers/networking/NetworkingServer.hpp"
+
+#ifndef __EMSCRIPTEN__
 #include "modules/gltf/AssetLoader.hpp"
+#endif
+
 #include "servers/rendering/Webgpu/WebGPURenderer.hpp"
 
 // --- THE RHI SWITCH ---
 #ifdef __EMSCRIPTEN__
-    #include "servers/rendering/WebGPU/WebGPURenderer.hpp" 
+    #include "servers/rendering/Webgpu/WebGPURenderer.hpp" 
 #else
     #include "servers/rendering/RenderingServer.hpp"
 #endif
@@ -131,8 +135,12 @@ namespace Crescendo {
 
             // Spawn Player model
             size_t priorCount = scene.entities.size();
-            // load the model directly into the scene
+            
+            #ifndef __EMSCRIPTEN__
             Crescendo::AssetLoader::loadModel(static_cast<RenderingServer*>(renderer.get()), "assets/systemsymbols/defaultplayer.glb", &scene);
+            #else
+                printf("WebAssembly build: Skipping Vulkan AssetLoader.\n");
+            #endif
 
             if (scene.entities.size() > priorCount) {
                 localPlayerModel = scene.entities[priorCount];

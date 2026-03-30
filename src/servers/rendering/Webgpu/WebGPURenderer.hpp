@@ -63,8 +63,6 @@
     #undef MOCK_WGPU_TYPE
 #endif
 
-
-
 namespace Crescendo {
 
     class WebGPURenderer : public IRenderer {
