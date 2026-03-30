@@ -3,19 +3,19 @@
 #include <vector>
 #include <glm/glm.hpp>
 
-#ifndef __EMSCRIPTEN__
+// --- NEW PLATFORM INCLUDE BRIDGE ---
+#ifdef __EMSCRIPTEN__
+    #include <webgpu/webgpu_cpp.h>
+#else
     #include "vulkan/VulkanResources.hpp"
 #endif
 
 namespace Crescendo {
     
-    // --- THE PLATFORM BRIDGE ---
     #ifdef __EMSCRIPTEN__
-        // WebGL uses simple integers (GLuint) to track memory on the GPU
-        typedef unsigned int GPUBufferHandle;
+        // WebGPU uses objects, not raw integers!
+        typedef wgpu::Buffer GPUBufferHandle;
     #else
-        // Desktop uses your custom Vulkan RAII wrappers
-        // THE FIX: Explicitly define the namespace path!
         typedef Crescendo::VulkanBuffer GPUBufferHandle; 
     #endif
 

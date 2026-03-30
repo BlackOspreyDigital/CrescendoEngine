@@ -2,6 +2,7 @@ CompileFlags:
   Add: [
     "-xc++",
     "-std=c++17",
+    "-Wno-unused-variable",
     "-I.",
     "-I./src",
     "-I./include",

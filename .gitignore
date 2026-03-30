@@ -1,10 +1,26 @@
 # --- Build Artifacts ---
-obj/
 build/
+build_web/
+bin/
+out/
+obj/
 .cache/
 compile_commands.json
 crescendo_engine
 *.o
+*.a
+*.so
+*.lib
+*.dll
+*.pdb
+
+# --- Emscripten Proxy Folders ---
+math_fix/
+safe_includes/
+
+# --- External Dependencies ---
+_deps/
+JoltPhysics/
 
 # --- Compiled Shaders ---
 assets/shaders/*.spv
@@ -13,16 +29,12 @@ assets/shaders/*.spv
 .vscode/
 .DS_Store
 imgui.ini
-JoltPhysics/
+*.suo
+*.sln
+*.vcxproj*
 
 # --- OS Specific ---
 Thumbs.db
-
-# --- CMake Generated Files ---
-CMakeCache.txt
-CMakeFiles/
-Makefile
-cmake_install.cmake
 
 # --- Additional C++/CMake Build Artifacts ---
 _deps/

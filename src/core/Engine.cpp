@@ -1,5 +1,4 @@
 #include "Engine.hpp"
-#include <iostream>
 
 #include <Jolt/Core/IssueReporting.h>
 #include "Jolt/Core/Memory.h"
@@ -7,9 +6,11 @@
 #include "scene/BaseEntity.hpp"
 #include "servers/networking/NetworkingServer.hpp"
 #include "modules/gltf/AssetLoader.hpp"
+#include "servers/rendering/Webgpu/WebGPURenderer.hpp"
+
 // --- THE RHI SWITCH ---
 #ifdef __EMSCRIPTEN__
-    #include "servers/rendering/webgl/WebRenderer.hpp"
+    #include "servers/rendering/webgpu/WebGPURenderer.hpp" // Update this include!
 #else
     #include "servers/rendering/RenderingServer.hpp"
 #endif
@@ -32,9 +33,7 @@ namespace Crescendo {
 
         // --- PLATFORM RENDERER INJECTION ---
         #ifdef __EMSCRIPTEN__
-                renderer = std::make_unique<WebRenderer>();
-                // Note: SceneManager & AssetLoader currently require a RenderingServer*. 
-                // We will need to pass nullptr for the web player right now until we decouple them!
+                renderer = std::make_unique<WebGPURenderer>(); // Use the new WebGPURenderer!
                 if (!renderer->initialize(&displayServer)) return false;
                 sceneManager = std::make_unique<SceneManager>(nullptr);
         #else
