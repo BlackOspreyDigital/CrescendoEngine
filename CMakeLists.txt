@@ -17,8 +17,8 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall")
 # --- WEBGPU / EMSCRIPTEN TARGETS ---
 if (EMSCRIPTEN)
     message(STATUS "Configuring for WebAssembly (Emscripten) + WebGPU")
-    # Added -Wno-absolute-value to kill the Jolt "abs" warnings
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --use-port=emdawnwebgpu -s USE_SDL=2 -Wno-absolute-value")
+    # Added -Wno-missing-template-arg-list-after-template-kw for GLI
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --use-port=emdawnwebgpu -s USE_SDL=2 -Wno-absolute-value -Wno-nontrivial-memcall -Wno-missing-template-arg-list-after-template-kw")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --use-port=emdawnwebgpu -s USE_SDL=2 -s ALLOW_MEMORY_GROWTH=1 -s ASYNCIFY")
 
     # --- THE MATH MACRO SHIELD & SAFE INCLUDES --- 

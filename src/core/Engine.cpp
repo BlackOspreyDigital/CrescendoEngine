@@ -10,7 +10,7 @@
 
 // --- THE RHI SWITCH ---
 #ifdef __EMSCRIPTEN__
-    #include "servers/rendering/webgpu/WebGPURenderer.hpp" // Update this include!
+    #include "servers/rendering/Webgpu/WebGPURenderer.hpp" // Update this include!
 #else
     #include "servers/rendering/RenderingServer.hpp"
 #endif

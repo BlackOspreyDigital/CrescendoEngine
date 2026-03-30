@@ -5,7 +5,6 @@
 #include "servers/display/DisplayServer.hpp"
 #include "servers/audio/AudioServer.hpp"
 #include "servers/physics/PhysicsServer.hpp" 
-#include "core/ScriptSystem.hpp"
 
 #include "servers/rendering/IRenderer.hpp" 
 
@@ -13,6 +12,8 @@
 #include "core/EngineState.hpp"
 
 namespace Crescendo {
+    class ScriptSystem;
+
     class Engine {
     public:
         Engine();
@@ -39,8 +40,7 @@ namespace Crescendo {
         AudioServer audioServer;
 
         // SYSTEMS
-        ScriptSystem scriptSystem;
-        Scene scene; 
+        std::unique_ptr<ScriptSystem> scriptSystem;
         
     private:
         bool isRunning;

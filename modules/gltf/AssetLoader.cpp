@@ -223,8 +223,8 @@ namespace Crescendo {
                 MeshResource newMesh{};
                 newMesh.name = meshKey;
                 newMesh.indexCount = static_cast<uint32_t>(indices.size());
-                newMesh.vertexBuffer = renderer->createVertexBuffer(vertices);
-                newMesh.indexBuffer = renderer->createIndexBuffer(indices);
+                // newMesh.vertexBuffer = renderer->createVertexBuffer(vertices);
+                // newMesh.indexBuffer = renderer->createIndexBuffer(indices);
 
                 size_t globalIndex = renderer->meshes.size();
                 renderer->meshes.push_back(std::move(newMesh));
