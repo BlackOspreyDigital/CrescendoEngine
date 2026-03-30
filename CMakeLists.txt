@@ -6,56 +6,40 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-# Only optimize for the local CPU if we are NOT building for the web
+
+# Silence Jolt Warnings
+if(POLICY CMP0177)
+  cmake_policy(SET CMP0177 NEW)
+endif()
+
 if (NOT EMSCRIPTEN)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
 endif()
-
-# Everyone gets warnings!
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall")
 
-# --- WEBGPU / EMSCRIPTEN TARGETS ---
+# --- 2. WEBGPU / EMSCRIPTEN TARGETS ---
 if (EMSCRIPTEN)
     message(STATUS "Configuring for WebAssembly (Emscripten) + WebGPU")
-    # Added -Wno-missing-template-arg-list-after-template-kw for GLI
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --use-port=emdawnwebgpu -s USE_SDL=2 -Wno-absolute-value -Wno-nontrivial-memcall -Wno-missing-template-arg-list-after-template-kw")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --use-port=emdawnwebgpu -s USE_SDL=2")
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --use-port=emdawnwebgpu -s USE_SDL=2 -s ALLOW_MEMORY_GROWTH=1 -s ASYNCIFY")
+endif()
 
-    # --- THE MATH MACRO SHIELD & SAFE INCLUDES --- 
-    # Intercepts <math.h> from C libraries and neutralizes the macros before they break C++
-    file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/math_fix)
-    file(WRITE ${CMAKE_BINARY_DIR}/math_fix/math.h "#include_next <math.h>\n#ifdef __cplusplus\n#undef isnan\n#undef isinf\n#undef isfinite\n#undef signbit\n#endif\n")
+# --- 3. External Dependencies ---
+find_package(Threads REQUIRED)
 
-    
-    # Create a safe proxy directory to let GLM and Vulkan through without poisoning the stdlib
-    file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/safe_includes)
-    execute_process(COMMAND ln -sfn /usr/include/glm ${CMAKE_BINARY_DIR}/safe_includes/glm)
-    execute_process(COMMAND ln -sfn /usr/include/vulkan ${CMAKE_BINARY_DIR}/safe_includes/vulkan)
-    execute_process(COMMAND ln -sfn /usr/include/vk_video ${CMAKE_BINARY_DIR}/safe_includes/vk_video)
-    execute_process(COMMAND bash -c "ln -sfn /usr/include/lua5.4/* ${CMAKE_BINARY_DIR}/safe_includes/")
-
-    include_directories(BEFORE ${CMAKE_BINARY_DIR}/math_fix ${CMAKE_BINARY_DIR}/safe_includes)
-endif() 
-
-# --- 2. External Dependencies ---
-# Only look for native system libraries if we are NOT building for the web!
 if (NOT EMSCRIPTEN)
     find_package(SDL2 REQUIRED)
     find_package(Vulkan REQUIRED)
-    find_package(Threads REQUIRED)
-    
-    # MOVED THESE INSIDE THE SHIELD:
     find_package(PkgConfig REQUIRED)
-    pkg_check_modules(LUA REQUIRED lua5.4)
+    pkg_check_modules(LUA REQUIRED lua5.4>=5.4)
     find_package(Ktx REQUIRED)
 endif()
 
-# Jolt Physics via FetchContent
+# Jolt Physics via FetchContent (Using Archive to bypass Git errors)
 include(FetchContent)
 FetchContent_Declare(
   JoltPhysics
-  GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
-  GIT_TAG        v5.0.0 
+  URL https://github.com/jrouwe/JoltPhysics/archive/refs/tags/v5.0.0.tar.gz
   SOURCE_SUBDIR  Build 
 )
 set(TARGET_UNIT_TESTS OFF CACHE BOOL "Disable Jolt unit tests" FORCE)
@@ -63,35 +47,23 @@ set(TARGET_HELLO_WORLD OFF CACHE BOOL "Disable Jolt hello world" FORCE)
 set(TARGET_PERFORMANCE_TEST OFF CACHE BOOL "Disable Jolt performance test" FORCE)
 set(TARGET_SAMPLES OFF CACHE BOOL "Disable Jolt samples" FORCE)
 set(TARGET_VIEWER OFF CACHE BOOL "Disable Jolt viewer" FORCE)
-
-# ADD THIS: If we are on WebAssembly, tell Jolt to ignore the memcpy warning!
-if (EMSCRIPTEN)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-nontrivial-memcall")
-endif()
-
 FetchContent_MakeAvailable(JoltPhysics)
 
-
-
-# Disable Ozz Animation tests and samples so they don't break the web build
-set(ozz_build_samples OFF CACHE BOOL "Disable ozz samples" FORCE)
-set(ozz_build_howtos OFF CACHE BOOL "Disable ozz howtos" FORCE)
-set(ozz_build_tests OFF CACHE BOOL "Disable ozz tests" FORCE)
+# ENet via FetchContent (Using the active zpl-c archive)
+FetchContent_Declare(
+  enet
+  URL https://github.com/zpl-c/enet/archive/refs/heads/master.tar.gz
+)
+FetchContent_MakeAvailable(enet)
 
 # Local Subdirectories
-add_subdirectory(deps/ozz-animation)
-add_subdirectory(deps/enet)
+if (EXISTS "${CMAKE_SOURCE_DIR}/deps/ozz-animation/CMakeLists.txt")
+    add_subdirectory(deps/ozz-animation)
+endif()
 
-
-# --- 3. Source Files ---
+# --- 4. Source Files ---
 file(GLOB_RECURSE ENGINE_SOURCES "src/*.cpp" "src/*.c")
 file(GLOB_RECURSE MODULE_SOURCES "modules/gltf/*.cpp" "modules/ktx/*.cpp" "modules/image/*.cpp" "modules/terrain/*.cpp")
-
-# Filter out the Vulkan RenderingServer if we are building for the web!
-if (EMSCRIPTEN)
-    # Remove RenderingServer.cpp from the web build so it doesn't throw Vulkan errors
-    list(FILTER ENGINE_SOURCES EXCLUDE REGEX "src/servers/rendering/RenderingServer.cpp")
-endif()
 
 list(APPEND ENGINE_SOURCES 
     "src/controllers/VehicleController.cpp"
@@ -102,7 +74,6 @@ list(APPEND ENGINE_SOURCES
     "deps/xatlas.cpp"
 )
 
-# ImGui
 set(IMGUI_SOURCES 
     deps/imgui/imgui.cpp 
     deps/imgui/imgui_draw.cpp
@@ -113,49 +84,39 @@ set(IMGUI_SOURCES
     deps/imgui/backends/imgui_impl_sdl2.cpp
 )
 
-# Only compile ImGui Vulkan backend if we are on Desktop
-if (NOT EMSCRIPTEN)
+if (EMSCRIPTEN)
+    list(APPEND IMGUI_SOURCES deps/imgui/backends/imgui_impl_wgpu.cpp)
+else()
     list(APPEND IMGUI_SOURCES deps/imgui/backends/imgui_impl_vulkan.cpp)
 endif()
 
-
-# --- 4. Shader Compilation ---
-find_program(GLSLC_EXECUTABLE glslc REQUIRED)
-file(GLOB SHADER_FILES "assets/shaders/*.vert" "assets/shaders/*.frag" "assets/shaders/*.comp")
-set(SHADER_SPV_FILES "")
-foreach(SHADER ${SHADER_FILES})
-    get_filename_component(SHADER_NAME ${SHADER} NAME)
-    set(SPV_FILE "${CMAKE_SOURCE_DIR}/assets/shaders/${SHADER_NAME}.spv")
-    add_custom_command(
-        OUTPUT ${SPV_FILE}
-        COMMAND ${GLSLC_EXECUTABLE} ${SHADER} -o ${SPV_FILE}
-        DEPENDS ${SHADER}
-        COMMENT "Compiling shader ${SHADER_NAME}"
-    )
-    list(APPEND SHADER_SPV_FILES ${SPV_FILE})
-endforeach()
-
-
-# --- 5. Executable Target ---
-add_executable(crescendo_engine 
-    ${ENGINE_SOURCES} 
-    ${MODULE_SOURCES} 
-    ${IMGUI_SOURCES} 
-    ${SHADER_SPV_FILES}
-)
-
-# Tell Emscripten to output an HTML file instead of an executable!
-if (EMSCRIPTEN)
-    set_target_properties(crescendo_engine PROPERTIES SUFFIX ".html")
+# --- 5. Shader Compilation ---
+if (NOT EMSCRIPTEN)
+    find_program(GLSLC_EXECUTABLE glslc REQUIRED)
+    file(GLOB SHADER_FILES "assets/shaders/*.vert" "assets/shaders/*.frag" "assets/shaders/*.comp")
+    set(SHADER_SPV_FILES "")
+    foreach(SHADER ${SHADER_FILES})
+        get_filename_component(SHADER_NAME ${SHADER} NAME)
+        set(SPV_FILE "${CMAKE_SOURCE_DIR}/assets/shaders/${SHADER_NAME}.spv")
+        add_custom_command(
+            OUTPUT ${SPV_FILE}
+            COMMAND ${GLSLC_EXECUTABLE} ${SHADER} -o ${SPV_FILE}
+            DEPENDS ${SHADER}
+            COMMENT "Compiling shader ${SHADER_NAME}"
+        )
+        list(APPEND SHADER_SPV_FILES ${SPV_FILE})
+    endforeach()
 endif()
 
+# --- 6. Executable Target ---
+add_executable(crescendo_engine ${ENGINE_SOURCES} ${MODULE_SOURCES} ${IMGUI_SOURCES} ${SHADER_SPV_FILES})
 
-# --- 6. Include Directories ---
+# --- 7. Include Directories ---
 target_include_directories(crescendo_engine PRIVATE 
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/src 
     ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/deps/sol/include
+    SYSTEM ${CMAKE_SOURCE_DIR}/deps/sol/include # SYSTEM tag fixes sol.hpp diagnostic errors
     ${CMAKE_SOURCE_DIR}/deps/tinygltf
     ${CMAKE_SOURCE_DIR}/deps/json
     ${CMAKE_SOURCE_DIR}/deps/stb
@@ -165,46 +126,38 @@ target_include_directories(crescendo_engine PRIVATE
     ${CMAKE_SOURCE_DIR}/modules/image
     ${CMAKE_SOURCE_DIR}/modules/ktx
     ${CMAKE_SOURCE_DIR}/deps/gli 
-    ${CMAKE_SOURCE_DIR}/deps/enet/include
+    ${enet_SOURCE_DIR}/include
     ${joltphysics_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/deps/ozz-animation/include
-    ${LUA_INCLUDE_DIRS}
-
-    /usr/include/lua5.4
-    
 )
 
-# Only include native SDL and Vulkan headers on Desktop
 if (NOT EMSCRIPTEN)
-    target_include_directories(crescendo_engine PRIVATE ${SDL2_INCLUDE_DIRS} ${Vulkan_INCLUDE_DIRS})
+    target_include_directories(crescendo_engine PRIVATE 
+        ${SDL2_INCLUDE_DIRS}
+        ${Vulkan_INCLUDE_DIRS}
+        ${LUA_INCLUDE_DIRS}
+    )
 endif()
 
-
-# --- 7. Link Libraries & Definitions ---
-# Added GLM_FORCE_CXX17 to prevent libc++ namespace conflicts
-# Added SOL_LUA_VERSION to fix the sol2/Lua 5.4 detection
+# --- 8. Link Libraries & Definitions ---
 target_compile_definitions(crescendo_engine PRIVATE 
-    GLM_FORCE_RADIANS 
-    GLM_FORCE_DEPTH_ZERO_TO_ONE 
-    GLM_FORCE_CXX17
-    SOL_LUA_VERSION=504
+    GLM_FORCE_RADIANS
+    GLM_FORCE_DEPTH_ZERO_TO_ONE
+    SOL_ALL_SAFETIES_ON=1
+    SOL_COMPILER_CLANG=1
 )
 
-# Base libraries everyone needs (Removed LUA and KTX from here!)
-target_link_libraries(crescendo_engine PRIVATE 
-    Jolt 
-    enet 
-    ozz_animation 
-    ozz_base
-)
-
-# Platform specific linking
+# Desktop uses standard C linkage for Lua; Emscripten uses C++ linkage
 if (EMSCRIPTEN)
-    # Fix ENet typedef clash on WebAssembly
-    target_compile_definitions(enet PRIVATE HAS_SOCKLEN_T=1)
-    
-    set_target_properties(crescendo_engine PROPERTIES LINK_FLAGS "-s ERROR_ON_UNDEFINED_SYMBOLS=0")
+    target_compile_definitions(crescendo_engine PRIVATE SOL_USING_CXX_LUA=1)
 else()
-    # Desktop gets the native binaries!
-    target_link_libraries(crescendo_engine PRIVATE ${LUA_LIBRARIES} KTX::ktx Threads::Threads SDL2::SDL2 SDL2_image Vulkan::Vulkan dl)
+    target_link_libraries(crescendo_engine PRIVATE ${LUA_LIBRARIES} SDL2::SDL2 SDL2_image Vulkan::Vulkan dl)
+    target_link_libraries(crescendo_engine PRIVATE ${LUA_LIBRARIES} SDL2::SDL2 SDL2_image Vulkan::Vulkan dl ktx)
+    if (LUA_VERSION MATCHES "^5\\.5")
+        target_compile_definitions(crescendo_engine PRIVATE SOL_LUA_VERSION=505)
+    else()
+        target_compile_definitions(crescendo_engine PRIVATE SOL_LUA_VERSION=504)
+    endif()
 endif()
+
+target_link_libraries(crescendo_engine PRIVATE Threads::Threads Jolt enet_static ozz_animation ozz_base)

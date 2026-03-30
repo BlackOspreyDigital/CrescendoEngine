@@ -1,6 +1,6 @@
 #include <iostream>
 #include "servers/networking/NetworkingServer.hpp"
-#include <enet/enet.h>
+#include <enet.h>
 
 namespace Crescendo {
 

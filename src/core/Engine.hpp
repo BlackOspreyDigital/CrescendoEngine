@@ -41,6 +41,8 @@ namespace Crescendo {
 
         // SYSTEMS
         std::unique_ptr<ScriptSystem> scriptSystem;
+
+        Scene scene;
         
     private:
         bool isRunning;

@@ -1,4 +1,6 @@
 #include "Engine.hpp"
+#include "core/ScriptSystem.hpp"
+#include <iostream>
 
 #include <Jolt/Core/IssueReporting.h>
 #include "Jolt/Core/Memory.h"
@@ -10,7 +12,7 @@
 
 // --- THE RHI SWITCH ---
 #ifdef __EMSCRIPTEN__
-    #include "servers/rendering/Webgpu/WebGPURenderer.hpp" // Update this include!
+    #include "servers/rendering/WebGPU/WebGPURenderer.hpp" 
 #else
     #include "servers/rendering/RenderingServer.hpp"
 #endif
@@ -28,6 +30,9 @@ namespace Crescendo {
 
         JPH::RegisterDefaultAllocator();
         JPH::Factory::sInstance = new JPH::Factory();
+
+        scriptSystem = std::make_unique<ScriptSystem>();
+        scriptSystem->Initialize();
         
         if (!displayServer.initialize(title, width, height)) return false;
 

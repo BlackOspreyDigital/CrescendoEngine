@@ -2596,7 +2596,14 @@ namespace Crescendo {
         sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
         sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT; 
         
+        // [FIX] Give the RAII wrappers the allocator so they know how to destroy themselves!
+        stagingVertBuffer.allocator = allocator;
+        stagingIndexBuffer.allocator = allocator;
+        counterBuffer.allocator = allocator;
+
         vmaCreateBuffer(allocator, &sVertInfo, &sAlloc, &stagingVertBuffer.handle, &stagingVertBuffer.allocation, nullptr);
+        
+        
 
         VkBufferCreateInfo sIndInfo = sVertInfo;
         sIndInfo.size = MAX_INDICES_SIZE;
@@ -5300,8 +5307,7 @@ namespace Crescendo {
     }
 
     void RenderingServer::shutdown() {
-        std::cout << "[RenderingServer] Executing Scorched Earth Shutdown..." << std::endl;
-        
+                
         if (device != VK_NULL_HANDLE) {
             vkDeviceWaitIdle(device);
             // 1. DESTROY TOP LEVEL
@@ -5355,43 +5361,13 @@ namespace Crescendo {
             if (shadowSampler != VK_NULL_HANDLE) vkDestroySampler(device, shadowSampler, nullptr);
             shadowImage.destroy();
             
-            // --- ADD THESE MISSING RENDER PASSES & FRAMEBUFFERS ---
-            if (bloomRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, bloomRenderPass, nullptr);
-            if (compositeRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, compositeRenderPass, nullptr);
-            if (ssrRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, ssrRenderPass, nullptr);
-            if (viewportRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, viewportRenderPass, nullptr);
-            if (transparentRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, transparentRenderPass, nullptr);
-
-            if (bloomFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, bloomFramebuffer, nullptr);
-            if (finalFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, finalFramebuffer, nullptr);
-            if (ssrFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, ssrFramebuffer, nullptr);
-            if (viewportFramebuffer != VK_NULL_HANDLE) vkDestroyFramebuffer(device, viewportFramebuffer, nullptr);
-
-            if (refractionImageView != VK_NULL_HANDLE) vkDestroyImageView(device, refractionImageView, nullptr);
-            if (refractionSampler != VK_NULL_HANDLE) vkDestroySampler(device, refractionSampler, nullptr);
-            if (viewportSampler != VK_NULL_HANDLE) vkDestroySampler(device, viewportSampler, nullptr);
-
             // 4. DESTROY EVERY SINGLE IMAGE (Updated with the missing ones!)
             speakerTexture.destroy(); 
             skyImage.destroy(); 
             textureImage.destroy(); 
             positionBakeImage.destroy(); 
             normalBakeImage.destroy(); 
-            
-            // The newly discovered stragglers:
-            colorImageMSAA.destroy();
-            normalImageMSAA.destroy();
-            depthImageMSAA.destroy();
-            ssrImage.destroy();
-            depthImage.destroy();
-            refractionImage.destroy();
-            viewportImage.destroy();
-            viewportNormalImage.destroy();
-            viewportDepthImage.destroy();
-            bloomBrightImage.destroy();
-            finalImage.destroy();
-            
-        
+                    
             // 5. DESTROY BUFFERS
             densityBuffer.destroy();
             computeVertexBuffer.destroy();
@@ -5400,7 +5376,13 @@ namespace Crescendo {
             stagingVertBuffer.destroy();
             stagingIndexBuffer.destroy();
         
+            // Explicitly destroy the RAII buffers using the correct '.handle' property!
+            for (auto& mesh : meshes) {
+                if (mesh.vertexBuffer.handle != VK_NULL_HANDLE) mesh.vertexBuffer.destroy();
+                if (mesh.indexBuffer.handle != VK_NULL_HANDLE) mesh.indexBuffer.destroy();
+            }
             meshes.clear(); 
+
             for (auto& tex : textureBank) tex.image.destroy();
             textureBank.clear();
             textureMap.clear();

@@ -4,60 +4,40 @@ build_web/
 bin/
 out/
 obj/
+_deps/
 .cache/
 compile_commands.json
+.clangd
 crescendo_engine
 *.o
 *.a
 *.so
 *.lib
 *.dll
-*.pdb
-
-# --- Emscripten Proxy Folders ---
-math_fix/
-safe_includes/
-
-# --- External Dependencies ---
-_deps/
-JoltPhysics/
 
 # --- Compiled Shaders ---
 assets/shaders/*.spv
 
-# --- Editor/System Files ---
+# --- Dependencies (The Clutter Killers) ---
+# This stops Git from ever looking inside these folders
+deps/enet/
+deps/joltphysics/
+deps/JoltPhysics/
+_deps/
+
+# --- Editor & OS Trash ---
 .vscode/
+.idea/
 .DS_Store
 imgui.ini
-*.suo
-*.sln
-*.vcxproj*
-
-# --- OS Specific ---
 Thumbs.db
 
-# --- Additional C++/CMake Build Artifacts ---
-_deps/
-bin/
-lib/
-out/
-*.dir/
-*.a
-*.so
-*.lib
-*.dll
-*.pdb
-*.suo
-*.sln
-*.vcxproj*
-*.vscode/
+# --- CMake Junk ---
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+install_manifest.txt
 
-# --- Ignore Assets Folders
+# --- Ignore Massive Asset Folders ---
 assets/
-
-
-# --- Ignore Dependency Build Folders ---
-# (If Jolt or other libraries compile locally)
-deps/*/build/
-modules/*/build/
-modules/Jolt/JoltPhysics

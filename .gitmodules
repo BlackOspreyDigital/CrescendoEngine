@@ -1,0 +1,12 @@
+[submodule "deps/sol"]
+    path = deps/sol
+    url = https://github.com/ThePhD/sol2.git
+[submodule "deps/imgui"]
+    path = deps/imgui
+    url = https://github.com/ocornut/imgui.git
+[submodule "deps/ozz-animation"]
+    path = deps/ozz-animation
+    url = https://github.com/guillaumeblanc/ozz-animation.git
+[submodule "deps/gli"]
+    path = deps/gli
+    url = https://github.com/g-truc/gli.git
