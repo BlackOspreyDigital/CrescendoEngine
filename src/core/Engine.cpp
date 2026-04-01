@@ -12,11 +12,10 @@
 #include "modules/gltf/AssetLoader.hpp"
 #endif
 
-#include "servers/rendering/Webgpu/WebGPURenderer.hpp"
-
 // --- THE RHI SWITCH ---
 #ifdef __EMSCRIPTEN__
     #include "servers/rendering/Webgpu/WebGPURenderer.hpp" 
+    #include <emscripten.h> // NEW: Required for the Web Main Loop
 #else
     #include "servers/rendering/RenderingServer.hpp"
 #endif
@@ -42,7 +41,7 @@ namespace Crescendo {
 
         // --- PLATFORM RENDERER INJECTION ---
         #ifdef __EMSCRIPTEN__
-                renderer = std::make_unique<WebGPURenderer>(); // Use the new WebGPURenderer!
+                renderer = std::make_unique<WebGPURenderer>(); 
                 if (!renderer->initialize(&displayServer)) return false;
                 sceneManager = std::make_unique<SceneManager>(nullptr);
         #else
@@ -60,29 +59,46 @@ namespace Crescendo {
             audioServer.LoadAmbientSound("assets/audio/wind.mp3", 0.5f);
         }
 
-        // =========================================================
         // SCENE BOOTSTRAP
-        // =========================================================
-
-        // Spawn Sky Entity
         CBaseEntity* skyEnt = scene.CreateEntity("env_sky");
         skyEnt->targetName = "Procedural Sky";
         skyEnt->angles = glm::vec3(45.0f, -30.0f, 0.0f);
-        skyEnt->albedoColor = glm::vec3(0.5f, 0.7f, 1.0f);      // Zenith
-        skyEnt->attenuationColor = glm::vec3(0.0f, 0.0f, 0.0f); // Horizon
+        skyEnt->albedoColor = glm::vec3(0.5f, 0.7f, 1.0f);      
+        skyEnt->attenuationColor = glm::vec3(0.0f, 0.0f, 0.0f); 
                 
         isRunning = true;
         return true;
     }
 
-    void Engine::Run() {
-        while (isRunning) {
-            ProcessEvents();
-            Update();
-            Render();
-        }
-        
+    // =========================================================
+    // THE MAIN LOOP FIX
+    // =========================================================
+    #ifdef __EMSCRIPTEN__
+    // 1. The WebAssembly Frame Wrapper
+    void WebMainLoopStep(void* arg) {
+        Engine* engine = static_cast<Engine*>(arg);
+        engine->ProcessEvents();
+        engine->Update();
+        engine->Render();
     }
+    #endif
+
+    void Engine::Run() {
+        #ifdef __EMSCRIPTEN__
+            // 2. Web Mode: Give control to the browser so it can draw!
+            // 0 = sync with monitor refresh rate, true = simulate infinite loop safely
+            emscripten_set_main_loop_arg(WebMainLoopStep, this, 0, true);
+        #else
+            // 3. Desktop Mode: Classic infinite loop
+            while (isRunning) {
+                ProcessEvents();
+                Update();
+                Render();
+            }
+        #endif
+    }
+
+    // =========================================================
 
     void Engine::ProcessEvents() {
         displayServer.poll_events(isRunning);
@@ -92,22 +108,12 @@ namespace Crescendo {
         float dt = 1.0f / 60.0f; 
         Input::Update();
        
-        // Temporarily cast back to RenderingServer to grab the camera
         auto& cam = static_cast<RenderingServer*>(renderer.get())->mainCamera;
         
-        // NOTE: Editor Camera movement was DELETED from here!
-        // It is now handled exclusively inside EditorUI::Prepare() so it respects the console.
-
-        // =========================================================
-        // STATE TRANSITION LOGIC 
-        // =========================================================
-        
-        // 1. Leaving Editor (Starting the game)
         if (currentState == EngineState::Playing && previousState == EngineState::Editor) {
             std::cout << "[Engine] Play Mode: Saving initial state..." << std::endl;
             
-            // --- NEW: INITIALIZE SPATIAL AUDIO FOR THIS RUN ---
-            audioServer.ClearSpatialEmitters(); // Wipe any leftovers
+            audioServer.ClearSpatialEmitters(); 
 
             glm::vec3 spawnLocation = cam.GetPosition(); 
             
@@ -117,15 +123,13 @@ namespace Crescendo {
                     ent->savedAngles = ent->angles;
                     ent->savedScale = ent->scale; 
                     
-                    // IF THE ENTITY IS A SOUND SOURCE, LOAD IT!
-                    // This line should now compile perfectly in Engine.cpp
                     if (ent->className == "env_sound") {
                         audioServer.LoadSpatialEmitter(ent->assetPath, ent->origin, ent->emission);
                     }
 
                     if (ent->targetName == "SpawnPoint") {
                         spawnLocation = ent->origin + glm::vec3(0, 0, 1.0f); 
-                        ent->scale = glm::vec3(0.0f); // Turn spawner invisible
+                        ent->scale = glm::vec3(0.0f); 
                     }
                 }
             }
@@ -133,7 +137,6 @@ namespace Crescendo {
             activePlayer = new FPSController();
             activePlayer->Initialize(&physicsServer, spawnLocation);
 
-            // Spawn Player model
             size_t priorCount = scene.entities.size();
             
             #ifndef __EMSCRIPTEN__
@@ -145,13 +148,10 @@ namespace Crescendo {
             if (scene.entities.size() > priorCount) {
                 localPlayerModel = scene.entities[priorCount];
                 localPlayerModel->targetName = "LocalPlayer";
-
-                // Auto flag it for enet
                 localPlayerModel->syncTransform = true;
                 localPlayerModel->networkID = 1;
             }
         }
-        // 2. Returning to Editor (From either Playing OR Paused)
         else if (currentState == EngineState::Editor && previousState != EngineState::Editor) {
             std::cout << "[Engine] Editor Mode: Restoring scene..." << std::endl;
             for (auto* ent : scene.entities) {
@@ -159,23 +159,14 @@ namespace Crescendo {
                     ent->origin = ent->savedOrigin;
                     ent->angles = ent->savedAngles;
                     ent->scale = ent->savedScale; 
-                    
                     physicsServer.ResetBody(ent->index, ent->origin, ent->angles);
                 }
             }
 
-            if (activePlayer) {
-                delete activePlayer;
-                activePlayer = nullptr;
-            }
-
-            if (localPlayerModel) {
-                scene.DeleteEntity(localPlayerModel->index);
-                localPlayerModel = nullptr;
-            }
+            if (activePlayer) { delete activePlayer; activePlayer = nullptr; }
+            if (localPlayerModel) { scene.DeleteEntity(localPlayerModel->index); localPlayerModel = nullptr; }
         }
         
-        // 3. Handle Mouse Locking & Audio
         if (currentState != previousState) {
             if (currentState == EngineState::Playing) {
                 SDL_SetRelativeMouseMode(SDL_TRUE); 
@@ -190,11 +181,7 @@ namespace Crescendo {
         
         previousState = currentState;
 
-        // =========================================================
-        // PLAY MODE: FPS Controller Physics & Network
-        // =========================================================
         if (currentState == EngineState::Playing) {
-            
             if (activePlayer) {
                 glm::vec3 forward = glm::vec3(cam.Front.x, cam.Front.y, 0.0f);
                 if (glm::length(forward) > 0.001f) forward = glm::normalize(forward);
@@ -210,57 +197,36 @@ namespace Crescendo {
 
                 bool jump = Input::IsKeyDown(SDL_SCANCODE_SPACE);
 
-                // ADD &audioServer RIGHT HERE!
                 activePlayer->Update(dt, &physicsServer, &audioServer, inputDir, jump);
                 cam.SetPosition(activePlayer->GetPosition());
 
                 if (localPlayerModel) {
-                    // Offset by -1.0f on Z so the model is at your feet
                     localPlayerModel->origin = activePlayer->GetPosition() - glm::vec3(0.0f, 0.0f, 1.0f);
-
-                    // Rotate the model to face the direction you are looking
                     localPlayerModel->angles = glm::vec3(90.0f, 0.0f, cam.Yaw);
                 }
             }
 
-            // Mouse Look ONLY happens here if we are actively playing
-            // Add the minus sign to -Input::mouseRelX to fix the inverted left/right panning!
             cam.Rotate((float)-Input::mouseRelX, (float)-Input::mouseRelY);
-
             physicsServer.Update(dt, scene.entities);
 
-            // =========================================================
-            // MULTIPLAYER SYNC LOOP
-            // =========================================================
-
             NetworkingServer* activeServer = nullptr;
-
-            // 1. Find the Network Manager and process incoming movements
             for (auto* ent : scene.entities) {
                 if (ent && ent->className == "node_network" && ent->netServer && ent->netServer->IsConnected()) {
                     activeServer = ent->netServer;
-                    activeServer->Poll(scene.entities); // Apply incoming data to the scene
+                    activeServer->Poll(scene.entities); 
                     break;
                 }
             }
 
-            // 2. Broadcast local movements out to the server/clients
             if (activeServer) {
                 for (auto* ent : scene.entities) {
-                    // Broadcast networked entities (like localPlayerModel)
                     if (ent && ent->syncTransform && activeServer->IsServer()) {
-                        activeServer->BroadcastTransform(
-                            ent->networkID,
-                            ent->origin,
-                            glm::radians(ent->angles)
-                        );
+                        activeServer->BroadcastTransform(ent->networkID, ent->origin, glm::radians(ent->angles));
                     }
                 }
             }
         }
 
-        // ---3D Audio Listener (spatial)
-        // Bind the audioservers ears to our cameras exact position and rotation.
         audioServer.UpdateListener(cam.Position, cam.Front, cam.Up);
     }
 

@@ -20,8 +20,13 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall")
 # --- 2. WEBGPU / EMSCRIPTEN TARGETS ---
 if (EMSCRIPTEN)
     message(STATUS "Configuring for WebAssembly (Emscripten) + WebGPU")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --use-port=emdawnwebgpu -s USE_SDL=2 -Wno-nontrivial-memcall")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} --use-port=emdawnwebgpu -s USE_SDL=2 -s ALLOW_MEMORY_GROWTH=1 -s ASYNCIFY")
+    
+    # Enable Pthreads for BOTH C and C++ (Crucial for ENet and Lua)
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread -s USE_PTHREADS=1")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -s USE_PTHREADS=1 --use-port=emdawnwebgpu -s USE_SDL=2 -Wno-nontrivial-memcall")
+    
+    # Linker needs the same flags plus the thread pool size
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pthread -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=8 --use-port=emdawnwebgpu -s USE_SDL=2 -s ALLOW_MEMORY_GROWTH=1 -s ASYNCIFY")
 
     # 1. Disable Ozz OpenGL samples which fail on Web
     set(ozz_build_samples OFF CACHE BOOL "" FORCE)
@@ -53,7 +58,6 @@ if (EMSCRIPTEN)
         SOURCE_SUBDIR "disable_build_trick"
     )
     FetchContent_MakeAvailable(lua)
-
 endif()
 
 # --- 3. External Dependencies ---
@@ -86,6 +90,7 @@ FetchContent_Declare(
   enet
   URL https://github.com/zpl-c/enet/archive/refs/heads/master.tar.gz
 )
+set(ENET_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(enet)
 
 # Local Subdirectories
@@ -172,6 +177,16 @@ endif()
 
 # --- 6. Executable Target ---
 add_executable(crescendo_engine ${ENGINE_SOURCES} ${MODULE_SOURCES} ${IMGUI_SOURCES} ${SHADER_SPV_FILES})
+
+# When building for the web, we want an .html file and a shell template
+if (EMSCRIPTEN)
+    set_target_properties(crescendo_engine PROPERTIES SUFFIX ".html")
+    
+    target_link_options(crescendo_engine PRIVATE 
+        "--shell-file" "${CMAKE_SOURCE_DIR}/deps/imgui/examples/libs/emscripten/shell_minimal.html"
+        "--preload-file" "${CMAKE_SOURCE_DIR}/assets@/assets"
+    )
+endif()
 
 # --- 7. Include Directories ---
 target_include_directories(crescendo_engine PRIVATE 

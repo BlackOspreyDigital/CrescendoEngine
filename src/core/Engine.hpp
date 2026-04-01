@@ -23,6 +23,12 @@ namespace Crescendo {
         void Run();
         void Shutdown();
 
+        // --- MOVED TO PUBLIC FOR EMSCRIPTEN MAIN LOOP ---
+        void ProcessEvents();
+        void Update();
+        void Render();
+        // ------------------------------------------------
+
         EngineState currentState = EngineState::Editor;
         EngineState previousState = EngineState::Editor;
 
@@ -47,8 +53,5 @@ namespace Crescendo {
     private:
         bool isRunning;
         std::unique_ptr<SceneManager> sceneManager;
-        void ProcessEvents();
-        void Update();
-        void Render();
     };
 }

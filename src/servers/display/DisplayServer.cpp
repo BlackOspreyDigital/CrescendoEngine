@@ -1,5 +1,7 @@
 #include "servers/display/DisplayServer.hpp"
+#ifndef __EMSCRIPTEN__
 #include <SDL2/SDL_vulkan.h>
+#endif
 #include "imgui_impl_sdl2.h"
 #include <iostream>
 
@@ -13,12 +15,20 @@ namespace Crescendo {
             std::cerr << "DisplayServer: SDL_Init Failed: " << SDL_GetError() << std::endl;
             return false;
         }
+
+        // Define base flags
+        uint32_t window_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN;
+
+        // Add Vulkan flag ONLY if we are NOT on the web
+#ifndef __EMSCRIPTEN__
+        window_flags |= SDL_WINDOW_VULKAN;
+#endif
         
         window = SDL_CreateWindow(
             title.c_str(),
             SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
             width, height,
-            SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN
+            window_flags
         );
 
         if (!window) {
@@ -30,29 +40,37 @@ namespace Crescendo {
     }
 
     void DisplayServer::poll_events(bool& running) {
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-            // Forward events to Imgui
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        // NEW: Only forward to ImGui if the context and backend exist
+        if (ImGui::GetCurrentContext() != nullptr) {
             ImGui_ImplSDL2_ProcessEvent(&event);
-            
-            if (event.type == SDL_QUIT) {
-                running = false;
-            }
-            if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_RESIZED) {
-                // Future: trigger swapchain recreation here
-            }
-        }    
-    }
+        }
+        
+        if (event.type == SDL_QUIT) {
+            running = false;
+        }
+    }    
+}
 
     VkResult DisplayServer::create_window_surface(VkInstance instance, VkSurfaceKHR* surface) {
+#ifndef __EMSCRIPTEN__
         if (!SDL_Vulkan_CreateSurface(window, instance, surface)) {
             return VK_ERROR_INITIALIZATION_FAILED;
         }
         return VK_SUCCESS;
+#else
+        // This function shouldn't be called in the WebGPU backend
+        return VK_SUCCESS; 
+#endif
     }
 
     void DisplayServer::get_window_size(int* w, int* h) {
+#ifndef __EMSCRIPTEN__
         SDL_Vulkan_GetDrawableSize(window, w, h);
+#else
+        SDL_GetWindowSize(window, w, h);
+#endif
     }
 
     void DisplayServer::shutdown() {

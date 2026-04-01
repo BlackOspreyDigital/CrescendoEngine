@@ -1,11 +1,7 @@
 #!/bin/bash
-
-# Exit on any error
 set -e
 
 echo "Building Crescendo Engine for WebAssembly"
-
-# Create a seperate build folder for the web
 mkdir -p build_web
 cd build_web
 
@@ -16,8 +12,8 @@ emcmake cmake ..
 emmake make -j$(nproc)
 
 echo "Build Complete"
-echo "Starting Local server on http://localhost:8000/crescendo_engine.html"
+echo "Starting Local server on https://localhost:8000/crescendo_engine.html"
 echo "(Press Ctrl+C to stop)"
 
-# Start a local python web server to host the files
-python3 -m http.server 8000
+# emrun automatically handles the COOP and COEP security headers
+emrun --port 8000 crescendo_engine.html

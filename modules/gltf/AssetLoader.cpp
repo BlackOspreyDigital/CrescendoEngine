@@ -3,7 +3,6 @@
 // STB_IMAGE_IMPLEMENTATION is already defined in RenderingServer.cpp, so we omit it here
 
 #include "AssetLoader.hpp"
-#include "servers/rendering/RenderingServer.hpp"
 #include "servers/physics/PhysicsServer.hpp"
 #include "scene/components/TransformComponent.hpp"
 #include "scene/components/MeshRendererComponent.hpp"
@@ -13,11 +12,14 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
 
-namespace Crescendo {
+// --- PLATFORM RENDERER INCLUDES ---
+#ifdef __EMSCRIPTEN__
+    #include "servers/rendering/Webgpu/WebGPURenderer.hpp"
+#else
+    #include "servers/rendering/RenderingServer.hpp"
+#endif
 
-    // ========================================================================
-    // MODEL LOADING STACK 
-    // ========================================================================
+namespace Crescendo {
 
     static std::string normalizePath(const std::string& path) {
         std::string s = path;
@@ -42,7 +44,6 @@ namespace Crescendo {
     [[maybe_unused]] static void GenerateLightmapUVs(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices) {
         xatlas::Atlas* atlas = xatlas::Create();
 
-        // 1. Describe our mesh memory layout to xatlas
         xatlas::MeshDecl meshDecl;
         meshDecl.vertexCount = vertices.size();
         meshDecl.vertexPositionData = &vertices[0].pos;
@@ -52,17 +53,15 @@ namespace Crescendo {
         meshDecl.indexData = indices.data();
         meshDecl.indexFormat = xatlas::IndexFormat::UInt32;
 
-        // 2. Add and Generate
         xatlas::AddMeshError error = xatlas::AddMesh(atlas, meshDecl, 1);
         if (error != xatlas::AddMeshError::Success) {
-            std::cerr <<"[Lightmapper] Error adding mesht to xatlas!" << std::endl;
+            std::cerr <<"[Lightmapper] Error adding mesh to xatlas!" << std::endl;
             xatlas::Destroy(atlas);
             return;
         }
 
         xatlas::Generate(atlas);
 
-        // 3. Extract the flattened geometry
         std::vector<Vertex> newVertices;
         std::vector<uint32_t> newIndices;
 
@@ -76,24 +75,19 @@ namespace Crescendo {
 
         for (uint32_t i = 0; i < outMesh.vertexCount; i++) {
             const xatlas::Vertex& v = outMesh.vertexArray[i];
-
-            newVertices[i] = vertices[v.xref]; // copy original data
-
+            newVertices[i] = vertices[v.xref]; 
             newVertices[i].lightmapUV.x = v.uv[0] / (float)atlas->width;
             newVertices[i].lightmapUV.y = v.uv[1] / (float)atlas->height;
         }
 
-        // 4. Overwrite the original vectors
         vertices = std::move(newVertices);
         indices = std::move(newIndices);
 
         std::cout << "[Lightmapper] Atlas generated. Size : " << atlas->width << "x" << atlas->height<< std::endl;
-
         xatlas::Destroy(atlas);
-
     }
 
-    void AssetLoader::loadModel(RenderingServer* renderer, const std::string& filePath, Scene* scene) {
+    void AssetLoader::loadModel(IRenderer* renderer, const std::string& filePath, Scene* scene) {
         std::ifstream f(filePath.c_str());
         if (!f.good()) {
             std::cerr << "[Error] File not found: " << filePath << std::endl;
@@ -107,7 +101,7 @@ namespace Crescendo {
         }
     }
 
-    void AssetLoader::loadGLTF(RenderingServer* renderer, const std::string& filePath, Scene* scene) {
+    void AssetLoader::loadGLTF(IRenderer* renderer, const std::string& filePath, Scene* scene) {
         if (scene == nullptr) return;
 
         tinygltf::Model model;
@@ -127,9 +121,6 @@ namespace Crescendo {
 
         RawMeshMap rawMeshes;
 
-        // =========================================================
-        // MESH LOADING SECTION (From Classic Script)
-        // =========================================================
         for (size_t i = 0; i < model.meshes.size(); i++) {
             const auto& mesh = model.meshes[i];
 
@@ -166,9 +157,7 @@ namespace Crescendo {
                     if (normBase) {
                         const float* n = reinterpret_cast<const float*>(normBase + (v * normStride));
                         vert.normal = { n[0], n[1], n[2] };
-                    } else {
-                        vert.normal = { 0.0f, 0.0f, 1.0f };
-                    }
+                    } else { vert.normal = { 0.0f, 0.0f, 1.0f }; }
 
                     if (texBase) {
                         const auto& acc = model.accessors[primitive.attributes.at("TEXCOORD_0")];
@@ -183,10 +172,8 @@ namespace Crescendo {
                     }
 
                     vert.color = { 1.0f, 1.0f, 1.0f };
-                    // Default tangent in case normal mapping requires it
                     vert.tangent = { 1.0f, 0.0f, 0.0f }; 
                     vert.bitangent = { 0.0f, 1.0f, 0.0f };
-                    
                     vertices.push_back(vert);
                 }
 
@@ -207,53 +194,73 @@ namespace Crescendo {
 
                 if (vertices.empty() || indices.empty()) continue;
                 
-                // =========================================================
-                // XATLAS INJECTION
-                // Flatten the mesh right before it hits the GPU
-                // =========================================================
-                
-                /* 
-                std::cout << "[AssetLoader] Flattening UVs for lightmap..." << std::endl;
-                GenerateLightmapUVs(vertices, indices); 
-                */
-
                 std::string meshKey = baseDir + "_mesh_" + std::to_string(i) + "_" + std::to_string(j); 
+                rawMeshes[meshKey] = {vertices, indices};
 
-                // --- VMA UPLOAD ---
+#ifndef __EMSCRIPTEN__
+                // --- VULKAN MESH BINDING ---
+                auto* backend = static_cast<RenderingServer*>(renderer);
                 MeshResource newMesh{};
                 newMesh.name = meshKey;
                 newMesh.indexCount = static_cast<uint32_t>(indices.size());
-                // newMesh.vertexBuffer = renderer->createVertexBuffer(vertices);
-                // newMesh.indexBuffer = renderer->createIndexBuffer(indices);
+                // newMesh.vertexBuffer = backend->createVertexBuffer(vertices);
+                // newMesh.indexBuffer = backend->createIndexBuffer(indices);
 
-                size_t globalIndex = renderer->meshes.size();
-                renderer->meshes.push_back(std::move(newMesh));
-                renderer->meshMap[meshKey] = globalIndex;
+                size_t globalIndex = backend->meshes.size();
+                backend->meshes.push_back(std::move(newMesh));
+                backend->meshMap[meshKey] = globalIndex;
+#else
+                // --- WEBGPU MESH BINDING ---
+                auto* backend = static_cast<WebGPURenderer*>(renderer);
 
-                rawMeshes[meshKey] = {vertices, indices};
+                uint64_t vertexSize = vertices.size() * sizeof(Vertex);
+                uint64_t indexSize = indices.size() * sizeof(uint32_t);
+
+                // 1. Create and Write Vertex Buffer
+                wgpu::BufferDescriptor vDesc{};
+                vDesc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
+                vDesc.size = vertexSize;
+                wgpu::Buffer vBuffer = backend->device.CreateBuffer(&vDesc);
+                backend->queue.WriteBuffer(vBuffer, 0, vertices.data(), vertexSize);
+
+                // 2. Create and Write Index Buffer
+                wgpu::BufferDescriptor iDesc{};
+                iDesc.usage = wgpu::BufferUsage::Index | wgpu::BufferUsage::CopyDst;
+                iDesc.size = indexSize;
+                wgpu::Buffer iBuffer = backend->device.CreateBuffer(&iDesc);
+                backend->queue.WriteBuffer(iBuffer, 0, indices.data(), indexSize);
+
+                // 3. Store in the Renderer
+                WebGPUMesh newMesh{};
+                newMesh.name = meshKey;
+                newMesh.vertexBuffer = vBuffer;
+                newMesh.indexBuffer = iBuffer;
+                newMesh.indexCount = static_cast<uint32_t>(indices.size());
+
+                size_t globalIndex = backend->meshes.size();
+                backend->meshes.push_back(std::move(newMesh));
+                backend->meshMap[meshKey] = globalIndex;
+#endif
             }
         }
 
         const auto& gltfScene = model.scenes[model.defaultScene > -1 ? model.defaultScene : 0];
         for (int nodeIdx : gltfScene.nodes) {
-            // stop fucking breaking god damnit
             processGLTFNode(renderer, model, model.nodes[nodeIdx], nullptr, baseDir, filePath, scene, glm::mat4(1.0f), rawMeshes);
         }
     }
 
-    void AssetLoader::processGLTFNode(RenderingServer* renderer, tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, const std::string& filePath, Scene* scene, glm::mat4 parentMatrix, RawMeshMap& rawMeshes) {
+    void AssetLoader::processGLTFNode(IRenderer* renderer, tinygltf::Model& model, tinygltf::Node& node, CBaseEntity* parent, const std::string& baseDir, const std::string& filePath, Scene* scene, glm::mat4 parentMatrix, RawMeshMap& rawMeshes) {
         if (!scene) return; 
 
         CBaseEntity* newEnt = scene->CreateEntity("prop_static"); 
         newEnt->targetName = node.name; 
         newEnt->textureID = 0; 
-        
         newEnt->modelPath = filePath;
 
         newEnt->AddComponent<Crescendo::TransformComponent>();
         newEnt->AddComponent<Crescendo::MeshRendererComponent>();
 
-        // Classic Hierarchy Parenting
         if (parent) {
             newEnt->moveParent = parent;
             parent->children.push_back(newEnt);
@@ -317,73 +324,90 @@ namespace Crescendo {
                         if (!img.uri.empty()) texKey = baseDir + "/" + decodeUri(img.uri);
                         else texKey = "EMBEDDED_" + std::to_string(tex.source) + "_" + node.name;
                         
-                        if (renderer->textureMap.find(texKey) != renderer->textureMap.end()) {
-                            targetEnt->textureID = renderer->textureMap[texKey];
+#ifndef __EMSCRIPTEN__
+                        // --- VULKAN TEXTURE BINDING ---
+                        auto* backend = static_cast<RenderingServer*>(renderer);
+                        if (backend->textureMap.find(texKey) != backend->textureMap.end()) {
+                            targetEnt->textureID = backend->textureMap[texKey];
                         } else {
-                            int newID = static_cast<int>(renderer->textureMap.size()) + 1;
-                            if (newID < renderer->MAX_TEXTURES) {
+                            int newID = static_cast<int>(backend->textureMap.size()) + 1;
+                            if (newID < backend->MAX_TEXTURES) {
                                 TextureResource newTex;
                                 bool success = false;
                                 VkFormat format = VK_FORMAT_R8G8B8A8_UNORM; 
 
                                 if (!img.image.empty()) {
-                                    newTex.image = renderer->UploadTexture((void*)img.image.data(), img.width, img.height, format);
+                                    newTex.image = backend->UploadTexture((void*)img.image.data(), img.width, img.height, format);
                                     success = true;
                                 } 
                                 else if (!img.uri.empty()) {
-                                    if (renderer->createTextureImage(texKey, newTex.image)) success = true;
+                                    if (backend->createTextureImage(texKey, newTex.image)) success = true;
                                 }
 
                                 if (success) {
-                                    renderer->textureBank[newID] = std::move(newTex);
-                                    renderer->textureMap[texKey] = newID;
-                                    renderer->cache.textures[texKey] = newID; 
+                                    backend->textureBank[newID] = std::move(newTex);
+                                    backend->textureMap[texKey] = newID;
+                                    backend->cache.textures[texKey] = newID; 
                                     targetEnt->textureID = newID;
 
-                                    // --- THE FIX: Loop over frames using 'frame', not 'i'! ---
-                                    for (size_t frame = 0; frame < renderer->descriptorSets.size(); frame++) {
+                                    for (size_t frame = 0; frame < backend->descriptorSets.size(); frame++) {
                                         VkDescriptorImageInfo imageInfo{};
                                         imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                                        imageInfo.imageView = renderer->textureBank[newID].image.view;
-                                        imageInfo.sampler = renderer->textureSampler;
+                                        imageInfo.imageView = backend->textureBank[newID].image.view;
+                                        imageInfo.sampler = backend->textureSampler;
 
                                         VkWriteDescriptorSet descriptorWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-                                        descriptorWrite.dstSet = renderer->descriptorSets[frame]; 
+                                        descriptorWrite.dstSet = backend->descriptorSets[frame]; 
                                         descriptorWrite.dstBinding = 0;
                                         descriptorWrite.dstArrayElement = newID; 
                                         descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                                         descriptorWrite.descriptorCount = 1;
                                         descriptorWrite.pImageInfo = &imageInfo;
                                         
-                                        vkUpdateDescriptorSets(renderer->device, 1, &descriptorWrite, 0, nullptr);
+                                        vkUpdateDescriptorSets(backend->device, 1, &descriptorWrite, 0, nullptr);
                                     }
                                 }
                             }
                         }
+#else
+                        // --- WEBGPU TEXTURE BINDING ---
+                        auto* backend = static_cast<WebGPURenderer*>(renderer);
+                        // TODO: Next step is wiring up WebGPU Texture uploads!
+#endif
                     }
-                } else {
-                    targetEnt->textureID = 0;
-                }
+                } else { targetEnt->textureID = 0; }
                 
                 std::string meshKey = normalizePath(baseDir) + "_mesh_" + std::to_string(node.mesh) + "_" + std::to_string(i); 
-                if (renderer->meshMap.find(meshKey) != renderer->meshMap.end()) {
-                    targetEnt->modelIndex = renderer->meshMap[meshKey];
 
-                    if (scene->physics && rawMeshes.find(meshKey) != rawMeshes.end()) {
-                        scene->physics->CreateMeshCollider(
-                            targetEnt->index, 
-                            rawMeshes[meshKey].first, 
-                            rawMeshes[meshKey].second, 
-                            targetEnt->origin, 
-                            targetEnt->scale
-                        );
-                    }
+                // --- CLANGD CRASH FIX: Properly balance preprocessor brackets ---
+                bool hasMeshReady = false;
+
+#ifndef __EMSCRIPTEN__
+                auto* backend = static_cast<RenderingServer*>(renderer);
+                if (backend->meshMap.find(meshKey) != backend->meshMap.end()) {
+                    targetEnt->modelIndex = backend->meshMap[meshKey];
+                    hasMeshReady = true;
+                }
+#else
+                auto* backend = static_cast<WebGPURenderer*>(renderer);
+                targetEnt->modelIndex = 0; // Temporary bypass
+                hasMeshReady = true;
+#endif
+                
+                // Now run the physics collider generation safely outside the macros
+                if (hasMeshReady && scene->physics && rawMeshes.find(meshKey) != rawMeshes.end()) {
+                    scene->physics->CreateMeshCollider(
+                        targetEnt->index, 
+                        rawMeshes[meshKey].first, 
+                        rawMeshes[meshKey].second, 
+                        targetEnt->origin, 
+                        targetEnt->scale
+                    );
                 }
             }
         }
 
         for (int childId : node.children) {
-            // --- FIX: Add filePath to the recursive call ---
             processGLTFNode(renderer, model, model.nodes[childId], newEnt, baseDir, filePath, scene, glm::mat4(1.0f), rawMeshes);
         }
     }
