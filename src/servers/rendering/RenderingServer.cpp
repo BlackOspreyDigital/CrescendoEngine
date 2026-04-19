@@ -1406,7 +1406,7 @@ namespace Crescendo {
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depthStencil.depthTestEnable = VK_TRUE; 
         depthStencil.depthWriteEnable = VK_FALSE; 
-        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER; // changed from less
 
         // Infinity sky trick
         depthStencil.depthBoundsTestEnable = VK_FALSE;
@@ -1708,7 +1708,7 @@ namespace Crescendo {
         VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         depthStencil.depthTestEnable = VK_TRUE; 
         depthStencil.depthWriteEnable = VK_TRUE; 
-        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER; // changed from less
 
         // --- 5. COLOR BLENDING ---
         VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
@@ -3385,15 +3385,24 @@ namespace Crescendo {
         // Map used to link an Entity Pointer to its GPU Index
         std::map<CBaseEntity*, uint32_t> entityGPUIndices;
 
+        // Get 64-Bit Camera
+        glm::dvec3 cameraWorldPos = mainCamera.Position;
+
         for (auto* ent : scene->entities) {
             if (!ent || entityCount >= MAX_ENTITIES) continue;
 
-            // DIRECT UPLOAD: No Matrix Math on CPU!
-            // We send Radians so the GPU doesn't have to convert.
             EntityData& data = gpuData[entityCount];
 
-            data.pos   = glm::vec4(ent->origin, 1.0f);
-            data.rot   = glm::vec4(glm::radians(ent->angles), 0.0f); // Convert to radians here
+            // 1. Calculate the difference in 64-bit double space
+            glm::dvec3 entityWorldPos = ent->origin;
+            glm::dvec3 relativePos = entityWorldPos - cameraWorldPos;
+
+            // 2. Cast it down to 32-bit float using the glm::vec3 constructor!
+            glm::vec3 renderPos = glm::vec3(relativePos);
+
+            // 3. Upload to GPU
+            data.pos = glm::vec4(renderPos, 1.0f);
+            data.rot   = glm::vec4(glm::radians(ent->angles), 0.0f);
             data.scale = glm::vec4(ent->scale, 1.0f);
 
             // Material & Volume logic remains the same...
@@ -3429,6 +3438,7 @@ namespace Crescendo {
         glm::vec2 viewportSize = editorUI.GetViewportSize();
         if (viewportSize.x > 0 && viewportSize.y > 0) aspectRatio = viewportSize.x / viewportSize.y;
         
+        // <--- 3. STRIP TRANSLATION SO CAMERA IS AT (0,0,0) IN RENDER SPACE --->
         glm::mat4 view = mainCamera.GetViewMatrix();
         glm::mat4 proj = mainCamera.GetProjectionMatrix(aspectRatio);
         
@@ -3462,7 +3472,8 @@ namespace Crescendo {
         globalData.viewProj = vp;
         globalData.view = view;
         globalData.proj = proj;
-        globalData.cameraPos = glm::vec4(mainCamera.GetPosition(), 1.0f);
+        // Cast to vec3 before packing it into the vec4
+        globalData.cameraPos = glm::vec4(glm::vec3(mainCamera.Position), 1.0f);
         
         // Now the sliders will perfectly push into the shader!
         globalData.sunDirection = glm::vec4(sunDirection, sunIntensity);
@@ -3497,12 +3508,15 @@ namespace Crescendo {
         // ---> 2. THE PASTED ENTITY SORTING BLOCK <---
         std::vector<CBaseEntity*> opaqueList;
         std::vector<std::pair<float, CBaseEntity*>> transPairs;
-        glm::vec3 camPos = mainCamera.GetPosition();
+        // Cast to vec3 for the sorting distance checks
+        glm::vec3 camPos = glm::vec3(mainCamera.Position);
 
         for (auto* ent : scene->entities) {
             if (!ent || ent->modelIndex >= meshes.size() || ent->className == "prop_water") continue;
             if (ent->transmission > 0.0f) {
-                float distSq = glm::dot(ent->origin - camPos, ent->origin - camPos);
+                // Cast the origin down to a vec3 just for the distance sorting calculation
+                glm::vec3 entPosFloat = glm::vec3(ent->origin);
+                float distSq = glm::dot(entPosFloat - camPos, entPosFloat - camPos);
                 transPairs.push_back({distSq, ent});
             } else {
                 opaqueList.push_back(ent);
@@ -3526,7 +3540,7 @@ namespace Crescendo {
             shadowPassInfo.renderArea.extent = {SHADOW_DIM, SHADOW_DIM};
             
             VkClearValue clearDepth;
-            clearDepth.depthStencil = {1.0f, 0};
+            clearDepth.depthStencil = {0.0f};
             shadowPassInfo.clearValueCount = 1;
             shadowPassInfo.pClearValues = &clearDepth;
 
@@ -3577,17 +3591,17 @@ namespace Crescendo {
 
         if (useMSAA) {
             clearValues.resize(6);
-            clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};      // 0: MSAA Color Target
-            clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      // 1: MSAA Normal Target
-            clearValues[2].depthStencil = {1.0f, 0};                         // 2: MSAA Depth Target
-            clearValues[3].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      // 3: Resolve Color
-            clearValues[4].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      // 4: Resolve Normal
-            clearValues[5].depthStencil = {1.0f, 0};                         // 5: Resolve Depth
+            clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};      
+            clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
+            clearValues[2].depthStencil = {0.0f, 0};            // <--- CHANGED TO 0.0f
+            clearValues[3].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
+            clearValues[4].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
+            clearValues[5].depthStencil = {0.0f, 0};            // <--- CHANGED TO 0.0f
         } else {
             clearValues.resize(3);
-            clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};      // 0: 1x Color Target
-            clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      // 1: 1x Normal Target
-            clearValues[2].depthStencil = {1.0f, 0};                         // 2: 1x Depth Target
+            clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};      
+            clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
+            clearValues[2].depthStencil = {0.0f, 0};            // <--- CHANGED TO 0.0f
         }
 
         viewportPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
@@ -3688,13 +3702,15 @@ namespace Crescendo {
                     if (!planet->rootNode) continue;
 
                     // 1. Cull the tree and queue up missing chunks
-                    planet->rootNode->Update(camPos - ent->origin, planet->lodSplitThreshold, planet->chunkManager.get());
+                    // Cast the planet's origin to a vec3 to find the local camera distance
+                    planet->rootNode->Update(camPos - glm::vec3(ent->origin), planet->lodSplitThreshold, planet->chunkManager.get());   
 
                     // 2. Sort the queue so chunks closest to the camera generate FIRST
                     auto& queue = planet->chunkManager->chunkQueue;
                     std::sort(queue.begin(), queue.end(), [&](Crescendo::Terrain::OctreeNode* a, Crescendo::Terrain::OctreeNode* b) {
-                        float distA = glm::length((camPos - ent->origin) - a->center);
-                        float distB = glm::length((camPos - ent->origin) - b->center);
+                        // Cast the 64-bit origin down to a 32-bit vec3 just for the distance check
+                    float distA = glm::length((camPos - glm::vec3(ent->origin)) - a->center);
+                    float distB = glm::length((camPos - glm::vec3(ent->origin)) - b->center);
                         return distA > distB; // > Descending order: Furthest at front, Closest at back
                     });
 
@@ -3829,7 +3845,8 @@ namespace Crescendo {
 
                         atmoPush.sunDirection_planetRadius = glm::vec4(sunDirection, innerRadius);
                         atmoPush.planetCenter_atmosphereRadius = glm::vec4(ent->origin, outerRadius);
-                        atmoPush.cameraPos_sunIntensity = glm::vec4(mainCamera.Position, planet->atmosphereIntensity);
+                        // Cast to vec3 before packing it into the vec4
+                        atmoPush.cameraPos_sunIntensity = glm::vec4(glm::vec3(mainCamera.Position), planet->atmosphereIntensity);
                         atmoPush.rayleigh_mie = glm::vec4(planet->rayleigh, planet->mie);
 
                         vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 

@@ -14,8 +14,8 @@ namespace Crescendo {
     class Camera {
     public:
         // Camera Attributes
-        glm::vec3 Position;
-        glm::vec3 Front;
+        glm::dvec3 Position; // <--- UPGRADED TO DOUBLE
+        glm::vec3 Front;     // (Leave vectors as floats!)
         glm::vec3 Up;
         glm::vec3 Right;
         glm::vec3 WorldUp;
@@ -36,7 +36,7 @@ namespace Crescendo {
         float farClip = 50000.0f;
 
         // Constructor
-        Camera(glm::vec3 position = glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f), float yaw = -90.0f, float pitch = 0.0f) 
+        Camera(glm::dvec3 position = glm::dvec3(0.0), glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f), float yaw = -90.0f, float pitch = 0.0f)
             : Front(glm::vec3(0.0f, 1.0f, 0.0f)), MovementSpeed(10.0f), MouseSensitivity(0.1f), Zoom(45.0f) {
             
             Position = position;
@@ -54,8 +54,8 @@ namespace Crescendo {
             Position += direction * amount;
         }
 
-        glm::vec3 GetPosition() {
-            return Position;
+        glm::vec3 GetPosition() const {
+            return glm::vec3(Position);
         }
 
         void SetRotation(const glm::vec3& rot) {
@@ -65,16 +65,14 @@ namespace Crescendo {
             UpdateCameraVectors();
         }
 
-        // Returns the view matrix calculated using Euler Angles and the LookAt Matrix
-        glm::mat4 GetViewMatrix() {
-            return glm::lookAt(Position, Position + Front, Up);
+        // 2. Mark as 'const'
+        glm::mat4 GetProjectionMatrix(float aspectRatio) const {
+            return glm::perspective(glm::radians(fov), aspectRatio, 10000000.0f, 0.1f);
         }
 
-        glm::mat4 GetProjectionMatrix(float aspectRatio) {
-            // Fixes Vulkan's inverted Y coordinate automatically
-            glm::mat4 proj = glm::perspective(glm::radians(fov), aspectRatio, nearClip, farClip);
-            proj[1][1] *= -1; 
-            return proj;
+        // 3. Mark as 'const'
+        glm::mat4 GetViewMatrix() const {
+            return glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), Front, Up);
         }
 
         struct ViewFrustum {
@@ -121,7 +119,7 @@ namespace Crescendo {
         }
         
 
-        void LookAt(glm::vec3 target) {
+        void LookAt(glm::dvec3 target) {
             glm::vec3 direction = glm::normalize(target - Position);
 
             // Calculate Pitch (Z-Up)

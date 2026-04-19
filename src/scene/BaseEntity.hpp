@@ -29,11 +29,11 @@ public:
     }
 
     glm::ivec3 sector = {0, 0, 0};
-    glm::vec3 origin = {0.0f, 0.0f, 0.0f};
+    glm::dvec3 origin = {0.0, 0.0, 0.0};       // <--- UPGRADED TO DOUBLE
     glm::vec3 angles = {0.0f, 0.0f, 0.0f};
     glm::vec3 scale  = {1.0f, 1.0f, 1.0f};
 
-    glm::vec3 savedOrigin = glm::vec3(0.0f);
+    glm::dvec3 savedOrigin = glm::dvec3(0.0);  // <--- UPGRADED TO DOUBLE
     glm::vec3 savedAngles = glm::vec3(0.0f);
     glm::vec3 savedScale = glm::vec3(1.0f);
 
@@ -132,9 +132,16 @@ public:
         return GetComponent<T>() != nullptr;
     }
 
-    glm::vec3 GetRenderPosition(glm::ivec3 cameraSector, glm::vec3 cameraOrigin) {
+    glm::vec3 GetRenderPosition(const glm::ivec3& cameraSector, const glm::dvec3& cameraOrigin) const {
+        if (sector == cameraSector) {
+            // Cast the 64-bit difference to a 32-bit vec3!
+            return glm::vec3(origin - cameraOrigin);
+        }
+
         glm::vec3 sectorDiff = glm::vec3(sector - cameraSector);
-        return (sectorDiff * SECTOR_SIZE) + (origin - cameraOrigin);
+        
+        // Cast the 64-bit difference to a 32-bit vec3 before adding it!
+        return (sectorDiff * SECTOR_SIZE) + glm::vec3(origin - cameraOrigin);
     }
 };
 }

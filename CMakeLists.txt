@@ -100,6 +100,11 @@ endif()
 
 # --- 4. Source Files ---
 file(GLOB_RECURSE ENGINE_SOURCES "src/*.cpp" "src/*.c")
+
+# --- ADD THIS LINE ---
+# Filter out the standalone tools so they don't get compiled into the engine!
+list(FILTER ENGINE_SOURCES EXCLUDE REGEX "src/tools/.*")
+
 file(GLOB_RECURSE MODULE_SOURCES "modules/gltf/*.cpp" "modules/image/*.cpp" "modules/terrain/*.cpp")
 
 # SEPARATE VULKAN AND WEBGPU BACKENDS
@@ -108,8 +113,8 @@ if (EMSCRIPTEN)
     file(GLOB_RECURSE VULKAN_FILES "src/servers/rendering/RenderingServer.cpp")
     list(REMOVE_ITEM ENGINE_SOURCES ${VULKAN_FILES})
 
-    # Remove Vulkan-coupled modules from Web build
-    file(GLOB_RECURSE VULKAN_MODULES "modules/gltf/*.cpp" "modules/image/*.cpp")
+    # Remove Vulkan-coupled modules from Web build (AssetLoader is now WebGPU safe!)
+    file(GLOB_RECURSE VULKAN_MODULES "modules/image/*.cpp")
     list(REMOVE_ITEM MODULE_SOURCES ${VULKAN_MODULES})
     
     # Compile Lua directly into the WebAssembly binary
@@ -240,3 +245,15 @@ else()
 endif()
 
 target_link_libraries(crescendo_engine PRIVATE Threads::Threads Jolt enet_static ozz_animation ozz_base)
+
+# --- Crescendo Asset Packer Tool ---
+# We ONLY build the packer as a native desktop executable, never for WebAssembly.
+if (NOT EMSCRIPTEN)
+    add_executable(CrescendoPacker src/tools/CrescendoPacker.cpp)
+    
+    # Allow the packer to find VFSFormat.hpp
+    target_include_directories(CrescendoPacker PRIVATE ${CMAKE_SOURCE_DIR}/src/IO)
+    
+    # std::filesystem requires C++17
+    target_compile_features(CrescendoPacker PRIVATE cxx_std_17)
+endif()

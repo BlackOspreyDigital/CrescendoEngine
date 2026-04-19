@@ -128,7 +128,8 @@ namespace Crescendo {
                     }
 
                     if (ent->targetName == "SpawnPoint") {
-                        spawnLocation = ent->origin + glm::vec3(0, 0, 1.0f); 
+                        // Change the vector to a dvec3 so both sides of the + are 64-bit doubles!
+                        spawnLocation = ent->origin + glm::dvec3(0.0, 0.0, 1.0);
                         ent->scale = glm::vec3(0.0f); 
                     }
                 }
@@ -140,7 +141,7 @@ namespace Crescendo {
             size_t priorCount = scene.entities.size();
             
             #ifndef __EMSCRIPTEN__
-            Crescendo::AssetLoader::loadModel(static_cast<RenderingServer*>(renderer.get()), "assets/systemsymbols/defaultplayer.glb", &scene);
+            // Crescendo::AssetLoader::loadModel(static_cast<RenderingServer*>(renderer.get()), "assets/systemsymbols/defaultplayer.glb", &scene);
             #else
                 printf("WebAssembly build: Skipping Vulkan AssetLoader.\n");
             #endif
@@ -227,7 +228,8 @@ namespace Crescendo {
             }
         }
 
-        audioServer.UpdateListener(cam.Position, cam.Front, cam.Up);
+        // Cast the camera's 64-bit position to a 32-bit float for the audio engine
+        audioServer.UpdateListener(glm::vec3(cam.Position), cam.Front, cam.Up);
     }
 
     void Engine::Render() {

@@ -1,6 +1,11 @@
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
-// STB_IMAGE_IMPLEMENTATION is already defined in RenderingServer.cpp, so we omit it here
+
+#ifdef __EMSCRIPTEN__
+    // RenderingServer.cpp is stripped from the Web build, so we MUST define stb_image here!
+    #define STB_IMAGE_IMPLEMENTATION
+#endif
+// In Desktop builds, RenderingServer.cpp defines STB_IMAGE_IMPLEMENTATION to avoid duplicate symbols.
 
 #include "AssetLoader.hpp"
 #include "servers/physics/PhysicsServer.hpp"
@@ -203,8 +208,8 @@ namespace Crescendo {
                 MeshResource newMesh{};
                 newMesh.name = meshKey;
                 newMesh.indexCount = static_cast<uint32_t>(indices.size());
-                // newMesh.vertexBuffer = backend->createVertexBuffer(vertices);
-                // newMesh.indexBuffer = backend->createIndexBuffer(indices);
+                newMesh.vertexBuffer = backend->createVertexBuffer(vertices);
+                newMesh.indexBuffer = backend->createIndexBuffer(indices);
 
                 size_t globalIndex = backend->meshes.size();
                 backend->meshes.push_back(std::move(newMesh));
@@ -264,27 +269,44 @@ namespace Crescendo {
         if (parent) {
             newEnt->moveParent = parent;
             parent->children.push_back(newEnt);
-            newEnt->origin = parent->origin; 
         }
 
-        glm::vec3 translation(0.0f);
-        glm::quat rotation = glm::identity<glm::quat>();
-        glm::vec3 scale(1.0f);
+        // --- 1. EXTRACT LOCAL MATRIX & CALCULATE WORLD MATRIX ---
+        glm::vec3 localTrans(0.0f);
+        glm::quat localRot = glm::identity<glm::quat>();
+        glm::vec3 localScale(1.0f);
+        glm::mat4 localMatrix(1.0f);
 
         if (node.matrix.size() == 16) {
-            glm::mat4 mat = glm::make_mat4(node.matrix.data());
-            glm::vec3 skew;
-            glm::vec4 perspective;
-            glm::decompose(mat, scale, rotation, translation, skew, perspective);
+            for (int i = 0; i < 16; ++i) {
+                localMatrix[i / 4][i % 4] = static_cast<float>(node.matrix[i]);
+            }
         } else {
-            if (node.translation.size() == 3) translation = glm::vec3(node.translation[0], node.translation[1], node.translation[2]);
-            if (node.rotation.size() == 4) rotation = glm::quat((float)node.rotation[3], (float)node.rotation[0], (float)node.rotation[1], (float)node.rotation[2]);
-            if (node.scale.size() == 3) scale = glm::vec3(node.scale[0], node.scale[1], node.scale[2]);
+            if (node.translation.size() == 3) localTrans = glm::vec3(node.translation[0], node.translation[1], node.translation[2]);
+            if (node.rotation.size() == 4) localRot = glm::quat((float)node.rotation[3], (float)node.rotation[0], (float)node.rotation[1], (float)node.rotation[2]);
+            if (node.scale.size() == 3) localScale = glm::vec3(node.scale[0], node.scale[1], node.scale[2]);
+            
+            // Build local matrix from components
+            glm::mat4 tMat = glm::translate(glm::mat4(1.0f), localTrans);
+            glm::mat4 rMat = glm::mat4_cast(localRot);
+            glm::mat4 sMat = glm::scale(glm::mat4(1.0f), localScale);
+            localMatrix = tMat * rMat * sMat;
         }
 
-        newEnt->origin += translation;
-        newEnt->scale = scale;
-        newEnt->angles = glm::degrees(glm::eulerAngles(rotation)); 
+        // Accumulate parent transforms to get Absolute World Matrix
+        glm::mat4 worldMatrix = parentMatrix * localMatrix;
+
+        // --- 2. DECOMPOSE WORLD MATRIX FOR ENGINE PROPERTIES ---
+        glm::vec3 wScale;
+        glm::quat wRot;
+        glm::vec3 wTrans;
+        glm::vec3 wSkew;
+        glm::vec4 wPersp;
+        glm::decompose(worldMatrix, wScale, wRot, wTrans, wSkew, wPersp);
+
+        newEnt->origin = wTrans;
+        newEnt->scale = wScale;
+        newEnt->angles = glm::degrees(glm::eulerAngles(wRot)); 
 
         if (node.mesh > -1) {
             const tinygltf::Mesh& mesh = model.meshes[node.mesh];
@@ -296,9 +318,10 @@ namespace Crescendo {
                 if (i > 0) {
                     targetEnt->moveParent = newEnt;
                     newEnt->children.push_back(targetEnt);
-                    targetEnt->origin = newEnt->origin; 
-                    targetEnt->angles = newEnt->angles;
-                    targetEnt->scale = newEnt->scale;
+                    // Local transform relative to parent is zeroed out
+                    targetEnt->origin = glm::vec3(0.0f);
+                    targetEnt->angles = glm::vec3(0.0f);
+                    targetEnt->scale = glm::vec3(1.0f);
                 }
 
                 if (primitive.material >= 0) {
@@ -379,7 +402,6 @@ namespace Crescendo {
                 
                 std::string meshKey = normalizePath(baseDir) + "_mesh_" + std::to_string(node.mesh) + "_" + std::to_string(i); 
 
-                // --- CLANGD CRASH FIX: Properly balance preprocessor brackets ---
                 bool hasMeshReady = false;
 
 #ifndef __EMSCRIPTEN__
@@ -394,21 +416,21 @@ namespace Crescendo {
                 hasMeshReady = true;
 #endif
                 
-                // Now run the physics collider generation safely outside the macros
                 if (hasMeshReady && scene->physics && rawMeshes.find(meshKey) != rawMeshes.end()) {
                     scene->physics->CreateMeshCollider(
                         targetEnt->index, 
                         rawMeshes[meshKey].first, 
                         rawMeshes[meshKey].second, 
-                        targetEnt->origin, 
-                        targetEnt->scale
+                        newEnt->origin, // <-- Forced absolute world origin for physics
+                        newEnt->scale   // <-- Forced absolute world scale for physics
                     );
                 }
             }
         }
 
+        // --- 3. RECURSIVELY PASS WORLD MATRIX TO CHILDREN ---
         for (int childId : node.children) {
-            processGLTFNode(renderer, model, model.nodes[childId], newEnt, baseDir, filePath, scene, glm::mat4(1.0f), rawMeshes);
+            processGLTFNode(renderer, model, model.nodes[childId], newEnt, baseDir, filePath, scene, worldMatrix, rawMeshes);
         }
     }
 }
