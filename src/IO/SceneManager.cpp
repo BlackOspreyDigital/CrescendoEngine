@@ -84,7 +84,7 @@ void SceneManager::InstantiatePrefab(std::shared_ptr<Scene> prefabScene, const g
     // and duplicate them into the activeScene, applying the position offset.
     for (const auto& entity : prefabScene->entities) {
         CBaseEntity* newEnt = activeScene->CreateEntity(entity->targetName);
-        newEnt->origin = entity->origin + position;
+        newEnt->origin = entity->origin + glm::dvec3(position);
         newEnt->angles = entity->angles;
         newEnt->scale = entity->scale;
         

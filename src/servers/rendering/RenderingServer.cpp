@@ -3514,7 +3514,7 @@ namespace Crescendo {
         for (auto* ent : scene->entities) {
             if (!ent || ent->modelIndex >= meshes.size() || ent->className == "prop_water") continue;
             if (ent->transmission > 0.0f) {
-                // Cast the origin down to a vec3 just for the distance sorting calculation
+                // Cast the entity origin down to a 32-bit float just for the distance check
                 glm::vec3 entPosFloat = glm::vec3(ent->origin);
                 float distSq = glm::dot(entPosFloat - camPos, entPosFloat - camPos);
                 transPairs.push_back({distSq, ent});
@@ -3593,15 +3593,15 @@ namespace Crescendo {
             clearValues.resize(6);
             clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};      
             clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
-            clearValues[2].depthStencil = {0.0f, 0};            // <--- CHANGED TO 0.0f
+            clearValues[2].depthStencil = {0.0f, 0};            
             clearValues[3].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
             clearValues[4].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
-            clearValues[5].depthStencil = {0.0f, 0};            // <--- CHANGED TO 0.0f
+            clearValues[5].depthStencil = {0.0f, 0};            
         } else {
             clearValues.resize(3);
             clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};      
             clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
-            clearValues[2].depthStencil = {0.0f, 0};            // <--- CHANGED TO 0.0f
+            clearValues[2].depthStencil = {0.0f, 0};            
         }
 
         viewportPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
@@ -3702,8 +3702,8 @@ namespace Crescendo {
                     if (!planet->rootNode) continue;
 
                     // 1. Cull the tree and queue up missing chunks
-                    // Cast the planet's origin to a vec3 to find the local camera distance
-                    planet->rootNode->Update(camPos - glm::vec3(ent->origin), planet->lodSplitThreshold, planet->chunkManager.get());   
+                    // Wrap ent->origin in a glm::vec3 cast!
+                    planet->rootNode->Update(camPos - glm::vec3(ent->origin), planet->lodSplitThreshold, planet->chunkManager.get());
 
                     // 2. Sort the queue so chunks closest to the camera generate FIRST
                     auto& queue = planet->chunkManager->chunkQueue;

@@ -149,6 +149,8 @@ namespace Crescendo {
 
     EditorUI::~EditorUI() {}
 
+    
+    // Move this to its own respected config file to unclutter editor ui.
     void EditorUI::SetCrescendoEditorStyle() {
         ImGuiStyle& style = ImGui::GetStyle();
         ImVec4* colors = style.Colors;
@@ -209,7 +211,6 @@ namespace Crescendo {
         g_ConsoleStream = new ConsoleOutStream(g_OriginalCount);
         std::cout.rdbuf(g_ConsoleStream);
 
-        // 1. Create Descriptor Pool
         VkDescriptorPoolSize pool_sizes[] = {
             { VK_DESCRIPTOR_TYPE_SAMPLER, 1000 },
             { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
@@ -258,7 +259,6 @@ namespace Crescendo {
         init_info.Allocator = nullptr;
         init_info.CheckVkResultFn = check_vk_result;
 
-        // [FIX] Use the PipelineInfoMain struct required by your header
         init_info.PipelineInfoMain.RenderPass = renderPass; 
         init_info.PipelineInfoMain.Subpass = 0;
         init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT; 
@@ -376,7 +376,7 @@ namespace Crescendo {
             }
         }
 
-        // --- CTRL+A ADD MENU ---
+        // CTRL + A Add Menu
         if (ImGui::IsKeyDown(ImGuiKey_LeftCtrl) && ImGui::IsKeyPressed(ImGuiKey_A)) {
             ImGui::OpenPopup("AddEntityPopup");
         }
@@ -388,7 +388,7 @@ namespace Crescendo {
             if (ImGui::MenuItem("Empty Prop")) {
                 CBaseEntity* ent = scene->CreateEntity("prop_dynamic");
                 ent->targetName = "New Prop";
-                ent->origin = camera.Position + camera.Front * 5.0f; 
+                ent->origin = camera.Position + glm::dvec3(camera.Front * 5.0f);
                 
                 // Auto-attach core components
                 ent->AddComponent<TransformComponent>();
@@ -400,7 +400,7 @@ namespace Crescendo {
             if (ImGui::MenuItem("Procedural Planet")) {
                 CBaseEntity* planet = scene->CreateEntity("prop_dynamic");
                 planet->targetName = "Voxel Planet";
-                planet->origin = camera.Position + (camera.Front * 5000.0f); // Push it FAR away!
+                planet->origin = camera.Position + glm::dvec3(camera.Front * 5000.0f);
 
                 planet->AddComponent<TransformComponent>();
                 planet->AddComponent<MeshRendererComponent>();
@@ -458,7 +458,6 @@ namespace Crescendo {
                 // (If your planet entity is named something other than 'newEnt', change it here!)
                 ocean->origin = planet->origin;
                 
-                // Now that the ocean exists AND the mesh exists, we can link them!
                 ocean->modelIndex = waterMeshID;
                 planet->modelIndex = -1; 
                 planet->albedoColor = glm::vec3(0.2f, 0.6f, 0.3f); 
@@ -477,7 +476,7 @@ namespace Crescendo {
             if (ImGui::MenuItem("Point Light")) {
                 CBaseEntity* point = scene->CreateEntity("light_point");
                 point->targetName = "Point Light";
-                point->origin = camera.Position + camera.Front * 5.0f;                  // Spawn in front of you
+                point->origin = camera.Position + glm::dvec3(camera.Front * 5.0f);
                 point->albedoColor = glm::vec3(1.0f, 0.4f, 0.1f);               // Warm fire orange
                 point->emission = 25.0f;  // Intensity
                 point->scale.x = 15.0f;   // RADIUS: How far the light reaches!
@@ -508,7 +507,7 @@ namespace Crescendo {
                     CBaseEntity* spawner = scene->entities[priorCount];
 
                     spawner->targetName = "SpawnPoint";
-                    spawner->origin = camera.Position + camera.Front * 5.0f;
+                    spawner->origin = camera.Position + glm::dvec3(camera.Front * 5.0f);
 
                     selectedObjectIndex = priorCount; // Auto-select in inspector
                 }
@@ -528,8 +527,6 @@ namespace Crescendo {
             
             ImGui::EndPopup();
         }
-
-        
 
         // 2. DOCKSPACE & MENU
         ImGuiID dockSpaceId = ImGui::GetID("MainDockSpace");
@@ -789,19 +786,22 @@ namespace Crescendo {
                 if (ent) {
                     
                     glm::mat4 model = glm::mat4(1.0f);
-                    model = glm::translate(model, ent->origin);
+                    // Cast down to vec3 for the Gizmo matrix
+                    model = glm::translate(model, glm::vec3(ent->origin));
                     model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0, 0, 1));
                     model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0, 1, 0));
                     model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1, 0, 0));
                     model = glm::scale(model, ent->scale);
-
+                                    
                     ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), 
                                          mCurrentGizmoOperation, mCurrentGizmoMode, glm::value_ptr(model));
-
+                                    
                     if (ImGuizmo::IsUsing()) {
                         float newTranslation[3], newRotation[3], newScale[3];
                         ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(model), newTranslation, newRotation, newScale);
-                        ent->origin = glm::make_vec3(newTranslation);
+                        
+                        // Cast the float array back into a dvec3
+                        ent->origin = glm::dvec3(newTranslation[0], newTranslation[1], newTranslation[2]);
                         ent->angles = glm::make_vec3(newRotation);
                         ent->scale  = glm::make_vec3(newScale);
                     }
@@ -822,7 +822,7 @@ namespace Crescendo {
                     if (scene->entities.size() > priorCount) {
                         selectedObjectIndex = scene->entities.size() - 1;
                         // Place it in front of the camera
-                        scene->entities[selectedObjectIndex]->origin = camera.Position + (camera.Front * 5.0f);
+                        scene->entities[selectedObjectIndex]->origin = camera.Position + glm::dvec3(camera.Front * 5.0f);
                     }
                 }
             }

@@ -84,7 +84,7 @@ namespace Crescendo {
                 entities.erase(entities.begin() + index); 
 
                 // Re-sync
-                for (int i = 0; i < entities.size(); i++) {
+                for (size_t i = 0; i < entities.size(); i++) {
                     entities[i]->index = i;
                 }
             }
