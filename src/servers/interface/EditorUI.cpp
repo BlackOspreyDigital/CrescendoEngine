@@ -442,10 +442,8 @@ namespace Crescendo {
                 std::vector<Vertex> waterVerts;
                 std::vector<uint32_t> waterIndices;
                 
-                // THE FIX: Generate a radius of 1.0 so the Entity scale applies correctly!
                 Crescendo::Terrain::VoxelGenerator::GenerateWaterSphere(1.0f, 64, 64, waterVerts, waterIndices);
 
-                // Upload to GPU and get the ID
                 int waterMeshID = sceneManager->GetRenderer()->acquireMesh("PROCEDURAL", "Ocean", waterVerts, waterIndices);
 
                 // ==========================================
@@ -778,8 +776,9 @@ namespace Crescendo {
             glm::mat4 view = camera.GetViewMatrix();
             float aspect = viewportSize.x / viewportSize.y;
             
-            // Generate the raw OpenGL-style projection matrix
-            glm::mat4 proj = glm::perspective(glm::radians(camera.fov), aspect, camera.nearClip, camera.farClip);
+            // THE FIX: (Reverse-Z)
+            glm::mat4 proj = glm::perspective(glm::radians(camera.fov), aspect, camera.farClip, camera.nearClip);
+            
                 
             if (selectedObjectIndex >= 0 && selectedObjectIndex < (int)scene->entities.size()) {
                 CBaseEntity* ent = scene->entities[selectedObjectIndex];
@@ -792,14 +791,14 @@ namespace Crescendo {
                     model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0, 1, 0));
                     model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1, 0, 0));
                     model = glm::scale(model, ent->scale);
-                                    
+
                     ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), 
                                          mCurrentGizmoOperation, mCurrentGizmoMode, glm::value_ptr(model));
-                                    
+
                     if (ImGuizmo::IsUsing()) {
                         float newTranslation[3], newRotation[3], newScale[3];
                         ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(model), newTranslation, newRotation, newScale);
-                        
+
                         // Cast the float array back into a dvec3
                         ent->origin = glm::dvec3(newTranslation[0], newTranslation[1], newTranslation[2]);
                         ent->angles = glm::make_vec3(newRotation);
@@ -834,8 +833,6 @@ namespace Crescendo {
         ImGui::PopStyleColor();
 
         // --- 4. HIERARCHY & INSPECTOR ---
-
-        
         
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
         ImGui::Begin("Scene Hierarchy");

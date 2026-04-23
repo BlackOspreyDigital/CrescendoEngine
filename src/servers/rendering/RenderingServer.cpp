@@ -465,7 +465,7 @@ namespace Crescendo {
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
         samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE; // Outside shadow map = lit
         samplerInfo.compareEnable = VK_TRUE; 
-        samplerInfo.compareOp = VK_COMPARE_OP_LESS; // Hardware PCF
+        samplerInfo.compareOp = VK_COMPARE_OP_GREATER; // Was LESS
         
         vkCreateSampler(device, &samplerInfo, nullptr, &shadowSampler);
 
@@ -622,7 +622,8 @@ namespace Crescendo {
             minZ -= 2000.0f;
             maxZ += 2000.0f;
             
-            glm::mat4 lightProj = glm::ortho(minX, maxX, minY, maxY, minZ, maxZ);
+            // Was: glm::ortho(minX, maxX, minY, maxY, minZ, maxZ);
+            glm::mat4 lightProj = glm::ortho(minX, maxX, minY, maxY, maxZ, minZ);
 
             globalData.lightSpaceMatrices[i] = lightProj * lightView;
         }
@@ -1406,7 +1407,7 @@ namespace Crescendo {
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depthStencil.depthTestEnable = VK_TRUE; 
         depthStencil.depthWriteEnable = VK_FALSE; 
-        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER; // changed from less
+        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL; // Was LESS_OR_EQUAL
 
         // Infinity sky trick
         depthStencil.depthBoundsTestEnable = VK_FALSE;
@@ -1598,8 +1599,8 @@ namespace Crescendo {
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depthStencil.depthTestEnable = VK_TRUE;
-        depthStencil.depthWriteEnable = VK_TRUE;
-        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+        depthStencil.depthWriteEnable = VK_FALSE;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL; // Was LESS_OR_EQUAL
 
         VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
         
@@ -1708,7 +1709,7 @@ namespace Crescendo {
         VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         depthStencil.depthTestEnable = VK_TRUE; 
         depthStencil.depthWriteEnable = VK_TRUE; 
-        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER; // changed from less
+        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL; // Was LESS_OR_EQUAL
 
         // --- 5. COLOR BLENDING ---
         VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
@@ -2100,7 +2101,7 @@ namespace Crescendo {
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depthStencil.depthTestEnable = VK_TRUE;
         depthStencil.depthWriteEnable = VK_TRUE;
-        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL; // Was LESS_OR_EQUAL
         
         std::vector<VkDynamicState> dynamicStates = {
             VK_DYNAMIC_STATE_VIEWPORT,
@@ -2736,7 +2737,7 @@ namespace Crescendo {
         VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         depthStencil.depthTestEnable = VK_FALSE; 
         depthStencil.depthWriteEnable = VK_FALSE; // No need to write depth for lines
-        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL; // Was LESS_OR_EQUAL
 
         VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
         colorBlendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -3440,7 +3441,8 @@ namespace Crescendo {
         
         // <--- 3. STRIP TRANSLATION SO CAMERA IS AT (0,0,0) IN RENDER SPACE --->
         glm::mat4 view = mainCamera.GetViewMatrix();
-        glm::mat4 proj = mainCamera.GetProjectionMatrix(aspectRatio);
+        glm::mat4 proj = glm::perspective(glm::radians(mainCamera.fov), aspectRatio, mainCamera.farClip, mainCamera.nearClip);
+        proj[1][1] *= -1.0f; // The Vulkan Y-flip
         
         glm::mat4 vp = proj * view;
 
@@ -3591,7 +3593,8 @@ namespace Crescendo {
 
         if (useMSAA) {
             clearValues.resize(6);
-            clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};      
+            // Changed from 0.1f to 0.0f
+            clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};      
             clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
             clearValues[2].depthStencil = {0.0f, 0};            
             clearValues[3].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
@@ -3599,7 +3602,8 @@ namespace Crescendo {
             clearValues[5].depthStencil = {0.0f, 0};            
         } else {
             clearValues.resize(3);
-            clearValues[0].color = {{0.1f, 0.1f, 0.1f, 1.0f}};      
+            // Changed from 0.1f to 0.0f
+            clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};      
             clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
             clearValues[2].depthStencil = {0.0f, 0};            
         }
@@ -3614,13 +3618,13 @@ namespace Crescendo {
             VkRect2D scissor{{0, 0}, swapChainExtent};
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
     
-            // -----------------------------------------------------------------
-            // DRAW SKYBOX
+           // -----------------------------------------------------------------
+            // DRAW SKYBOX (SIM SCALE DEEP SPACE)
             // -----------------------------------------------------------------
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
             {
-                // 1. The new 112-Byte struct (Perfectly aligned with vec4, no padding needed!)
+                // 1. The 112-Byte struct
                 struct SkyboxPush {
                     glm::mat4 invViewProj;  // 64 bytes
                     glm::vec4 sunDirection; // 16 bytes (xyz = dir, w = intensity)
@@ -3631,24 +3635,14 @@ namespace Crescendo {
                 glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view));
                 skyPush.invViewProj = glm::inverse(proj * viewNoTrans);
 
-                // 2. Set beautiful Deep Space defaults
+                // 2. True Deep Space 
                 glm::vec3 sunDir = scene->environment.sunDirection;
                 float sunIntensity = 20.0f; 
-                glm::vec3 zenith = glm::vec3(0.01f, 0.01f, 0.02f); // Pitch black/blue space
-                glm::vec3 horizon = glm::vec3(0.05f, 0.10f, 0.20f); // Faint background glow
-
-                // (Optional) Dynamically pull colors from your Editor UI if the entity exists!
-                for (auto* ent : scene->entities) {
-                    if (ent && ent->targetName == "Procedural Sky") {
-                        zenith = ent->albedoColor;
-                        
-                        // --- THE FIX: Add the Horizon color sync! ---
-                        horizon = ent->attenuationColor; 
-                        
-                        sunIntensity = ent->emission;
-                        break;
-                    }
-                }
+                
+                // Pitch black void. The ONLY blue you will ever see now comes 
+                // mathematically from the Rayleigh scattering of your planets!
+                glm::vec3 zenith = glm::vec3(0.0f, 0.0f, 0.0f);  
+                glm::vec3 horizon = glm::vec3(0.0f, 0.0f, 0.005f); // Tiny baseline so stars still render
 
                 // 3. Pack everything into the struct
                 skyPush.sunDirection = glm::vec4(sunDir, sunIntensity);
@@ -3838,15 +3832,22 @@ namespace Crescendo {
                         
                         AtmospherePush atmoPush{};
                         atmoPush.vp = proj * view; 
-                        // W components act as the Floor and Ceiling for the raymarcher
-                        // Calculate explicit inner and outer bounds
+                        
                         float innerRadius = planet->settings.radius + planet->atmosphereFloor;
                         float outerRadius = planet->settings.radius * planet->atmosphereCeiling;
 
+                        // 1. THE RTE MATH: Subtract the 64-bit camera position from the 64-bit planet origin, 
+                        // THEN cast the small difference to a 32-bit float.
+                        glm::vec3 relativePlanetCenter = glm::vec3(ent->origin - mainCamera.Position);
+
                         atmoPush.sunDirection_planetRadius = glm::vec4(sunDirection, innerRadius);
-                        atmoPush.planetCenter_atmosphereRadius = glm::vec4(ent->origin, outerRadius);
-                        // Cast to vec3 before packing it into the vec4
-                        atmoPush.cameraPos_sunIntensity = glm::vec4(glm::vec3(mainCamera.Position), planet->atmosphereIntensity);
+                        
+                        // 2. Pass the camera-relative position to the shader
+                        atmoPush.planetCenter_atmosphereRadius = glm::vec4(relativePlanetCenter, outerRadius);
+                        
+                        // 3. Because the universe moves around the camera, the camera is ALWAYS at zero in the shader!
+                        atmoPush.cameraPos_sunIntensity = glm::vec4(0.0f, 0.0f, 0.0f, planet->atmosphereIntensity);
+                        
                         atmoPush.rayleigh_mie = glm::vec4(planet->rayleigh, planet->mie);
 
                         vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
