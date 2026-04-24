@@ -463,9 +463,10 @@ namespace Crescendo {
         samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
         samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-        samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE; // Outside shadow map = lit
+        // Reversed-Z: Black (0.0) is now the infinite far plane!
+        samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK; 
         samplerInfo.compareEnable = VK_TRUE; 
-        samplerInfo.compareOp = VK_COMPARE_OP_GREATER; // Was LESS
+        samplerInfo.compareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
         
         vkCreateSampler(device, &samplerInfo, nullptr, &shadowSampler);
 
@@ -1824,7 +1825,8 @@ namespace Crescendo {
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depthStencil.depthTestEnable = VK_TRUE; 
         depthStencil.depthWriteEnable = VK_FALSE; 
-        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS;
+        // THE FIX: Reversed-Z comparison
+        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
 
        VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
         
@@ -1921,7 +1923,8 @@ namespace Crescendo {
         VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         depthStencil.depthTestEnable = VK_TRUE; 
         depthStencil.depthWriteEnable = VK_FALSE; 
-        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        // THE FIX: Reversed-Z comparison
+        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
 
         // 4. THE BLENDING: Pure Additive Blending (One + One)
         VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
@@ -3492,11 +3495,16 @@ namespace Crescendo {
         globalData.groundColor = glm::vec4(scene->environment.groundColor, 1.0f);
         
         // --- EXTRACT POINT LIGHTS ---
-        globalData.pointLightParams.x = 0; // Reset count
+        globalData.pointLightParams.x = 0; 
+        
         for (auto* ent : scene->entities) {
             if (ent && ent->className == "light_point" && globalData.pointLightParams.x < 16) {
-                int idx = globalData.pointLightParams.x; // Current array index
-                globalData.pointLights[idx].positionAndRadius = glm::vec4(ent->origin, ent->scale.x);
+                int idx = globalData.pointLightParams.x; 
+                
+                // [THE FIX] Subtract the camera to put the light in Relative Render Space!
+                glm::vec3 relativeLightPos = glm::vec3(ent->origin - cameraWorldPos);
+                
+                globalData.pointLights[idx].positionAndRadius = glm::vec4(relativeLightPos, ent->scale.x);
                 globalData.pointLights[idx].colorAndIntensity = glm::vec4(ent->albedoColor, ent->emission);
                 globalData.pointLightParams.x++;
             }
@@ -3554,10 +3562,9 @@ namespace Crescendo {
             VkRect2D scissor{{0, 0}, {SHADOW_DIM, SHADOW_DIM}};
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
 
-            // Lower the multiplier so the UI sliders don't rip the shadows off the models
+            // INVERT THE BIAS FOR REVERSED Z!
             float scaledConstantBias = scene->environment.shadowBiasConstant * 100.0f;
-            
-            vkCmdSetDepthBias(commandBuffers[currentFrame], scaledConstantBias, 0.0f, scene->environment.shadowBiasSlope);
+            vkCmdSetDepthBias(commandBuffers[currentFrame], -scaledConstantBias, 0.0f, -scene->environment.shadowBiasSlope);
 
             // Draw all OPAQUE entities into the shadow map
             for (auto* ent : opaqueList) {
@@ -3840,7 +3847,8 @@ namespace Crescendo {
                         // THEN cast the small difference to a 32-bit float.
                         glm::vec3 relativePlanetCenter = glm::vec3(ent->origin - mainCamera.Position);
 
-                        atmoPush.sunDirection_planetRadius = glm::vec4(sunDirection, innerRadius);
+                        // The minus sign flips the vector so the raymarcher shoots TOWARDS the sun!
+                        atmoPush.sunDirection_planetRadius = glm::vec4(-sunDirection, innerRadius);
                         
                         // 2. Pass the camera-relative position to the shader
                         atmoPush.planetCenter_atmosphereRadius = glm::vec4(relativePlanetCenter, outerRadius);
