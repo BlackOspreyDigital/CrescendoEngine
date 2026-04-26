@@ -1006,16 +1006,12 @@ namespace Crescendo {
                     ImGui::PopID();
                 }
                 
+                
                 // Atmosphere & Skybox
                 if (ent->className == "env_sky") {
                     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
                     if (ImGui::CollapsingHeader("Atmosphere (Skybox)", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed)) {
-                        const char* skyTypeNames[] = { "Solid Color", "Procedural", "HDR Map" };
-                        int currentSkyType = static_cast<int>(scene->environment.skyType);
-                        
-                        if (ImGui::Combo("Sky Type", &currentSkyType, skyTypeNames, IM_ARRAYSIZE(skyTypeNames))) {
-                            scene->environment.skyType = static_cast<SkyType>(currentSkyType);
-                        }
+                        // ... (SkyType Combo Box) ...
 
                         if (scene->environment.skyType == SkyType::SolidColor) {
                             ImGui::ColorEdit3("Background Color", glm::value_ptr(ent->albedoColor));
@@ -1035,6 +1031,10 @@ namespace Crescendo {
                         }
                         
                         ImGui::Separator();
+                        
+                        // THE FIX: Inject the Global Ambient Control right below the sky settings!
+                        ImGui::SliderFloat("Ambient HDR Bounce", &scene->environment.ambientIntensity, 0.0f, 2.0f, "%.2f");
+
                         ImGui::Checkbox("Enable Fog", &scene->environment.enableFog);
                         if (scene->environment.enableFog) {
                             ImGui::ColorEdit4("Color/Density", glm::value_ptr(scene->environment.fogColor));

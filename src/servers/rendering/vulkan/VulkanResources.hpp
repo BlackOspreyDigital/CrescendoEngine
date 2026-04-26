@@ -131,7 +131,7 @@ namespace Crescendo {
         VulkanImage(VulkanImage&& other) noexcept { *this = std::move(other); }
         VulkanImage& operator=(VulkanImage&& other) noexcept {
             if (this != &other) {
-                destroy();
+                destroy(); // current resource
                 handle = other.handle;
                 allocation = other.allocation;
                 view = other.view;
@@ -141,12 +141,15 @@ namespace Crescendo {
                 other.handle = VK_NULL_HANDLE;
                 other.allocation = VK_NULL_HANDLE;
                 other.view = VK_NULL_HANDLE;
+                other.allocator = nullptr;
+                other.device = VK_NULL_HANDLE;
             }
             return *this;
         }
 
         void destroy() {
-            if (view != VK_NULL_HANDLE) {
+            // Only attempt destruction if both the view and the device are valid
+            if (view != VK_NULL_HANDLE && device != VK_NULL_HANDLE) {
                 vkDestroyImageView(device, view, nullptr);
                 view = VK_NULL_HANDLE;
             }
@@ -155,6 +158,9 @@ namespace Crescendo {
                 handle = VK_NULL_HANDLE;
                 allocation = VK_NULL_HANDLE;
             }
+            // Set these to null so the destructor knows we are already dead
+            device = VK_NULL_HANDLE;
+            allocator = nullptr;
         }
     };
 }

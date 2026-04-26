@@ -125,11 +125,16 @@ namespace Crescendo {
         // ---------------------------------------------------------
         // 2. FIRE THE LASER (Bake the Cubemap so skyImage exists!)
         // ---------------------------------------------------------
-        TextureResource skyCubemap = generateCubemapFromHDR("assets/hdr/sky_cloudy2.hdr");
+
+        // Default HDR is a 1x1 pitch-black dummy cubemap to satisfy vulkan descriptor requirements
+        // 6 faces * 1 pixel per face * 4 channels (R16G16B16A16) = 48 bytes ( low impact on vram compared to heavy HDR )
+        uint8_t dummyPixels[48] = {0}; 
+        TextureResource skyCubemap = UploadCubemap(dummyPixels, sizeof(dummyPixels), 1, 1, 1);
+        
         if (skyCubemap.image.handle != VK_NULL_HANDLE) {
              skyImage = std::move(skyCubemap.image);
         } else {
-             std::cerr << "[Fatal] Engine could not generate sky cubemap!" << std::endl;
+             std::cerr << "[Fatal] Engine could not generate dummy sky cubemap!" << std::endl;
              return false;
         }
 
@@ -488,7 +493,6 @@ namespace Crescendo {
         subpass.pDepthStencilAttachment = &depthRef;
 
         // Synchronization Dependencies
-        // [FIX] Zero-initialize the array to prevent garbage flags
         std::array<VkSubpassDependency, 2> dependencies = {};
 
         dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
@@ -584,7 +588,6 @@ namespace Crescendo {
             }
             center /= frustumCorners.size();
 
-            // --- THE FIX ---
             // 1. Provide a safe "Up" vector so lookAt doesn't flip out when the sun is straight up
             glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f);
             if (std::abs(lightDir.z) > 0.999f) {
@@ -2104,7 +2107,9 @@ namespace Crescendo {
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depthStencil.depthTestEnable = VK_TRUE;
         depthStencil.depthWriteEnable = VK_TRUE;
-        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL; // Was LESS_OR_EQUAL
+        // THE FIX: Standard linear math for Orthographic shadow maps!
+        // I think this probably needs to be non linear but what the fuck do i know
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
         
         std::vector<VkDynamicState> dynamicStates = {
             VK_DYNAMIC_STATE_VIEWPORT,
@@ -3442,15 +3447,19 @@ namespace Crescendo {
         glm::vec2 viewportSize = editorUI.GetViewportSize();
         if (viewportSize.x > 0 && viewportSize.y > 0) aspectRatio = viewportSize.x / viewportSize.y;
         
-        // <--- 3. STRIP TRANSLATION SO CAMERA IS AT (0,0,0) IN RENDER SPACE --->
+        // <--- 1. STRIP TRANSLATION SO CAMERA IS AT (0,0,0) IN RENDER SPACE --->
         glm::mat4 view = mainCamera.GetViewMatrix();
+        
+        // THE FIX: Extract only the 3x3 rotation matrix, then expand it back to 4x4
+        glm::mat4 viewNoTranslation = glm::mat4(glm::mat3(view)); 
+        
         glm::mat4 proj = glm::perspective(glm::radians(mainCamera.fov), aspectRatio, mainCamera.farClip, mainCamera.nearClip);
         proj[1][1] *= -1.0f; // The Vulkan Y-flip
         
-        glm::mat4 vp = proj * view;
+        // THE FIX: Multiply Projection by the Rotation-Only View!
+        glm::mat4 vp = proj * viewNoTranslation; 
 
         // 2. Sun Logic (Grab defaults from EditorUI/Scene Environment)
-        // strip this for the new refactor 
         glm::vec3 sunDirection = glm::normalize(scene->environment.sunDirection);
         glm::vec3 sunColor = scene->environment.sunColor;
         float sunIntensity = scene->environment.sunIntensity;
@@ -3464,7 +3473,11 @@ namespace Crescendo {
                 
                 // Update Sun from this entity's rotation
                 glm::mat4 rotMat = glm::mat4_cast(glm::quat(glm::radians(ent->angles)));
-                sunDirection = glm::normalize(glm::vec3(rotMat * glm::vec4(0, 0, 1, 0)));
+                
+                // THE FIX: DO NOT redeclare the variable. Just assign it!
+                // Also, ensure we are using the correct UP vector!
+                sunDirection = glm::normalize(glm::vec3(rotMat * glm::vec4(0.5f, 0.5f, 1.0f, 0.0f)));
+                
                 scene->environment.sunDirection = sunDirection; 
                 break;
             }
@@ -3483,9 +3496,19 @@ namespace Crescendo {
         // Now the sliders will perfectly push into the shader!
         globalData.sunDirection = glm::vec4(sunDirection, sunIntensity);
         globalData.sunColor = glm::vec4(sunColor, 1.0f);
-        // Explicitly cast the strongly-typed enum to a float for the shader packing!
-        float skyTypeFloat = static_cast<float>(scene->environment.skyType);
-        globalData.params = glm::vec4(SDL_GetTicks() / 1000.0f, skyTypeFloat, viewportSize.x, viewportSize.y);
+
+        // THE FIX: Pack all 4 parameters cleanly without overwriting!
+        // .x = Ambient Intensity (For fading HDR to black in space)
+        // .y = Sky Type (0=Solid, 1=Procedural, 2=HDR)
+        // .z = Engine Time (For animated shaders like water/wind)
+        // .w = Viewport Width
+        globalData.params = glm::vec4(
+            scene->environment.ambientIntensity,
+            static_cast<float>(scene->environment.skyType), 
+            SDL_GetTicks() / 1000.0f, 
+            viewportSize.x
+        );
+
         globalData.fogColor = scene->environment.fogColor;
         if (!scene->environment.enableFog) {
             globalData.fogColor.w = 0.0f; // Force density to exactly 0 to turn it off!
@@ -3497,7 +3520,7 @@ namespace Crescendo {
         // --- EXTRACT POINT LIGHTS ---
         globalData.pointLightParams.x = 0; 
         
-        for (auto* ent : scene->entities) {
+        /*for (auto* ent : scene->entities) {
             if (ent && ent->className == "light_point" && globalData.pointLightParams.x < 16) {
                 int idx = globalData.pointLightParams.x; 
                 
@@ -3509,6 +3532,7 @@ namespace Crescendo {
                 globalData.pointLightParams.x++;
             }
         }
+        */
 
         calculateCascades(scene, mainCamera, aspectRatio, globalData);
 
@@ -3566,7 +3590,7 @@ namespace Crescendo {
             float scaledConstantBias = scene->environment.shadowBiasConstant * 100.0f;
             vkCmdSetDepthBias(commandBuffers[currentFrame], -scaledConstantBias, 0.0f, -scene->environment.shadowBiasSlope);
 
-            // Draw all OPAQUE entities into the shadow map
+            // 1. Draw all STANDARD OPAQUE entities into the shadow map
             for (auto* ent : opaqueList) {
                 MeshResource& mesh = meshes[ent->modelIndex];
                 if (mesh.vertexBuffer.handle == VK_NULL_HANDLE) continue;
@@ -3582,6 +3606,51 @@ namespace Crescendo {
                 
                 vkCmdPushConstants(commandBuffers[currentFrame], shadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShadowPushConsts), &push);
                 vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
+            }
+
+            // 2. Draw the PLANET OCTREES into the shadow map
+            for (auto* ent : scene->entities) {
+                if (ent && ent->HasComponent<ProceduralPlanetComponent>()) {
+                    auto planet = ent->GetComponent<ProceduralPlanetComponent>();
+                    if (!planet->rootNode) continue;
+                
+                    auto drawShadowOctree = [&](auto& self, Crescendo::Terrain::OctreeNode* node) -> void {
+                        if (!node) return; // THE FIX: isVisible check removed so off-screen mountains cast shadows!
+                    
+                        bool childrenReady = false;
+                        if (!node->isLeaf) {
+                            childrenReady = true;
+                            for (auto& child : node->children) {
+                                if (child && child->meshID == -1) { childrenReady = false; break; }
+                            }
+                        }
+                    
+                        if (node->isLeaf || !childrenReady) {
+                            if (node->meshID >= 0) {
+                                MeshResource& mesh = meshes[node->meshID];
+                                if (mesh.vertexBuffer.handle != VK_NULL_HANDLE) {
+                                    VkBuffer vBuffers[] = { mesh.vertexBuffer.handle };
+                                    VkDeviceSize offsets[] = {0};
+                                    vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
+                                    vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
+                                
+                                    ShadowPushConsts push{};
+                                    push.lightSpaceMatrix = globalData.lightSpaceMatrices[i];
+                                    push.entityIndex = entityGPUIndices[ent];
+                                    vkCmdPushConstants(commandBuffers[currentFrame], shadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShadowPushConsts), &push);
+                                
+                                    vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
+                                }
+                            }
+                        }
+                    
+                        if (childrenReady && !node->isLeaf) {
+                            for (auto& child : node->children) { self(self, child.get()); }
+                        }
+                    };
+                
+                    drawShadowOctree(drawShadowOctree, planet->rootNode.get());
+                }
             }
 
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
@@ -3847,8 +3916,9 @@ namespace Crescendo {
                         // THEN cast the small difference to a 32-bit float.
                         glm::vec3 relativePlanetCenter = glm::vec3(ent->origin - mainCamera.Position);
 
-                        // The minus sign flips the vector so the raymarcher shoots TOWARDS the sun!
-                        atmoPush.sunDirection_planetRadius = glm::vec4(-sunDirection, innerRadius);
+                        // Pass the TRUE sun direction to the atmosphere!
+                        glm::vec3 trueSunDir = glm::normalize(sunDirection);
+                        atmoPush.sunDirection_planetRadius = glm::vec4(trueSunDir, innerRadius);
                         
                         // 2. Pass the camera-relative position to the shader
                         atmoPush.planetCenter_atmosphereRadius = glm::vec4(relativePlanetCenter, outerRadius);
@@ -4304,6 +4374,13 @@ namespace Crescendo {
             sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
             destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
         
+        // THE FIX: Added the missing transition from Transfer Destination to Shader Read!
+        } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+
         } else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_GENERAL) {
             barrier.srcAccessMask = 0;
             barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -4323,6 +4400,11 @@ namespace Crescendo {
 
     TextureResource RenderingServer::UploadCubemap(void* pixels, size_t totalSize, uint32_t width, uint32_t height, uint32_t mipLevels) {
         TextureResource resource{};
+
+        // Assign parents so RAII konws how to destroy
+        resource.image.allocator = allocator;
+        resource.image.device = device;
+
         VkFormat format = VK_FORMAT_R16G16B16A16_SFLOAT;
 
         // 1. Staging Buffer
@@ -5389,7 +5471,8 @@ namespace Crescendo {
             
             // 4. DESTROY EVERY SINGLE IMAGE (Updated with the missing ones!)
             speakerTexture.destroy(); 
-            skyImage.destroy(); 
+            skyImage.destroy(); // manually trigger the cleanup while device is still active
+            
             textureImage.destroy(); 
             positionBakeImage.destroy(); 
             normalBakeImage.destroy(); 

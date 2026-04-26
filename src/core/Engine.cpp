@@ -242,11 +242,20 @@ namespace Crescendo {
         hasShutdown = true;
         
         std::cout << "[Engine] Commencing Shutdown..." << std::endl;
+
         if (activePlayer) { delete activePlayer; activePlayer = nullptr; }
         if (sceneManager) { sceneManager.reset(); }
+
         scene.entities.clear(); 
         physicsServer.Cleanup(); 
-        if (renderer) { renderer->shutdown(); }
+
+        if (renderer) { 
+            renderer->shutdown(); 
+            // Force the unique_ptr to destroy the RenderingServer now
+            // fires all RAII destructors while the device/allocators handles are still technically valid
+            renderer.reset();
+        }
+
         displayServer.shutdown();
     }
 }

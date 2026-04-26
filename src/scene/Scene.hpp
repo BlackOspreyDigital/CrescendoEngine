@@ -27,6 +27,9 @@ namespace Crescendo {
         glm::vec4 fogParams    = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); 
         glm::vec3 skyColor     = glm::vec3(0.5f, 0.7f, 1.0f);
         glm::vec3 groundColor  = glm::vec3(0.0f, 0.0f, 0.0f);
+
+        // NEW: Defaults to 1.0 so your legacy racing game scenes don't break!
+        float ambientIntensity = 1.0f;
         
         // Post Processing
         float bloomIntensity = 1.0f;
