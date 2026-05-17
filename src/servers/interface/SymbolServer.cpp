@@ -160,7 +160,6 @@ namespace Crescendo {
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline);
 
-        // --- THE FIX: BIND BOTH SETS ---
         // Set 0 = Global Camera Matrices
         // Set 1 = Speaker Texture
         std::vector<VkDescriptorSet> descriptorSets = {globalSet, textureSet};

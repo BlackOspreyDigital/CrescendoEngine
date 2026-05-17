@@ -71,7 +71,7 @@ namespace Crescendo {
     }
 
     // =========================================================
-    // THE MAIN LOOP FIX
+    // THE MAIN LOOP 
     // =========================================================
     #ifdef __EMSCRIPTEN__
     // 1. The WebAssembly Frame Wrapper
@@ -246,7 +246,12 @@ namespace Crescendo {
         if (activePlayer) { delete activePlayer; activePlayer = nullptr; }
         if (sceneManager) { sceneManager.reset(); }
 
-        scene.entities.clear(); 
+        // --- THE FIX ---
+        // This will actually call 'delete' on every entity, triggering their 
+        // destructors, which forces the ProceduralPlanetComponent to wait 
+        // for its background threads to finish BEFORE moving to the next line.
+        scene.Clear(); 
+        
         physicsServer.Cleanup(); 
 
         if (renderer) { 
@@ -257,5 +262,6 @@ namespace Crescendo {
         }
 
         displayServer.shutdown();
+    
     }
 }

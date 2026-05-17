@@ -4345,9 +4345,23 @@ namespace Crescendo {
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &commandBuffer;
 
-        vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-        vkQueueWaitIdle(graphicsQueue);
+        // 1. Create a fence to track this specific submission
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VkFence fence;
+        vkCreateFence(device, &fenceInfo, nullptr, &fence);
 
+        {
+            // 2. Lock the mutex ONLY for the split-second queue submission
+            std::lock_guard<std::mutex> lock(queueMutex);
+            vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence);
+        }
+
+        // 3. Wait on the fence (Does not block the queue, only blocks this thread)
+        vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
+
+        // 4. Cleanup
+        vkDestroyFence(device, fence, nullptr);
         vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
     }
 
@@ -5417,7 +5431,13 @@ namespace Crescendo {
     void RenderingServer::shutdown() {
                 
         if (device != VK_NULL_HANDLE) {
-            vkDeviceWaitIdle(device);
+            
+            // Lock the queue so background threads can't submit while Vulkan is spinning down.
+            {
+                std::lock_guard<std::mutex> lock(queueMutex);
+                vkDeviceWaitIdle(device);
+            }
+
             // 1. DESTROY TOP LEVEL
             symbolServer.Cleanup(device);
             editorUI.Shutdown(device);

@@ -1080,7 +1080,7 @@ namespace Crescendo {
                         bool needsRebuild = false;
                     
                         // 2. Swapped all the dots '.' for arrows '->'
-                        ImGui::SliderFloat("Radius", &planet->settings.radius, 1.0f, 50.0f);
+                        ImGui::SliderFloat("Radius", &planet->settings.radius, 1.0f, 10000.0f);
                         if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
                     
                         ImGui::SliderInt("Octaves", &planet->settings.octaves, 1, 8);
@@ -1089,7 +1089,7 @@ namespace Crescendo {
                         ImGui::SliderFloat("Amplitude", &planet->settings.amplitude, 0.0f, 20.0f);
                         if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
                     
-                        ImGui::SliderFloat("Frequency", &planet->settings.frequency, 0.01f, 1.0f);
+                        ImGui::SliderFloat("Frequency", &planet->settings.frequency, 0.01f, 0.1f);
                         if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
                     
                         ImGui::SliderInt("Resolution", &planet->resolution, 8, 64);
