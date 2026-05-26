@@ -154,7 +154,7 @@ namespace Crescendo {
         viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(viewportSampler, finalImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
         // --- Graphics Pipelines ---
-        // Pass transparentRenderPass because it perfectly supports 4x MSAA without erasing the screen!
+        // Pass transparentRenderPass because it supports 4x MSAA without erasing the screen!
         symbolServer.Initialize(device, transparentRenderPass, descriptorSetLayout, symbolTextureLayout);
         if (!createGraphicsPipeline()) return false;
         if (!createWaterPipeline()) return false;       
@@ -550,7 +550,7 @@ namespace Crescendo {
         
         float lambda = this->config.cascadeSplitLambda; 
         
-        // 2. Mathematically generate perfect split distances
+        // 2. Mathematically generate split distances
         std::array<float, 5> cascadeLevels;
         for (uint32_t i = 0; i < 5; i++) {
             float p = (float)i / 4.0f; // 4 is SHADOW_CASCADES
@@ -621,13 +621,29 @@ namespace Crescendo {
             minY = std::floor(minY / worldUnitsPerTexel) * worldUnitsPerTexel;
             maxY = std::floor(maxY / worldUnitsPerTexel) * worldUnitsPerTexel;
 
-            // 4. Brute-force the light frustum depth to catch ALL shadow casters!
-            // This completely fixes the shadows popping out when you look down.
-            minZ -= 2000.0f;
-            maxZ += 2000.0f;
+            // Brute-force the light frustum depth to catch ALL shadow casters!
+            minZ -= 50000.0f; // <--- Increase this massively! (See Section 3)
+            maxZ += 50000.0f; 
             
-            // Was: glm::ortho(minX, maxX, minY, maxY, minZ, maxZ);
             glm::mat4 lightProj = glm::ortho(minX, maxX, minY, maxY, maxZ, minZ);
+            glm::mat4 shadowMatrix = lightProj * lightView;
+
+            // --- Sub-Texel CSM Snapping ---
+            // 1. Find the exact sub-texel offset of the projection in screen space
+            glm::vec4 shadowOrigin = shadowMatrix * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+            shadowOrigin = shadowOrigin * ((float)SHADOW_DIM / 2.0f); 
+
+            // 2. Calculate the difference between the floating position and the snapped pixel
+            glm::vec4 roundedOrigin = glm::round(shadowOrigin);
+            glm::vec4 roundOffset = roundedOrigin - shadowOrigin;
+            
+            // 3. Convert that pixel offset back into clip space
+            roundOffset = roundOffset * (2.0f / (float)SHADOW_DIM); 
+
+            // 4. Shift the projection matrix by the exact offset to lock the texels
+            lightProj[3][0] += roundOffset.x;
+            lightProj[3][1] += roundOffset.y;
+            // ---------------------------------------
 
             globalData.lightSpaceMatrices[i] = lightProj * lightView;
         }
@@ -2107,9 +2123,7 @@ namespace Crescendo {
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depthStencil.depthTestEnable = VK_TRUE;
         depthStencil.depthWriteEnable = VK_TRUE;
-        // THE FIX: Standard linear math for Orthographic shadow maps!
-        // I think this probably needs to be non linear but what the fuck do i know
-        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
         
         std::vector<VkDynamicState> dynamicStates = {
             VK_DYNAMIC_STATE_VIEWPORT,
@@ -3420,9 +3434,16 @@ namespace Crescendo {
                 texID = meshes[ent->modelIndex].textureID;
             }
         
-            data.albedoTint   = glm::vec4(ent->albedoColor, (float)texID);
-            data.sphereBounds = glm::vec4(0.0f); // Placeholder if you aren't using culling yet
-            data.pbrParams    = glm::vec4(ent->roughness, ent->metallic, ent->emission, ent->normalStrength);
+            data.albedoTint = glm::vec4(ent->albedoColor, (float)texID);
+            
+            // THE FIX: Pass the planet radius into the unused sphereBounds.w
+            float pRadius = 0.0f;
+            if (ent->HasComponent<ProceduralPlanetComponent>()) {
+                pRadius = ent->GetComponent<ProceduralPlanetComponent>()->settings.radius;
+            }
+            data.sphereBounds = glm::vec4(0.0f, 0.0f, 0.0f, pRadius);
+            
+            data.pbrParams = glm::vec4(ent->roughness, ent->metallic, ent->emission, ent->normalStrength);
             data.volumeParams = glm::vec4(ent->transmission, ent->thickness, ent->attenuationDistance, ent->ior);
             data.volumeColor  = glm::vec4(ent->attenuationColor, 0.0f);
             data.volumeParams = glm::vec4(ent->transmission, ent->thickness, ent->attenuationDistance, ent->ior);
@@ -3509,7 +3530,7 @@ namespace Crescendo {
         // Cast to vec3 before packing it into the vec4
         globalData.cameraPos = glm::vec4(glm::vec3(mainCamera.Position), 1.0f);
         
-        // Now the sliders will perfectly push into the shader!
+        // Now the sliders will push into the shader!
         globalData.sunDirection = glm::vec4(sunDirection, sunIntensity);
         globalData.sunColor = glm::vec4(sunColor, 1.0f);
 
@@ -3730,7 +3751,7 @@ namespace Crescendo {
                 // 2. True Deep Space 
                 glm::vec3 sunDir = scene->environment.sunDirection;
                 
-                // THE FIX: Use the dynamic intensity from the light_directional entity!
+                // Use the dynamic intensity from the light_directional entity!
                 float sunIntensity = scene->environment.sunIntensity;
                 
                 // Pitch black void. The ONLY blue you will ever see now comes 
@@ -4395,7 +4416,7 @@ namespace Crescendo {
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = mipLevels;
         barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = layerCount; // <--- The magic 6 faces!
+        barrier.subresourceRange.layerCount = layerCount;
 
         VkPipelineStageFlags sourceStage;
         VkPipelineStageFlags destinationStage;
@@ -5039,7 +5060,7 @@ namespace Crescendo {
             loadAttachments[4].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
             // Depth Resolve (The 1x Depth Buffer we sample in the shader!)
-            // We must preserve its data from the opaque pass and keep it perfectly READ_ONLY.
+            // We must preserve its data from the opaque pass and keep it READ_ONLY.
             loadAttachments[5].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
             loadAttachments[5].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             loadAttachments[5].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;

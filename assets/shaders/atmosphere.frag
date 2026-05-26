@@ -30,9 +30,31 @@ vec2 raySphereIntersect(vec3 r0, vec3 rd, vec3 s0, float sr) {
     );
 }
 
+float analyticPlanetShadow(vec3 fragWorldPos, vec3 planetCenter, float planetRadius, vec3 sunDir) {
+    vec3 oc = fragWorldPos - planetCenter;
+    
+    // Distance along the sun ray. If negative, the fragment is on the dark side.
+    float lightDistance = dot(oc, sunDir);
+    
+    if (lightDistance < 0.0) {
+        // Calculate the fragment's perpendicular distance from the exact center of the shadow cylinder
+        float distToAxis = length(oc - lightDistance * sunDir);
+        
+        // Create a soft penumbra at the edge of the planet's radius
+        // Tweak these values (0.95 to 1.02) to make the twilight zone sharper or softer!
+        float penumbraStart = planetRadius * 0.98;
+        float penumbraEnd   = planetRadius * 1.02;
+        
+        return smoothstep(penumbraStart, penumbraEnd, distToAxis);
+    }
+    
+    return 1.0; // Fragment is on the sun-ward side
+}
+
 void main() {
     vec3 rayDir = normalize(inWorldPos - push.cameraPos);
-    vec3 sunDir = -normalize(push.sunDirection);
+    // Negate the push constant so it points TOWARDS the light source
+    vec3 sunDir = normalize(-push.sunDirection);
 
     // 1. Intersect Atmosphere
     vec2 atmoHit = raySphereIntersect(push.cameraPos, rayDir, push.planetCenter, push.atmosphereRadius);
@@ -102,13 +124,8 @@ void main() {
         opticalDepthM += stepM;
 
         // THE FIX 2: Planetary Shadows!
-        // Cast a ray toward the sun. If it hits the planet core, we are in the shadows!
-        float lightVisibility = 1.0;
-        vec2 sunPlanetHit = raySphereIntersect(currentPoint, sunDir, push.planetCenter, push.planetRadius);
-        if (sunPlanetHit.x > 0.0) {
-            lightVisibility = 0.0;
-            // Block the light!
-        }
+        // Use the Analytic Shadow for a mathematically perfect, smooth penumbra!
+        float lightVisibility = analyticPlanetShadow(currentPoint, push.planetCenter, push.planetRadius, sunDir);
 
         float sunRayLength = raySphereIntersect(currentPoint, sunDir, push.planetCenter, push.atmosphereRadius).y;
         float sunHeight = length(currentPoint + sunDir * (sunRayLength * 0.5) - push.planetCenter) - push.planetRadius;

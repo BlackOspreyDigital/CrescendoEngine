@@ -21,7 +21,8 @@ void main() {
     vec3 skyColor = mix(push.horizonColor.rgb, push.zenithColor.rgb, horizonBlend);
 
     // Procedural Sun
-    float sunDot = dot(viewDir, sunDir);
+    float sunDot = max(0.0, dot(viewDir, sunDir)); 
+    // Now apply your exponents to sunDot, and it will never back-project.
     float sunDisc = pow(max(0.0, sunDot), 2000.0);
     float sunHalo = pow(max(0.0, sunDot), 250.0) * 0.6;
 

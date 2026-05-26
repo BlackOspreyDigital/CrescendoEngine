@@ -215,6 +215,27 @@ vec3 ApplyFog(vec3 rgb, float dist, float worldZ) {
     return mix(global.fogColor.rgb, rgb, fogFactor);
 }
 
+float analyticPlanetShadow(vec3 fragWorldPos, vec3 planetCenter, float planetRadius, vec3 sunDir) {
+    vec3 oc = fragWorldPos - planetCenter;
+    
+    // Distance along the sun ray. If negative, the fragment is on the dark side.
+    float lightDistance = dot(oc, sunDir);
+    
+    if (lightDistance < 0.0) {
+        // Calculate the fragment's perpendicular distance from the exact center of the shadow cylinder
+        float distToAxis = length(oc - lightDistance * sunDir);
+        
+        // Create a soft penumbra at the edge of the planet's radius
+        // Tweak these values (0.95 to 1.02) to make the twilight zone sharper or softer!
+        float penumbraStart = planetRadius * 0.98;
+        float penumbraEnd   = planetRadius * 1.02;
+        
+        return smoothstep(penumbraStart, penumbraEnd, distToAxis);
+    }
+    
+    return 1.0; // Fragment is on the sun-ward side
+}
+
 void main() {
     EntityData ent = entities[inEntityIndex];
     int texID = int(ent.albedoTint.w);
@@ -291,9 +312,24 @@ void main() {
     // --- 1. DIRECTIONAL LIGHT (GGX) & SHADOWS ---
     vec3 directLight = vec3(0.0);
     float viewDist = length(global.cameraPos.xyz - fragPos);
-    float shadowFactor = CalculateShadow(fragPos, N, viewDist); 
+    float shadowFactor = CalculateShadow(fragPos, N, viewDist);
+
+    // Integrate Analytic Planet Shadows!
+    // ent.pos.xyz is the planet's center relative to the camera.
+    float pRadius = ent.sphereBounds.w;
+    if (pRadius > 0.0) {
+        float planetShadow = analyticPlanetShadow(fragPos, ent.pos.xyz, pRadius, L);
+        
+        // Combine the CSM shadow with the planetary umbra
+        shadowFactor = min(shadowFactor, planetShadow);
+        
+        // BONUS REALISM: Dim the ambient lighting on the dark side of the planet
+        // so it looks like deep space instead of glowing green!
+        hemiAmbient *= max(0.02, planetShadow); 
+    }
 
     if (length(global.sunDirection.xyz) > 0.01) {
+    
         float NdotL = max(dot(N, L), 0.0);
         
         float NDF = DistributionGGX(N, H, roughness);   

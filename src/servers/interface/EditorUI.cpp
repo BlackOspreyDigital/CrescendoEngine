@@ -766,6 +766,7 @@ namespace Crescendo {
             ImGui::EndPopup();
         }
         */
+
         // --- GIZMOS ---
         // Hide the gizmo entirely if we are playtesting
         if (engineState == EngineState::Editor && viewportSize.x > 0 && viewportSize.y > 0 && scene) {
@@ -773,17 +774,22 @@ namespace Crescendo {
             ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
             ImGuizmo::SetRect(viewportPos.x, viewportPos.y, viewportSize.x, viewportSize.y);
                 
+            // 1. Grab your camera's exact RTE View Matrix
             glm::mat4 view = camera.GetViewMatrix();
             float aspect = viewportSize.x / viewportSize.y;
             
-            // THE FIX: Feed ImGuizmo a localized projection matrix with a sane depth range (e.g., 1000.0f)
-            // This prevents 32-bit floating point precision loss during mouse unprojection.
+            // 2. Feed ImGuizmo a localized projection matrix to prevent 32-bit jitter
             glm::mat4 gizmoProj = glm::perspective(glm::radians(camera.fov), aspect, 1000.0f, 0.1f);
             
             if (selectedObjectIndex >= 0 && selectedObjectIndex < (int)scene->entities.size()) {
                 CBaseEntity* ent = scene->entities[selectedObjectIndex];
-                if (ent) {
+                
+                // 3. Hide the physical gizmo for global entities that don't need a transform
+                bool isGlobalEntity = (ent->className == "env_sky" || ent->className == "node_network");
+
+                if (ent && !isGlobalEntity) {
                     
+                    // 4. Calculate 64-bit camera-relative position before downcasting
                     glm::vec3 relativePos = glm::vec3(ent->origin - camera.Position);
                     
                     glm::mat4 model = glm::mat4(1.0f);
@@ -800,6 +806,7 @@ namespace Crescendo {
                         float newTranslation[3], newRotation[3], newScale[3];
                         ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(model), newTranslation, newRotation, newScale);
 
+                        // 5. Promote the 32-bit camera-relative translation back up to 64-bit absolute world space
                         ent->origin = camera.Position + glm::dvec3(newTranslation[0], newTranslation[1], newTranslation[2]);
                         ent->angles = glm::make_vec3(newRotation);
                         ent->scale  = glm::make_vec3(newScale);
@@ -1105,7 +1112,7 @@ namespace Crescendo {
                         // Diameter = Radius * 2. Add the mountain amplitude, plus a 20% safety margin.
                         planet->chunkSize = (planet->settings.radius + planet->settings.amplitude) * 2.2f;
                             
-                        // Center the chunk perfectly using the new dynamic size
+                        // Center the chunk using the new dynamic size
                         glm::vec3 genOrigin = glm::vec3(-planet->chunkSize / 2.0f);
                             
                         auto chunk = Crescendo::Terrain::VoxelGenerator::GenerateChunk(
