@@ -324,7 +324,7 @@ namespace Crescendo {
         }
         
         // --- HOTKEYS & STATE MANAGEMENT ---
-        // static bool showPauseMenu = false;
+        
 
         // Toggle Console with '~'
         if (ImGui::IsKeyPressed(ImGuiKey_GraveAccent, false)) {
@@ -335,7 +335,7 @@ namespace Crescendo {
             }
         }
 
-        /* Toggle Pause Menu with 'ESC'
+        // Toggle Pause Menu with 'ESC'
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
             if (engineState == EngineState::Playing) {
                 engineState = EngineState::Paused;
@@ -345,7 +345,7 @@ namespace Crescendo {
                 showPauseMenu = false;
                 showConsole = false; // Close console when resuming
             }
-        } */
+        } 
 
         // --- EDITOR CAMERA INPUT ---
         // ONLY allow camera movement if we are actually in Editor Mode!
@@ -767,8 +767,8 @@ namespace Crescendo {
         }
         */
         // --- GIZMOS ---
-        
-        if (viewportSize.x > 0 && viewportSize.y > 0 && scene) {
+        // Hide the gizmo entirely if we are playtesting
+        if (engineState == EngineState::Editor && viewportSize.x > 0 && viewportSize.y > 0 && scene) {
             ImGuizmo::SetOrthographic(false);
             ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
             ImGuizmo::SetRect(viewportPos.x, viewportPos.y, viewportSize.x, viewportSize.y);
@@ -776,37 +776,37 @@ namespace Crescendo {
             glm::mat4 view = camera.GetViewMatrix();
             float aspect = viewportSize.x / viewportSize.y;
             
-            // THE FIX: (Reverse-Z)
-            glm::mat4 proj = glm::perspective(glm::radians(camera.fov), aspect, camera.farClip, camera.nearClip);
+            // THE FIX: Feed ImGuizmo a localized projection matrix with a sane depth range (e.g., 1000.0f)
+            // This prevents 32-bit floating point precision loss during mouse unprojection.
+            glm::mat4 gizmoProj = glm::perspective(glm::radians(camera.fov), aspect, 1000.0f, 0.1f);
             
-                
             if (selectedObjectIndex >= 0 && selectedObjectIndex < (int)scene->entities.size()) {
                 CBaseEntity* ent = scene->entities[selectedObjectIndex];
                 if (ent) {
                     
+                    glm::vec3 relativePos = glm::vec3(ent->origin - camera.Position);
+                    
                     glm::mat4 model = glm::mat4(1.0f);
-                    // Cast down to vec3 for the Gizmo matrix
-                    model = glm::translate(model, glm::vec3(ent->origin));
+                    model = glm::translate(model, relativePos);
                     model = glm::rotate(model, glm::radians(ent->angles.z), glm::vec3(0, 0, 1));
                     model = glm::rotate(model, glm::radians(ent->angles.y), glm::vec3(0, 1, 0));
                     model = glm::rotate(model, glm::radians(ent->angles.x), glm::vec3(1, 0, 0));
                     model = glm::scale(model, ent->scale);
 
-                    ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj), 
+                    ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(gizmoProj), 
                                          mCurrentGizmoOperation, mCurrentGizmoMode, glm::value_ptr(model));
 
                     if (ImGuizmo::IsUsing()) {
                         float newTranslation[3], newRotation[3], newScale[3];
                         ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(model), newTranslation, newRotation, newScale);
 
-                        // Cast the float array back into a dvec3
-                        ent->origin = glm::dvec3(newTranslation[0], newTranslation[1], newTranslation[2]);
+                        ent->origin = camera.Position + glm::dvec3(newTranslation[0], newTranslation[1], newTranslation[2]);
                         ent->angles = glm::make_vec3(newRotation);
                         ent->scale  = glm::make_vec3(newScale);
                     }
                 } 
             } 
-        } 
+        }
 
         // --- ADD THIS: DRAG TARGET ---
         if (ImGui::BeginDragDropTarget()) {

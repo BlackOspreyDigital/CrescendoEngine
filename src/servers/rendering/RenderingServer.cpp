@@ -3464,21 +3464,37 @@ namespace Crescendo {
         glm::vec3 sunColor = scene->environment.sunColor;
         float sunIntensity = scene->environment.sunIntensity;
         
-        // Look for our environment entity to sync settings
+        // 1. Sync Sky Colors from env_sky
         for (auto* ent : scene->entities) {
             if (ent && ent->className == "env_sky") {
-                // Sync GI Colors
                 scene->environment.skyColor = ent->albedoColor; 
                 scene->environment.groundColor = ent->attenuationColor; 
-                
-                // Update Sun from this entity's rotation
-                glm::mat4 rotMat = glm::mat4_cast(glm::quat(glm::radians(ent->angles)));
-                
-                // THE FIX: DO NOT redeclare the variable. Just assign it!
-                // Also, ensure we are using the correct UP vector!
-                sunDirection = glm::normalize(glm::vec3(rotMat * glm::vec4(0.5f, 0.5f, 1.0f, 0.0f)));
-                
-                scene->environment.sunDirection = sunDirection; 
+                break;
+            }
+        }
+
+        // 2. Sync Sun Position & Properties from light_directional
+        for (auto* ent : scene->entities) {
+            if (ent && ent->className == "light_directional") {
+                sunColor = ent->albedoColor;
+                sunIntensity = ent->emission;
+
+                // THE FIX: Convert Inspector Euler Angles to Z-Up Forward Vector
+                // Invert the pitch (x) so positive inspector values point the sun DOWN at the planet
+                float pitch = glm::radians(-ent->angles.x); 
+                float yaw   = glm::radians(ent->angles.y);
+
+                glm::vec3 lightDir;
+                lightDir.x = cos(yaw) * cos(pitch);
+                lightDir.y = sin(yaw) * cos(pitch);
+                lightDir.z = sin(pitch); 
+
+                sunDirection = glm::normalize(lightDir);
+
+                // Update the global environment so the rest of the renderer (shadows, PBR) uses it
+                scene->environment.sunDirection = sunDirection;
+                scene->environment.sunColor = sunColor;
+                scene->environment.sunIntensity = sunIntensity;
                 break;
             }
         }
@@ -3694,7 +3710,7 @@ namespace Crescendo {
             VkRect2D scissor{{0, 0}, swapChainExtent};
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
     
-           // -----------------------------------------------------------------
+            // -----------------------------------------------------------------
             // DRAW SKYBOX (SIM SCALE DEEP SPACE)
             // -----------------------------------------------------------------
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
@@ -3713,7 +3729,9 @@ namespace Crescendo {
 
                 // 2. True Deep Space 
                 glm::vec3 sunDir = scene->environment.sunDirection;
-                float sunIntensity = 20.0f; 
+                
+                // THE FIX: Use the dynamic intensity from the light_directional entity!
+                float sunIntensity = scene->environment.sunIntensity;
                 
                 // Pitch black void. The ONLY blue you will ever see now comes 
                 // mathematically from the Rayleigh scattering of your planets!

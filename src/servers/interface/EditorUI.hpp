@@ -99,6 +99,7 @@ namespace Crescendo {
         bool showConsole = true;
         bool showSelection = true;
         bool showSelectionOutline = true;
+        bool showPauseMenu = false;
         // Asset Browser State
         std::filesystem::path currentAssetDirectory = "assets";
 
