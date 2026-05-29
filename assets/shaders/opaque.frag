@@ -274,8 +274,11 @@ void main() {
 
     // Lighting Vectors
     vec3 V = normalize(global.cameraPos.xyz - fragPos);
-    vec3 L = normalize(vec3(0.5, 1.0, 0.5));
-    if (length(global.sunDirection.xyz) > 0.01) L = normalize(global.sunDirection.xyz);
+    // Give L a safe fallback, but ensure it points TOWARDS the sun when active
+    vec3 L = vec3(0.0, 0.0, 1.0); 
+    if (length(global.sunDirection.xyz) > 0.01) {
+        L = normalize(-global.sunDirection.xyz); 
+    }
     vec3 H = normalize(V + L);
 
     // --- ORM EXTRACTION ---
@@ -409,7 +412,6 @@ void main() {
     
     skyRefl *= (1.0 - roughness);
     
-    
     // --- AMBIENT REFLECTION (GGX) ---
     // Calculate Fresnel specifically for the environment map using our F0 base
     vec3 F_ambient = fresnelSchlick(max(dot(N, V), 0.0), F0);
@@ -418,9 +420,7 @@ void main() {
     vec3 finalReflection = skyRefl * F_ambient;
     
     vec3 finalOutput = finalColor + finalReflection;
-    // Fog Integration
-    // ...
-
+   
     // Fog Integration
     float dist = length(global.cameraPos.xyz - fragPos);
     finalOutput = ApplyFog(finalOutput, dist, fragPos.z);

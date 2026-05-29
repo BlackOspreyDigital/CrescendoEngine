@@ -588,44 +588,42 @@ namespace Crescendo {
             }
             center /= frustumCorners.size();
 
-            // 1. Provide a safe "Up" vector so lookAt doesn't flip out when the sun is straight up
+            // 1. Provide a safe "Up" vector to prevent gimbal lock
             glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f);
             if (std::abs(lightDir.z) > 0.999f) {
                 up = glm::vec3(0.0f, 1.0f, 0.0f); 
             }
 
-            // 2. Position the camera AT the sun (+lightDir) looking DOWN at the center!
-            glm::mat4 lightView = glm::lookAt(center + lightDir, center, up);
+            // 2. Position the camera ON THE SUNLIT SIDE looking towards the center
+            glm::mat4 lightView = glm::lookAt(center - lightDir, center, up);
 
-            float minX = std::numeric_limits<float>::max();
-            float maxX = std::numeric_limits<float>::lowest();
-            float minY = std::numeric_limits<float>::max();
-            float maxY = std::numeric_limits<float>::lowest();
-            float minZ = std::numeric_limits<float>::max();
-            float maxZ = std::numeric_limits<float>::lowest();
-
+            // 3. Calculate Bounding Sphere Radius for the Frustum
+            float sphereRadius = 0.0f;
             for (const auto& v : frustumCorners) {
-                glm::vec4 trf = lightView * glm::vec4(v, 1.0f);
-                minX = std::min(minX, trf.x);
-                maxX = std::max(maxX, trf.x);
-                minY = std::min(minY, trf.y);
-                maxY = std::max(maxY, trf.y);
-                minZ = std::min(minZ, trf.z);
-                maxZ = std::max(maxZ, trf.z);
+                float distance = glm::length(v - center);
+                sphereRadius = std::max(sphereRadius, distance);
             }
 
-            // 3. Texel snapping to stabilize the shadow map edges
-            float worldUnitsPerTexel = (maxX - minX) / SHADOW_DIM;
-            minX = std::floor(minX / worldUnitsPerTexel) * worldUnitsPerTexel;
-            maxX = std::floor(maxX / worldUnitsPerTexel) * worldUnitsPerTexel;
-            minY = std::floor(minY / worldUnitsPerTexel) * worldUnitsPerTexel;
-            maxY = std::floor(maxY / worldUnitsPerTexel) * worldUnitsPerTexel;
+            // Snap the radius to 16.0f increments to completely eliminate floating-point 
+            // interpolation jitter when the camera translates
+            sphereRadius = std::ceil(sphereRadius * 16.0f) / 16.0f;
 
-            // Brute-force the light frustum depth to catch ALL shadow casters!
-            minZ -= 50000.0f; // <--- Increase this massively! (See Section 3)
-            maxZ += 50000.0f; 
-            
-            glm::mat4 lightProj = glm::ortho(minX, maxX, minY, maxY, maxZ, minZ);
+            // 4. Set the Orthographic Projection bounds perfectly square using the radius
+            float minX = -sphereRadius;
+            float maxX =  sphereRadius;
+            float minY = -sphereRadius;
+            float maxY =  sphereRadius;
+
+            // 5. Z-bounds (Tightened for precision, relying on Depth Clamp for far objects)
+            float minZ = -sphereRadius;
+            float maxZ =  sphereRadius;
+
+            // 6. Texel snapping
+            float worldUnitsPerTexel = (sphereRadius * 2.0f) / (float)SHADOW_DIM;
+
+            // Continue with existing matrix construction...
+            // 1. Generate the standard projection
+            glm::mat4 lightProj = glm::ortho(minX, maxX, minY, maxY, minZ, maxZ);
             glm::mat4 shadowMatrix = lightProj * lightView;
 
             // --- Sub-Texel CSM Snapping ---
@@ -641,8 +639,8 @@ namespace Crescendo {
             roundOffset = roundOffset * (2.0f / (float)SHADOW_DIM); 
 
             // 4. Shift the projection matrix by the exact offset to lock the texels
-            lightProj[3][0] += roundOffset.x;
-            lightProj[3][1] += roundOffset.y;
+            lightProj[2][2] = -lightProj[2][2];
+            lightProj[3][2] = 1.0f - lightProj[3][2];
             // ---------------------------------------
 
             globalData.lightSpaceMatrices[i] = lightProj * lightView;
@@ -1932,7 +1930,7 @@ namespace Crescendo {
         VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_NONE; 
+        rasterizer.cullMode = VK_CULL_MODE_NONE;
         rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
@@ -1945,10 +1943,10 @@ namespace Crescendo {
         // THE FIX: Reversed-Z comparison
         depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
 
-        // 4. THE BLENDING: Pure Additive Blending (One + One)
+        // 4. THE BLENDING: 2 Attachments to satisfy Vulkan, 1 Masked to protect G-Buffer
         VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
 
-        // Primary Color Buffer
+        // [0] Primary Color Buffer (Accumulate Atmosphere)
         colorBlendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
         colorBlendAttachments[0].blendEnable = VK_TRUE;
         colorBlendAttachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
@@ -1958,12 +1956,12 @@ namespace Crescendo {
         colorBlendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
         colorBlendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
 
-        // G-Buffer Normal (We shouldn't write normals for transparent air)
-        colorBlendAttachments[1] = colorBlendAttachments[0];
-        
+        // [1] Normal Buffer (Zero Write Mask)
+        colorBlendAttachments[1].colorWriteMask = 0; // <--- Prevents Normal Map Corruption
+        colorBlendAttachments[1].blendEnable = VK_FALSE;
 
         VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-        colorBlending.attachmentCount = 2;
+        colorBlending.attachmentCount = 2; // <--- THE STRICT VULKAN REQUIREMENT
         colorBlending.pAttachments = colorBlendAttachments;
 
         std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
@@ -1981,13 +1979,16 @@ namespace Crescendo {
         pipelineInfo.pColorBlendState = &colorBlending;
         pipelineInfo.pDynamicState = &dynamicState;
         pipelineInfo.layout = pipelineLayout; 
-        pipelineInfo.renderPass = viewportRenderPass;
+        
+        // Bind it to the transparent pass
+        pipelineInfo.renderPass = transparentRenderPass; 
         pipelineInfo.subpass = 0;
 
         if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &atmospherePipeline) != VK_SUCCESS) {
             return false;
         }
 
+        // RESTORED: The shader cleanup and closing brace that I clipped
         vkDestroyShaderModule(device, fragShaderModule, nullptr);
         vkDestroyShaderModule(device, vertShaderModule, nullptr);
         return true;
@@ -2104,13 +2105,13 @@ namespace Crescendo {
         // Rasterizer (Depth Bias is CRITICAL for Shadows)
         VkPipelineRasterizationStateCreateInfo rasterizer{};
         rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-        rasterizer.depthClampEnable = VK_TRUE; // Clamp depth to 0-1 range
+        rasterizer.depthClampEnable = VK_TRUE; // This is the critical change
         rasterizer.rasterizerDiscardEnable = VK_FALSE;
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_NONE; // Render both sides for robust shadows
-        rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
-        rasterizer.depthBiasEnable = VK_TRUE; 
+        rasterizer.cullMode = VK_CULL_MODE_NONE; // Standard for shadow maps
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterizer.depthBiasEnable = VK_TRUE; // Assuming you are using depth bias
         rasterizer.depthBiasConstantFactor = 1.25f; // Tweak these if you see acne
         rasterizer.depthBiasSlopeFactor = 1.75f;
         
@@ -3946,7 +3947,9 @@ namespace Crescendo {
                         vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, atmospherePipeline);
                         
                         AtmospherePush atmoPush{};
-                        atmoPush.vp = proj * view; 
+                        // Use the matrix that has the translation stripped!
+                        glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view));
+                        atmoPush.vp = proj * viewNoTrans;
                         
                         float innerRadius = planet->settings.radius + planet->atmosphereFloor;
                         float outerRadius = planet->settings.radius * planet->atmosphereCeiling;

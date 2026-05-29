@@ -255,8 +255,11 @@ void main() {
     // --- LIGHTING VECTORS ---
     // In RTE, the camera is always at exactly 0,0,0!
     vec3 V = normalize(-fragPos);
-    vec3 L = normalize(vec3(0.5, 1.0, 0.5));
-    if (length(global.sunDirection.xyz) > 0.01) L = normalize(global.sunDirection.xyz);
+    // Give L a safe fallback, but ensure it points TOWARDS the sun when active
+    vec3 L = vec3(0.0, 0.0, 1.0); 
+    if (length(global.sunDirection.xyz) > 0.01) {
+        L = normalize(-global.sunDirection.xyz); 
+    }
     vec3 H = normalize(V + L);
 
     // --- ORM EXTRACTION ---
@@ -418,12 +421,14 @@ void main() {
     if (skyType == 0) {
         skyRefl = global.skyColor.rgb;
     } 
-    else if (skyType == 1) {
+    if (skyType == 1) {
         float upBlend = smoothstep(-0.2, 0.4, R.z);
         skyRefl = mix(global.groundColor.rgb, global.skyColor.rgb, upBlend);
-        float sunDot = max(dot(R, normalize(global.sunDirection.xyz)), 0.0);
+       
+        // INVERT the sun vector here as well for the specular highlight!
+        float sunDot = max(dot(R, normalize(-global.sunDirection.xyz)), 0.0);
         skyRefl += global.sunColor.rgb * global.sunDirection.w * pow(sunDot, 256.0);
-    } 
+    }
     else {
         skyRefl = texture(skyTexture, normalize(R)).rgb;
     }

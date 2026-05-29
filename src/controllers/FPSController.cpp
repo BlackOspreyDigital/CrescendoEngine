@@ -29,13 +29,12 @@ namespace Crescendo {
         settings.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisZ(), -0.9f); 
         settings.mUp = JPH::Vec3(0, 0, 1);
         
-        // THE SURF FIX: Anything steeper than 35 degrees forces sliding
+        // Anything steeper than 35 degrees forces sliding
         settings.mMaxSlopeAngle = JPH::DegreesToRadians(35.0f); 
         
         m_character = new JPH::CharacterVirtual(&settings, JPH::Vec3(spawnPos.x, spawnPos.y, spawnPos.z), JPH::Quat::sIdentity(), physicsServer->physicsSystem);
     }
 
-    // THE MATH FIX: Added 'baseSpeed' parameter
     void Accelerate(JPH::Vec3& vel, JPH::Vec3 wishDir, float wishSpeedCap, float accel, float dt, float baseSpeed) {
         float currentSpeed = vel.Dot(wishDir);
         float addSpeed = wishSpeedCap - currentSpeed;
@@ -135,10 +134,10 @@ namespace Crescendo {
                     m_currentVelocity -= surfNormal * backoff;
                 }
             }
-            // --------------------------------------------------
+            
         }
 
-        // Send the perfectly calculated surf velocity to Jolt
+        // Send the calculated surf velocity to Jolt
         m_character->SetLinearVelocity(m_currentVelocity);
         
         JPH::CharacterVirtual::ExtendedUpdateSettings updateSettings;

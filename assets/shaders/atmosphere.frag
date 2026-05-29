@@ -30,31 +30,28 @@ vec2 raySphereIntersect(vec3 r0, vec3 rd, vec3 s0, float sr) {
     );
 }
 
-float analyticPlanetShadow(vec3 fragWorldPos, vec3 planetCenter, float planetRadius, vec3 sunDir) {
+float analyticPlanetShadow(vec3 fragWorldPos, vec3 planetCenter, float planetRadius, vec3 sunDir) 
+{
     vec3 oc = fragWorldPos - planetCenter;
+    float projection = dot(oc, sunDir);
     
-    // Distance along the sun ray. If negative, the fragment is on the dark side.
-    float lightDistance = dot(oc, sunDir);
-    
-    if (lightDistance < 0.0) {
-        // Calculate the fragment's perpendicular distance from the exact center of the shadow cylinder
-        float distToAxis = length(oc - lightDistance * sunDir);
-        
-        // Create a soft penumbra at the edge of the planet's radius
-        // Tweak these values (0.95 to 1.02) to make the twilight zone sharper or softer!
-        float penumbraStart = planetRadius * 0.98;
-        float penumbraEnd   = planetRadius * 1.02;
-        
-        return smoothstep(penumbraStart, penumbraEnd, distToAxis);
+    // Because sunDir points TOWARDS the sun, the dark side is always negative.
+    if (projection < 0.0) 
+    {
+        float distSq = dot(oc, oc) - (projection * projection);
+        if (distSq < (planetRadius * planetRadius) - 0.001) 
+        {
+            return 0.0; 
+        }
     }
-    
-    return 1.0; // Fragment is on the sun-ward side
+    return 1.0;
 }
 
 void main() {
     vec3 rayDir = normalize(inWorldPos - push.cameraPos);
-    // Negate the push constant so it points TOWARDS the light source
-    vec3 sunDir = normalize(-push.sunDirection);
+    // THE INVERSION FIX: 
+    // Convert Light Travel Direction into "Direction Towards Sun"
+    vec3 sunDir = normalize(-push.sunDirection.xyz);
 
     // 1. Intersect Atmosphere
     vec2 atmoHit = raySphereIntersect(push.cameraPos, rayDir, push.planetCenter, push.atmosphereRadius);
@@ -123,9 +120,11 @@ void main() {
         opticalDepthR += stepR;
         opticalDepthM += stepM;
 
-        // THE FIX 2: Planetary Shadows!
-        // Use the Analytic Shadow for a mathematically perfect, smooth penumbra!
+        // 1. Pass 'sunDir' to the shadow function, NOT push.sunDirection
         float lightVisibility = analyticPlanetShadow(currentPoint, push.planetCenter, push.planetRadius, sunDir);
+        
+        // 2. Ensure your optical depth calculation uses 'sunDir'
+        vec2 sunRayIsect = raySphereIntersect(currentPoint, sunDir, push.planetCenter, push.atmosphereRadius);
 
         float sunRayLength = raySphereIntersect(currentPoint, sunDir, push.planetCenter, push.atmosphereRadius).y;
         float sunHeight = length(currentPoint + sunDir * (sunRayLength * 0.5) - push.planetCenter) - push.planetRadius;
@@ -146,6 +145,7 @@ void main() {
     }
     
 
+    // 3. Ensure your phase function uses 'sunDir'
     float cosAngle = dot(rayDir, sunDir);
     float phaseR = 3.0 / (16.0 * 3.14159) * (1.0 + cosAngle * cosAngle);
     
