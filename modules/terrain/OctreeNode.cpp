@@ -59,36 +59,36 @@ namespace Crescendo::Terrain {
     }
 
     void OctreeNode::Update(const glm::vec3& localCameraPos, float splitThreshold, TerrainManager* manager) {
-        float distance = glm::distance(localCameraPos, center);
+    // 1. Calculate approximate distance to the SURFACE of the chunk
+    float distanceToCenter = glm::distance(localCameraPos, center);
+    float distanceToSurface = std::max(1.0f, distanceToCenter - (size * 0.866f)); 
+    
+    isVisible = true;
+
+    // --- HORIZON CULLING COMPLETELY REMOVED ---
+    // Frustum math in PlanetManager handles culling. This prevents the 
+    // engine from murdering chunks directly beneath the player's feet.
+
+    if (!isVisible && lod < 4) {
+        if (!isLeaf && !IsGeneratingTree()) Merge(manager); 
         
-        isVisible = true;
-        
-        if (glm::length(center) > 1.0f) {
-            glm::vec3 camDir = glm::normalize(localCameraPos);
-            glm::vec3 chunkDir = glm::normalize(center);
-            if (glm::dot(camDir, chunkDir) < -0.15f) isVisible = false;
-        }
-
-        if (!isVisible && lod < 4) {
-            if (!isLeaf && !IsGeneratingTree()) Merge(manager); 
-            
-            if (isLeaf && meshID == -1 && !isGenerating) manager->EnqueueChunk(this);
-            return; 
-        }
-
-        bool shouldSplit = (size / distance) > splitThreshold;
-
-        if (shouldSplit && lod > 0) {
-            if (isLeaf) Subdivide();
-            for (auto& child : children) {
-                if (child) child->Update(localCameraPos, splitThreshold, manager);
-            }
-        } else {
-            if (!isLeaf && !IsGeneratingTree()) Merge(manager); 
-            
-            if (isLeaf && meshID == -1 && !isGenerating) {
-                manager->EnqueueChunk(this);
-            }
-        }
+        if (isLeaf && meshID == -1 && !isGenerating) manager->EnqueueChunk(this);
+        return; 
     }
-}
+
+    // 2. Use the surface distance to dictate the split
+    bool shouldSplit = (size / distanceToSurface) > splitThreshold;
+
+    if (shouldSplit && lod > 0) {
+        if (isLeaf) Subdivide();
+        for (auto& child : children) {
+            if (child) child->Update(localCameraPos, splitThreshold, manager);
+        }
+
+    } else {
+        if (!isLeaf && !IsGeneratingTree()) Merge(manager); 
+        
+        if (isLeaf && meshID == -1 && !isGenerating) manager->EnqueueChunk(this);
+    }
+} 
+} 

@@ -1,6 +1,7 @@
 #pragma once
 #include "scene/Component.hpp"
 #include "modules/terrain/OctreeNode.hpp"
+#include "modules/terrain/VoxelGenerator.hpp"
 
 namespace Crescendo {
     class RenderingServer;
@@ -49,36 +50,41 @@ namespace Crescendo {
             root = std::make_unique<Terrain::OctreeNode>(origin, totalSize, maxLOD);
         }
 
-        // --- 2. PASS MATRICES TO THE UPDATE FUNCTION ---
-        void UpdatePlanet(const glm::vec3& cameraPos, const glm::mat4& view, const glm::mat4& proj, RenderingServer* renderer, const Terrain::VoxelSettings& settings) {
+        // --- 2. PASS MATRICES AND ORIGIN TO THE UPDATE FUNCTION ---
+        void UpdatePlanet(const glm::vec3& cameraPos, const glm::mat4& view, const glm::mat4& proj, RenderingServer* renderer, Scene* scene, Terrain::TerrainManager* manager, const Terrain::VoxelSettings& settings, const glm::vec3& planetOrigin) {
             if (!root) return;
-
-            root->Update(cameraPos, splitDistance);
-            root->CheckForFinishedMeshes(renderer);
-
-            // Construct the frustum for this exact frame
+        
+            // 1. LOD FIX: Convert World camera to Local camera!
+            // Subtracting the planet's origin tricks the octree into thinking it's back at (0,0,0)
+            glm::vec3 localCameraPos = cameraPos - planetOrigin;
+            root->Update(localCameraPos, splitDistance, manager); 
+        
+            root->CheckForFinishedMeshes(renderer, scene, root->center);
+        
             Frustum frustum(view, proj);
-
-            RequestLeafMeshes(root.get(), settings, frustum);
+            RequestLeafMeshes(root.get(), settings, frustum, planetOrigin);
         }
 
     private:
-        void RequestLeafMeshes(Terrain::OctreeNode* node, const Terrain::VoxelSettings& settings, const Frustum& frustum) {
+        // Make sure to add planetOrigin to this signature too!
+        void RequestLeafMeshes(Terrain::OctreeNode* node, const Terrain::VoxelSettings& settings, const Frustum& frustum, const glm::vec3& planetOrigin) {
             
-            // --- 3. THE CULLING CHECK ---
-            // A perfect sphere radius encompassing our cubic chunk (Size/2 * sqrt(3))
             float radius = (node->size / 2.0f) * 1.732f; 
             
-            // If it's outside the camera view, immediately exit before requesting a thread!
-            if (!frustum.IsSphereVisible(node->center, radius)) {
+            // 2. FRUSTUM FIX: Convert Local chunk center to World Space!
+            // Adding the planet's origin pushes the chunk forward into the camera's actual view
+            glm::vec3 worldChunkCenter = node->center + planetOrigin;
+
+            // Check against the WORLD center, not the local center!
+            if (!frustum.IsSphereVisible(worldChunkCenter, radius)) {
                 return; 
             }
 
             if (node->isLeaf) {
-                node->RequestMesh(settings);
+                // Handled asynchronously by Update()
             } else {
                 for (auto& child : node->children) {
-                    if (child) RequestLeafMeshes(child.get(), settings, frustum);
+                    if (child) RequestLeafMeshes(child.get(), settings, frustum, planetOrigin);
                 }
             }
         }

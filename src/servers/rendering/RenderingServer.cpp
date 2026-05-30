@@ -3848,9 +3848,12 @@ namespace Crescendo {
                         
                         // --- THE TRULY ASYNC LAUNCH ---
                         auto* physicsServer = scene->physics; // Grab the pointer for the background thread
+                        
+                        // 1. Grab the planet's world origin to pass to the thread!
+                        glm::vec3 planetOrigin = ent->origin; 
 
-                        // Notice the variables added inside the [ ] brackets!
-                        node->pendingBakeResult = std::async(std::launch::async, [this, pushData, needsCollision, physicsServer]() -> Crescendo::ChunkBakeResult {
+                        // 2. Add 'planetOrigin' to the capture list [ ] so the thread can see it!
+                        node->pendingBakeResult = std::async(std::launch::async, [this, pushData, needsCollision, physicsServer, planetOrigin]() -> Crescendo::ChunkBakeResult {
                             
                             // 1. GPU Compute (Runs in background)
                             ChunkBakeResult result = this->buildChunkMesh(pushData, needsCollision);
@@ -3858,7 +3861,9 @@ namespace Crescendo {
                             // 2. Jolt Physics (Runs in background!)
                             if (needsCollision && result.hasMesh && physicsServer) {
                                 int stride = sizeof(Vertex) / sizeof(float);
-                                result.physicsBodyID = physicsServer->CreateTerrainCollider(result.collisionVerts, result.collisionIndices, pushData.chunkOrigin, stride);
+                                
+                                // 3. Pass the planetOrigin into the collider generator!
+                                result.physicsBodyID = physicsServer->CreateTerrainCollider(result.collisionVerts, result.collisionIndices, pushData.chunkOrigin, planetOrigin, stride);
                                 
                                 // OPTIMIZATION: Clear the heavy RAM arrays since Jolt has the data now!
                                 result.collisionVerts.clear();

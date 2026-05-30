@@ -111,8 +111,8 @@ public:
     ObjectVsBroadPhaseLayerFilterImpl object_vs_broadphase_layer_filter;
     ObjectLayerPairFilterImpl object_vs_object_layer_filter;
 
-    uint32_t CreateTerrainCollider(const std::vector<float>& verts, const std::vector<uint32_t>& inds, const glm::vec3& chunkOrigin, int stride) {
-        if (!bodyInterface || verts.empty() || inds.empty()) return 0;
+    // 3. PHYSICS FIX: Add planetOrigin to the signature
+    uint32_t CreateTerrainCollider(const std::vector<float>& verts, const std::vector<uint32_t>& inds, const glm::vec3& chunkOrigin, const glm::vec3& planetOrigin, int stride) {
 
         // 1. Calculate the exact number of valid vertices
         size_t numVertices = verts.size() / stride;
@@ -128,35 +128,37 @@ public:
         JPH::IndexedTriangleList joltInds;
         joltInds.reserve(inds.size() / 3);
         
-        // --- THE CRASH FIX: Sanitize the Indices ---
+        // --- THE CRASH FIX: Sanitize the Indices and Reverse Winding ---
         for (size_t i = 0; i + 2 < inds.size(); i += 3) {
             uint32_t i0 = inds[i];
             uint32_t i1 = inds[i+1];
             uint32_t i2 = inds[i+2];
 
-            // CRITICAL: Ensure no index tries to read a vertex that doesn't exist!
-            // If an index points to vertex 65000, but we only have 60000 vertices,
-            // Jolt will read garbage memory and crash the entire engine.
             if (i0 < numVertices && i1 < numVertices && i2 < numVertices) {
-                // Ensure it's not a degenerate triangle (a line or a point)
                 if (i0 != i1 && i1 != i2 && i0 != i2) {
-                    joltInds.push_back(JPH::IndexedTriangle(i0, i1, i2));
+                    // THE FIX: Swap i1 and i2 to reverse the Vulkan winding order for Jolt
+                    joltInds.push_back(JPH::IndexedTriangle(i0, i2, i1));
                 }
             }
         }
         // -------------------------------------------
 
-        if (joltInds.empty()) return 0; // Don't build empty collision!
+        if (joltInds.empty()) return 0;
 
         JPH::MeshShapeSettings meshSettings(joltVerts, joltInds);
         JPH::ShapeSettings::ShapeResult result = meshSettings.Create();
         
         if (result.HasError()) {
-            std::cerr << "[Physics] Failed to create Terrain Collider: " << result.GetError().c_str() << std::endl;
+            std::cerr << "[Physics] Failed: " << result.GetError().c_str() << std::endl;
             return 0;
         }
-
-        BodyCreationSettings settings(result.Get(), JPH::Vec3::sZero(), JPH::Quat::sIdentity(), EMotionType::Static, Layers::NON_MOVING);
+    
+        // Teleport the collision mesh to align with the Vulkan visual mesh
+        BodyCreationSettings settings(result.Get(), ToJolt(planetOrigin), JPH::Quat::sIdentity(), EMotionType::Static, Layers::NON_MOVING);
+        
+        settings.mFriction = 0.0f;     
+        settings.mRestitution = 0.0f;  
+    
         Body* body = bodyInterface->CreateBody(settings);
         
         if (body) {

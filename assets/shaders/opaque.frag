@@ -241,31 +241,75 @@ void main() {
     int texID = int(ent.albedoTint.w);
     vec3 baseColor = ent.albedoTint.rgb;
 
-    vec4 albedoSample = texture(texSampler[texID], fragTexCoord);
+    // 1. Establish core geometry data early
+    vec3 N = normalize(fragNormal);
+    bool isTriplanar = (ent.advancedPbr.w > 0.5);
+    
+    // 2. Set up Triplanar variables (Shared by Albedo AND Normals)
+    float texScale = 0.05; 
+    vec3 blendWeights = abs(N);
+    blendWeights = max(blendWeights - 0.2, 0.0);
+    blendWeights /= (blendWeights.x + blendWeights.y + blendWeights.z);
+
+    vec4 albedoSample;
+
+    // --- ALBEDO SAMPLING ---
+    if (isTriplanar) {
+        vec4 texX = texture(texSampler[texID], fragPos.zy * texScale);
+        vec4 texY = texture(texSampler[texID], fragPos.xz * texScale);
+        vec4 texZ = texture(texSampler[texID], fragPos.xy * texScale);
+        albedoSample = texX * blendWeights.x + texY * blendWeights.y + texZ * blendWeights.z;
+    } else {
+        albedoSample = texture(texSampler[texID], fragTexCoord);
+    }
 
     if (albedoSample.a < 0.5) {
         discard;
     }
 
     vec3 albedo = albedoSample.rgb * baseColor * fragColor;
-    
+
     // --- NORMAL MAPPING ---
-    vec3 N = normalize(fragNormal);
-    vec3 T = normalize(fragTangent);   
-    vec3 B = normalize(fragBitangent); 
     float normalStr = ent.pbrParams.w;
     int normalTexID = int(ent.volumeColor.a);
     
     if (normalStr > 0.0 && normalTexID > 0) {
-        vec3 mapNormal = texture(texSampler[normalTexID], fragTexCoord).rgb;
-        mapNormal = mapNormal * 2.0 - 1.0;
-        mapNormal.xy *= normalStr;
-        if (length(mapNormal) > 0.001) {
-            mapNormal = normalize(mapNormal);
-            // Just update T, don't re-declare it!
-            T = normalize(T - dot(T, N) * N); 
-            mat3 TBN = mat3(T, B, N);
-            N = normalize(TBN * mapNormal);
+        if (isTriplanar) {
+            // Sample the normal map on all 3 axes using shared texScale
+            vec3 nX = texture(texSampler[normalTexID], fragPos.zy * texScale).rgb * 2.0 - 1.0;
+            vec3 nY = texture(texSampler[normalTexID], fragPos.xz * texScale).rgb * 2.0 - 1.0;
+            vec3 nZ = texture(texSampler[normalTexID], fragPos.xy * texScale).rgb * 2.0 - 1.0;
+            
+            nX.xy *= normalStr;
+            nY.xy *= normalStr; 
+            nZ.xy *= normalStr;
+
+            // Swizzle tangent-space normals into world-space
+            vec3 worldNormX = vec3(nX.z, nX.y, nX.x);
+            vec3 worldNormY = vec3(nY.x, nY.z, nY.y);
+            vec3 worldNormZ = vec3(nZ.x, nZ.y, nZ.z);
+            
+            // Blend using shared blendWeights
+            N = normalize(
+                worldNormX * blendWeights.x + 
+                worldNormY * blendWeights.y + 
+                worldNormZ * blendWeights.z
+            );
+        } else {
+            // STANDARD MESH TBN MAPPING
+            vec3 T = normalize(fragTangent);
+            vec3 B = normalize(fragBitangent); 
+            
+            vec3 mapNormal = texture(texSampler[normalTexID], fragTexCoord).rgb;
+            mapNormal = mapNormal * 2.0 - 1.0;
+            mapNormal.xy *= normalStr;
+            
+            if (length(mapNormal) > 0.001) {
+                mapNormal = normalize(mapNormal);
+                T = normalize(T - dot(T, N) * N); 
+                mat3 TBN = mat3(T, B, N);
+                N = normalize(TBN * mapNormal);
+            }
         }
     }
 
@@ -304,7 +348,6 @@ void main() {
     // --- BASE REFLECTIVITY (F0) ---
     float luminance = dot(albedo, vec3(0.3, 0.59, 0.11));
     vec3 tintColor = luminance > 0.0 ? albedo / luminance : vec3(1.0);
-    // Use specularAmount and specTint here!
     vec3 F0_base = mix(vec3(1.0), tintColor, specTint) * specularAmount * 0.08; 
     vec3 F0 = mix(F0_base, albedo, metallic);
 
@@ -317,7 +360,6 @@ void main() {
     float viewDist = length(global.cameraPos.xyz - fragPos);
     float shadowFactor = CalculateShadow(fragPos, N, viewDist);
 
-    // Integrate Analytic Planet Shadows!
     // ent.pos.xyz is the planet's center relative to the camera.
     float pRadius = ent.sphereBounds.w;
     if (pRadius > 0.0) {

@@ -399,8 +399,7 @@ namespace Crescendo {
 
             if (ImGui::MenuItem("Procedural Planet")) {
                 CBaseEntity* planet = scene->CreateEntity("prop_dynamic");
-                planet->targetName = "Voxel Planet";
-                planet->origin = camera.Position + glm::dvec3(camera.Front * 5000.0f);
+                planet->targetName = "Jupiter Surf Map";
 
                 planet->AddComponent<TransformComponent>();
                 planet->AddComponent<MeshRendererComponent>();
@@ -408,12 +407,17 @@ namespace Crescendo {
 
                 auto planetComp = planet->GetComponent<ProceduralPlanetComponent>();
                 
-                // PPG SCALE ---
-                planetComp->settings.radius = 3000.0f;     // A massive 6km wide planet!
-                planetComp->settings.amplitude = 150.0f;   // Mountains that reach into the clouds
-                planetComp->settings.frequency = 0.002f;   // Stretch the noise so it forms continents
-                planetComp->lodSplitThreshold = 1.1f;      // Tweak this to control how soon chunks split
+                // ==========================================
+                // JUPITER SCALE SURF SETTINGS
+                // ==========================================
+                planetComp->settings.radius = 50000.0f;     // Superstructure scale
+                planetComp->settings.amplitude = 122.0f;   // Massive rolling hills
+                planetComp->settings.frequency = 0.0005f;   // Stretched out for buttery slopes
+                planetComp->lodSplitThreshold = 1.25f;      
                 
+                float safeDistance = planetComp->settings.radius + planetComp->settings.amplitude + 15000.0f;
+                planet->origin = camera.Position + glm::dvec3(camera.Front * safeDistance);
+
                 // Start the root node at a massive size and LOD 6
                 float planetSize = planetComp->settings.radius * 2.2f;
                 planetComp->rootNode = std::make_unique<Crescendo::Terrain::OctreeNode>(
@@ -427,17 +431,13 @@ namespace Crescendo {
                 std::vector<Vertex> atmoVerts;
                 std::vector<uint32_t> atmoIndices;
                 
-                // Change atmosphereScale to atmosphereCeiling
                 float atmoRadius = planetComp->settings.radius * planetComp->atmosphereCeiling;
-                
-                // 64x64 segments makes it incredibly smooth from space!
                 Crescendo::Terrain::VoxelGenerator::GenerateWaterSphere(atmoRadius, 64, 64, atmoVerts, atmoIndices);
 
-                // --- Send to vram ---
                 planetComp->atmosphereMeshID = sceneManager->GetRenderer()->acquireMesh("PROCEDURAL", "Atmosphere", atmoVerts, atmoIndices);
                 
                 // ==========================================
-                // 2. GENERATE THE OCEAN MESH
+                // GENERATE THE OCEAN MESH
                 // ==========================================
                 std::vector<Vertex> waterVerts;
                 std::vector<uint32_t> waterIndices;
@@ -446,23 +446,18 @@ namespace Crescendo {
 
                 int waterMeshID = sceneManager->GetRenderer()->acquireMesh("PROCEDURAL", "Ocean", waterVerts, waterIndices);
 
-                // ==========================================
-                // 3. CREATE THE OCEAN ENTITY
-                // ==========================================
                 CBaseEntity* ocean = scene->CreateEntity("prop_water"); 
                 ocean->targetName = "Procedural Ocean";
-                
-                // Make sure it spawns at the planet origin!
-                // (If your planet entity is named something other than 'newEnt', change it here!)
                 ocean->origin = planet->origin;
-                
                 ocean->modelIndex = waterMeshID;
+                
                 planet->modelIndex = -1; 
                 planet->albedoColor = glm::vec3(0.2f, 0.6f, 0.3f); 
                 planet->roughness = 0.9f;
                 planet->metallic = 0.0f;
 
-                ocean->scale = glm::vec3(planetComp->settings.radius + 15.0f);     // Water level
+                // Scale the ocean to match the new massive planet radius
+                ocean->scale = glm::vec3(planetComp->settings.radius + 15.0f);     
                 ocean->albedoColor = glm::vec3(0.0f, 0.2f, 0.6f); 
                 ocean->roughness = 0.1f; 
                 ocean->transmission = 1.0f; 
@@ -1082,79 +1077,65 @@ namespace Crescendo {
                     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
                     if (ImGui::CollapsingHeader("Procedural Planet", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed)) {
 
-                        // 1. Removed the '&' so it is correctly captured as a pointer
                         auto planet = ent->GetComponent<ProceduralPlanetComponent>();
                         bool needsRebuild = false;
                     
-                        // 2. Swapped all the dots '.' for arrows '->'
-                        ImGui::SliderFloat("Radius", &planet->settings.radius, 1.0f, 10000.0f);
+                        // Upgraded to DragFloat for massive planetary scales
+                        ImGui::DragFloat("Radius", &planet->settings.radius, 50.0f, 1.0f, 200000.0f);
                         if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
                     
                         ImGui::SliderInt("Octaves", &planet->settings.octaves, 1, 8);
                         if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
                     
-                        ImGui::SliderFloat("Amplitude", &planet->settings.amplitude, 0.0f, 20.0f);
+                        ImGui::DragFloat("Amplitude", &planet->settings.amplitude, 10.0f, 0.0f, 10000.0f);
                         if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
                     
-                        ImGui::SliderFloat("Frequency", &planet->settings.frequency, 0.01f, 0.1f);
+                        // Use a very slow drag speed (0.0001f) for frequency since it's super sensitive
+                        ImGui::DragFloat("Frequency", &planet->settings.frequency, 0.0001f, 0.0001f, 0.1f, "%.5f");
                         if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
                     
                         ImGui::SliderInt("Resolution", &planet->resolution, 8, 64);
                         if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
                     
-                        // 3. Fixed the ImVec2 typo!
                         if (ImGui::Button("Regenerate Mesh", ImVec2(-1, 0))) {
                             needsRebuild = true;
                         }
                     
                         if (needsRebuild) {
+                            planet->chunkSize = (planet->settings.radius + planet->settings.amplitude) * 2.2f;
+                            glm::vec3 genOrigin = glm::vec3(-planet->chunkSize / 2.0f);
+                                
+                            auto chunk = Crescendo::Terrain::VoxelGenerator::GenerateChunk(
+                                genOrigin, planet->resolution, planet->chunkSize, planet->settings
+                            );
                         
-                        // Diameter = Radius * 2. Add the mountain amplitude, plus a 20% safety margin.
-                        planet->chunkSize = (planet->settings.radius + planet->settings.amplitude) * 2.2f;
-                            
-                        // Center the chunk using the new dynamic size
-                        glm::vec3 genOrigin = glm::vec3(-planet->chunkSize / 2.0f);
-                            
-                        auto chunk = Crescendo::Terrain::VoxelGenerator::GenerateChunk(
-                            genOrigin, planet->resolution, planet->chunkSize, planet->settings
-                        );
-                    
-                        // Send new mesh to Vulkan (with our safety net!)
-                        if (!chunk.vertices.empty() && !chunk.indices.empty()) {
-                            ent->modelIndex = rendererRef->acquireMesh("PROCEDURAL", "PlanetChunk", chunk.vertices, chunk.indices);
-                        } else {
-                            ent->modelIndex = -1; 
+                            if (!chunk.vertices.empty() && !chunk.indices.empty()) {
+                                ent->modelIndex = rendererRef->acquireMesh("PROCEDURAL", "PlanetChunk", chunk.vertices, chunk.indices);
+                            } else {
+                                ent->modelIndex = -1; 
+                            }
                         }
-                    }
+
+                        ImGui::Spacing();
+                        ImGui::Separator();
+                        ImGui::Spacing();
+
+                        // --- ATMOSPHERE SETTINGS ---
+                        ImGui::TextColored(ImVec4(0.5f, 0.7f, 1.0f, 1.0f), "Atmosphere Shading");
+                        
+                        // Ceiling bound to 1.01 minimum so it can hug the massive planet tightly
+                        ImGui::DragFloat("Atmo Ceiling", &planet->atmosphereCeiling, 0.001f, 1.001f, 2.0f, "%.3f");
+                        ImGui::DragFloat("Atmo Floor", &planet->atmosphereFloor, 10.0f, -5000.0f, 5000.0f);
+                        ImGui::SliderFloat("Atmo Intensity", &planet->atmosphereIntensity, 1.0f, 50.0f, "%.1f");
+
+                        // Swapped back to ColorEdit3 with HDR flags for the visual swatch!
+                        ImGui::ColorEdit3("Rayleigh (RGB)", glm::value_ptr(planet->rayleigh), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+
+                        ImGui::DragFloat("Mie (Haze)", &planet->mie, 0.00001f, 0.0f, 0.02f, "%.6f");
+
                         ImGui::Spacing();
                     }
                     ImGui::PopStyleColor();
-                }
-
-                // ATMO TWEAKS
-                if (selectedObjectIndex >= 0 && selectedObjectIndex < scene->entities.size()) {
-                    CBaseEntity* entity = scene->entities[selectedObjectIndex];
-
-                    // ... (Transform UI, MeshRenderer UI) ...
-                
-                    if (entity->HasComponent<ProceduralPlanetComponent>()) {
-                        auto* planetComponent = entity->GetComponent<ProceduralPlanetComponent>();
-
-                        // YOUR EXISTING PLANET SLIDERS ARE HERE:
-                        ImGui::SliderFloat("AtmoRadius", &planetComponent->settings.radius, 1.0f, 100.0f);
-                        // ... (Octaves, Amplitude, etc) ...
-                    
-                        // ---> PASTE THE ATMOSPHERE UI BLOCK RIGHT HERE! <---
-                        if (ImGui::CollapsingHeader("Atmosphere Settings", ImGuiTreeNodeFlags_DefaultOpen)) {
-                            // Add the pointer to the variables! (change 'planet' to 'planetComp' if that's what is used in this block)
-                            ImGui::DragFloat("Atmo Ceiling (Scale)", &planetComponent->atmosphereCeiling, 0.01f, 1.0f, 3.0f);
-                            ImGui::DragFloat("Atmo Floor (Offset)", &planetComponent->atmosphereFloor, 1.0f, -500.0f, 500.0f);
-                            ImGui::SliderFloat("Atmo Intensity", &planetComponent->atmosphereIntensity, 1.0f, 50.0f, "%.1f");
-
-                            ImGui::ColorEdit3("Rayleigh", glm::value_ptr(planetComponent->rayleigh), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
-                            ImGui::SliderFloat("Mie (Haze)", &planetComponent->mie, 0.0001f, 0.02f, "%.4f");
-                        }
-                    }
                 }
 
                 // --- 5. ADD COMPONENT MENU ---

@@ -12,9 +12,17 @@ namespace Crescendo {
 
     class ProceduralPlanetComponent : public Component {
     public:
-        Terrain::VoxelSettings settings;
+        // 50,000 unit radius. We drop frequency massively so terrain stretches out, 
+        // and boost amplitude so mountains actually have height.
+        Terrain::VoxelSettings settings = { 50000.0f, 6, 2500.0f, 0.0005f }; 
         int resolution = 32;
-        float chunkSize = 30.0f; 
+        
+        // The Root Chunk size should theoretically be (Radius * 2) to encapsulate the whole planet.
+        float chunkSize = 100000.0f;
+
+        // NEW: We need to explicitly track max depth to prevent the engine 
+        // from infinitely subdividing back down to microscopic voxels.
+        int maxLOD = 6;
         
         std::unique_ptr<Terrain::OctreeNode> rootNode;
         float lodSplitThreshold = 1.25f; 
