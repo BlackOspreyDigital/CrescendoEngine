@@ -34,8 +34,8 @@ namespace Crescendo {
         int atmosphereMeshID = -1;
         
         // --- ATMOSPHERE BOUNDS ---
-        float atmosphereCeiling = 1.15f; // Multiplier for the outer edge
-        float atmosphereFloor = 0.0f;    // Offset from the exact terrain radius
+        float atmosphereCeiling = 1.02f; // DEFAULT Multiplier for the outer edge
+        float atmosphereFloor = 0.0f;    // DEFAULT Offset from the exact terrain radius
         
         // Atmosphere shading variables
         float atmosphereIntensity = 15.0f;

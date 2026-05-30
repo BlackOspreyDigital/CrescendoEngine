@@ -2,7 +2,7 @@
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include "servers/interface/EditorUI.hpp"
 #include <iostream>
-
+#include <algorithm>
 
 namespace Crescendo {
 
@@ -46,52 +46,49 @@ namespace Crescendo {
         vel += wishDir * accelSpeed;
     }
 
-    void FPSController::Update(float deltaTime, PhysicsServer* physicsServer, AudioServer* audioServer, glm::vec3 inputDir, bool jump) {
+    void FPSController::Update(float deltaTime, PhysicsServer* physicsServer, AudioServer* audioServer, glm::vec3 inputDir, bool jump, glm::vec3 upDir) {
         if (!m_character) return;
+
+        // 1. Tell Jolt which way is UP right now!
+        JPH::Vec3 joltUp(upDir.x, upDir.y, upDir.z);
+        m_character->SetUp(joltUp);
 
         JPH::Vec3 wishDir = JPH::Vec3(inputDir.x, inputDir.y, inputDir.z);
         if (wishDir.LengthSq() > 0.0f) wishDir = wishDir.Normalized();
 
-        // Check our exact ground state ONCE
         JPH::CharacterVirtual::EGroundState groundState = m_character->GetGroundState();
         bool onGround = (groundState == JPH::CharacterVirtual::EGroundState::OnGround);
         bool isSurfing = (groundState == JPH::CharacterVirtual::EGroundState::OnSteepGround);
 
-        // --- FALL TIMER & DEATH LOGIC ---
-        if (!onGround && !isSurfing && m_character->GetLinearVelocity().GetZ() < -0.1f) {
+        // --- FALL TIMER LOGIC ---
+        if (!onGround && !isSurfing && m_currentVelocity.Length() > 0.1f) {
             m_fallTimer += deltaTime;
         } else if (onGround || isSurfing) {
             m_fallTimer = 0.0f;
         }
 
-        if (m_fallTimer >= 5.0f || m_character->GetPosition().GetZ() < -500.0f) {
-            std::cout << "[Player] Killed by the Guardians (Fall Timer)." << std::endl;
+        if (m_fallTimer >= 60.0f) {
+            std::cout << "[Player] Killed by the Guardians (Orbital Fall Timer)." << std::endl;
             m_character->SetPosition(JPH::Vec3(m_spawnPos.x, m_spawnPos.y, m_spawnPos.z));
             m_currentVelocity = JPH::Vec3::sZero();
             m_character->SetLinearVelocity(JPH::Vec3::sZero());
             m_fallTimer = 0.0f; 
         }
        
-        // --- DYNAMIC FOOTSTEP AUDIO ---
+        // --- FOOTSTEP AUDIO ---
         static float footstepTimer = 0.0f;
         float currentSpeed = m_currentVelocity.Length();
 
         if (onGround && currentSpeed > 1.0f) { 
-            // Math: Assume a standard stride is ~2.6 units of distance.
-            // Time between steps = Distance / Speed.
             float stepInterval = 2.6f / currentSpeed; 
-            
-            // Clamp it so you don't sound like a machine gun if you move too fast
             stepInterval = std::clamp(stepInterval, 0.25f, 0.6f);
 
             footstepTimer += deltaTime;
             if (footstepTimer >= stepInterval) {
-                // Fire the one-shot! (Make sure the filename matches your new WAV)
                 if (audioServer) audioServer->PlayOneShot("assets/audio/step.mp3", 0.6f);
                 footstepTimer = 0.0f;
             }
         } else {
-            // Pre-load the timer so you step instantly when you land and start moving
             footstepTimer = 0.6f; 
         }
         
@@ -108,42 +105,38 @@ namespace Crescendo {
         }
 
         if (onGround) {
-            m_currentVelocity.SetZ(0.0f); 
+            // THE FIX: Remove velocity pushing INTO the floor instead of hardcoding SetZ(0)
+            float upVelocity = m_currentVelocity.Dot(joltUp);
+            m_currentVelocity -= joltUp * upVelocity; 
+
             Accelerate(m_currentVelocity, wishDir, m_maxGroundSpeed, m_groundAcceleration, deltaTime, m_maxGroundSpeed);
             
             if (jump) {
-                m_currentVelocity.SetZ(m_jumpForce);
+                // THE FIX: Jump pushes you along the dynamic UP vector!
+                m_currentVelocity += joltUp * m_jumpForce;
             }
         } else {
-            // 1. Air Acceleration (Builds the sideways force)
             Accelerate(m_currentVelocity, wishDir, m_maxAirSpeed, m_airAcceleration, deltaTime, m_maxGroundSpeed);
             
-            // 2. Apply Gravity
-            m_currentVelocity += JPH::Vec3(0, 0, m_gravity) * deltaTime;
+            // THE FIX: Multiply gravity by the UP vector (m_gravity is negative, so this pulls you DOWN)
+            m_currentVelocity += (joltUp * m_gravity) * deltaTime;
 
-            // --- 3. SOURCE ENGINE SURF MATH (Clip Velocity) ---
             if (isSurfing) {
-                // Get the exact angle of the ramp face
                 JPH::Vec3 surfNormal = m_character->GetGroundNormal();
-                
-                // Check how much of our velocity is pointing directly INTO the ramp
                 float backoff = m_currentVelocity.Dot(surfNormal);
-                
-                // If we are pushing into the wall, perfectly redirect that force ALONG the wall
                 if (backoff < 0.0f) {
                     m_currentVelocity -= surfNormal * backoff;
                 }
             }
-            
         }
 
-        // Send the calculated surf velocity to Jolt
         m_character->SetLinearVelocity(m_currentVelocity);
         
+        // THE FIX: Pass the directional gravity into ExtendedUpdate so the raycaster knows which way to look for the ground!
         JPH::CharacterVirtual::ExtendedUpdateSettings updateSettings;
         m_character->ExtendedUpdate(
             deltaTime,
-            JPH::Vec3(0, 0, m_gravity),
+            joltUp * m_gravity, 
             updateSettings,
             physicsServer->physicsSystem->GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
             physicsServer->physicsSystem->GetDefaultLayerFilter(Layers::MOVING),

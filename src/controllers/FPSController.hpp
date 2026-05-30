@@ -18,7 +18,7 @@ namespace Crescendo {
         void Initialize(PhysicsServer* physicsServer, glm::vec3 spawnPos);
 
         // Movement math and steps virtual character
-        void Update(float deltaTime, PhysicsServer* physicsServer, AudioServer* audioServer, glm::vec3 inputDir, bool jump);
+        void Update(float deltaTime, PhysicsServer* physicsServer, AudioServer* audioServer, glm::vec3 inputDir, bool jump, glm::vec3 upDir = glm::vec3(0.0f, 0.0f, 1.0f));
 
         // lock main camera to players head
         glm::vec3 GetPosition() const;

@@ -8,36 +8,33 @@
 namespace Crescendo::Terrain { 
     
     bool OctreeNode::CheckForFinishedMeshes(Crescendo::RenderingServer* renderer, Crescendo::Scene* scene, const glm::vec3& chunkOrigin) {
+        bool integratedAny = false;
+
         if (isGenerating && pendingBakeResult.valid()) {
             if (pendingBakeResult.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                
                 Crescendo::ChunkBakeResult result = pendingBakeResult.get();
                 
                 if (result.hasMesh) {
-                    // Hand the fully built GPU mesh to the renderer (Instant!)
                     renderer->meshes.push_back(std::move(result.generatedMesh));
                     meshID = static_cast<int>(renderer->meshes.size() - 1);
-                    
-                    // Note: We don't call CreateTerrainCollider here anymore! 
-                    // The background thread already did it, and the collision is active.
                 } else {
-                    // --- THE FIX ---
-                    meshID = -2; // -2 explicitly means "Empty air, but finished generating!"
+                    meshID = -2; 
                 }
                 
                 isGenerating = false;
-                return true;
+                integratedAny = true;
             }
         }
 
         if (!isLeaf) {
             for (auto& child : children) {
+                // Let every single child process! Do not break the loop early.
                 if (child && child->CheckForFinishedMeshes(renderer, scene, child->center - glm::vec3(child->size / 2.0f))) {
-                    return true;
+                    integratedAny = true;
                 }
             }
         }
-        return false;
+        return integratedAny;
     }
 
     void OctreeNode::Merge(TerrainManager* manager) {

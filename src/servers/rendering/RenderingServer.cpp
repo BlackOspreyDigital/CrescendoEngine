@@ -1,5 +1,6 @@
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 
 
 #ifndef GLM_ENABLE_EXPERIMENTAL
@@ -744,8 +745,11 @@ namespace Crescendo {
     }
 
     void RenderingServer::loadSkybox(const std::string& path, Scene* scene) {
-        vkDeviceWaitIdle(device); 
-
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            vkDeviceWaitIdle(device); 
+        }
+        
         // Use the Compute GPU Baker!
         TextureResource newSky = generateCubemapFromHDR(path);
         
@@ -2886,7 +2890,7 @@ namespace Crescendo {
         uint32_t vertexCount = counters[0];
         uint32_t indexCount = counters[1];
         vmaUnmapMemory(allocator, counterBuffer.allocation);
-
+        
         // Safe memory overflow
         // Clamp the vertices so we never write past the end of the staging buffer!
         const uint32_t MAX_SAFE_VERTICES = 60000; 
@@ -3347,31 +3351,31 @@ namespace Crescendo {
         return commandBuffer;
     }
 
-    void RenderingServer::endAsyncCommands(VkCommandBuffer commandBuffer, VkCommandPool localPool) {
+    void RenderingServer::endAsyncCommands(VkCommandBuffer commandBuffer, VkCommandPool pool) {
         vkEndCommandBuffer(commandBuffer);
 
-        VkSubmitInfo submitInfo{};
-        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         submitInfo.commandBufferCount = 1;
         submitInfo.pCommandBuffers = &commandBuffer;
 
-        VkFenceCreateInfo fenceInfo{};
-        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        // 1. Create a temporary fence
+        VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         VkFence fence;
         vkCreateFence(device, &fenceInfo, nullptr, &fence);
 
         {
-            // Traffic Light: Protect the actual Queue submission
+            // 2. Lock ONLY for the split-second submission
             std::lock_guard<std::mutex> lock(queueMutex);
-            vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence); 
+            vkQueueSubmit(graphicsQueue, 1, &submitInfo, fence); // Pass the fence here
         }
 
-        // Wait for the background GPU work to finish
+        // 3. Wait on the fence OUTSIDE the lock! 
+        // The main thread can keep rendering at 60+ FPS while we wait here.
         vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
         vkDestroyFence(device, fence, nullptr);
 
-        // Clean up the local pool (which automatically frees the command buffer!)
-        vkDestroyCommandPool(device, localPool, nullptr);
+        vkFreeCommandBuffers(device, pool, 1, &commandBuffer);
+        vkDestroyCommandPool(device, pool, nullptr);
     }
 
     // --------------------------------------------------------------------
@@ -3879,17 +3883,15 @@ namespace Crescendo {
                     // 4. Check for ANY finished background threads and integrate them!
                     planet->rootNode->CheckForFinishedMeshes(this, scene, planet->rootNode->center - glm::vec3(planet->rootNode->size / 2.0f));
 
-                    // 4. Recursive Octree Streaming Lambda
+                    // 4.5 Recursive Octree Streaming Lambda
                     auto drawOctree = [&](auto& self, Crescendo::Terrain::OctreeNode* node) -> void {
                         if (!node) return;
-                        if (!node->isVisible) return; // Cull the dark side only
+                        if (!node->isVisible) return; 
 
-                        // 1. Check if the high-res children are fully baked yet
                         bool childrenReady = false;
                         if (!node->isLeaf) {
                             childrenReady = true;
                             for (auto& child : node->children) {
-                                // If even one child is missing its mesh, they aren't ready!
                                 if (child && child->meshID == -1) { 
                                     childrenReady = false;
                                     break;
@@ -3897,9 +3899,11 @@ namespace Crescendo {
                             }
                         }
 
-                        // 2. DRAW THE PARENT IF: It is a leaf, OR its children are still generating in the background!
+                        // THE RENDER STATE MACHINE
                         if (node->isLeaf || !childrenReady) {
+                            
                             if (node->meshID >= 0) { 
+                                // Scenario A: We have a mesh! Draw it.
                                 MeshResource& mesh = meshes[node->meshID];
                                 if (mesh.vertexBuffer.handle != VK_NULL_HANDLE) {
                                     VkBuffer vBuffers[] = { mesh.vertexBuffer.handle };
@@ -3913,11 +3917,16 @@ namespace Crescendo {
                                     
                                     vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
                                 }
+                            } else if (!node->isLeaf) {
+                                // Scenario B: The parent has no mesh (-1), but the children aren't completely done.
+                                // We CANNOT stop here, or the planet turns invisible. We must draw the children that ARE done.
+                                for (auto& child : node->children) {
+                                    self(self, child.get());
+                                }
                             }
-                        } 
-                        
-                        // 3. ONLY recurse and draw the children if they are all 100% ready to go
-                        if (childrenReady && !node->isLeaf) {
+                            
+                        } else if (childrenReady && !node->isLeaf) {
+                            // Scenario C: All high-res children are 100% baked and ready. Draw them!
                             for (auto& child : node->children) {
                                 self(self, child.get());
                             }
@@ -4813,6 +4822,8 @@ namespace Crescendo {
         deviceFeatures.depthClamp = VK_TRUE;
 
         deviceFeatures.fillModeNonSolid = VK_TRUE;
+
+        deviceFeatures.independentBlend = VK_TRUE;
         
         // [CRITICAL] Enable this so shaders can use "texSampler[textureID]"
         deviceFeatures.shaderSampledImageArrayDynamicIndexing = VK_TRUE; 
@@ -4827,12 +4838,8 @@ namespace Crescendo {
         createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
         createInfo.ppEnabledExtensionNames = deviceExtensions.data();
 
-        if (enableValidationLayers) {
-            createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
-            createInfo.ppEnabledLayerNames = validationLayers.data();
-        } else {
-            createInfo.enabledLayerCount = 0;
-        }
+        createInfo.enabledLayerCount = 0;
+        createInfo.ppEnabledLayerNames = nullptr;
 
         if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) != VK_SUCCESS) return false;
 
@@ -5344,7 +5351,10 @@ namespace Crescendo {
             SDL_WaitEvent(nullptr);
         }
 
-        vkDeviceWaitIdle(device);
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            vkDeviceWaitIdle(device);
+        }
 
         // 2. Cleanup Old Resources
         cleanupSwapChain();
@@ -5453,6 +5463,11 @@ namespace Crescendo {
     void RenderingServer::SetMSAASamples(VkSampleCountFlagBits newSamples) {
 
         if (msaaSamples == newSamples) return;
+
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            vkDeviceWaitIdle(device); // now protected  
+        }
 
         vkDeviceWaitIdle(device);
         msaaSamples = newSamples;
