@@ -1934,7 +1934,7 @@ namespace Crescendo {
         VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_NONE;
+        rasterizer.cullMode = VK_CULL_MODE_NONE; 
         rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
@@ -1947,10 +1947,10 @@ namespace Crescendo {
         // THE FIX: Reversed-Z comparison
         depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
 
-        // 4. THE BLENDING: 2 Attachments to satisfy Vulkan, 1 Masked to protect G-Buffer
+        // 4. THE BLENDING: Pure Additive Blending (One + One)
         VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
 
-        // [0] Primary Color Buffer (Accumulate Atmosphere)
+        // Primary Color Buffer
         colorBlendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
         colorBlendAttachments[0].blendEnable = VK_TRUE;
         colorBlendAttachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
@@ -1960,12 +1960,11 @@ namespace Crescendo {
         colorBlendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
         colorBlendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
 
-        // [1] Normal Buffer (Zero Write Mask)
-        colorBlendAttachments[1].colorWriteMask = 0; // <--- Prevents Normal Map Corruption
-        colorBlendAttachments[1].blendEnable = VK_FALSE;
-
+        // G-Buffer Normal (We shouldn't write normals for transparent air)
+        colorBlendAttachments[1] = colorBlendAttachments[0];
+        
         VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-        colorBlending.attachmentCount = 2; // <--- THE STRICT VULKAN REQUIREMENT
+        colorBlending.attachmentCount = 2;
         colorBlending.pAttachments = colorBlendAttachments;
 
         std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
@@ -1983,20 +1982,18 @@ namespace Crescendo {
         pipelineInfo.pColorBlendState = &colorBlending;
         pipelineInfo.pDynamicState = &dynamicState;
         pipelineInfo.layout = pipelineLayout; 
-        
-        // Bind it to the transparent pass
-        pipelineInfo.renderPass = transparentRenderPass; 
+        pipelineInfo.renderPass = viewportRenderPass;
         pipelineInfo.subpass = 0;
 
         if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &atmospherePipeline) != VK_SUCCESS) {
             return false;
         }
 
-        // RESTORED: The shader cleanup and closing brace that I clipped
         vkDestroyShaderModule(device, fragShaderModule, nullptr);
         vkDestroyShaderModule(device, vertShaderModule, nullptr);
         return true;
     }
+
 
     bool RenderingServer::createCompositePipeline() {
         auto vertShaderCode = readFile("assets/shaders/fullscreen_vert.vert.spv");
@@ -3974,12 +3971,14 @@ namespace Crescendo {
 
                         // Pass the TRUE sun direction to the atmosphere!
                         glm::vec3 trueSunDir = glm::normalize(sunDirection);
-                        atmoPush.sunDirection_planetRadius = glm::vec4(trueSunDir, innerRadius);
-                        
+
+                        // THE FIX: Pass the TRUE mathematical radius of the planet! 
+                        // Do NOT use innerRadius, or the thickest haze will be buried underground!
+                        atmoPush.sunDirection_planetRadius = glm::vec4(trueSunDir, planet->settings.radius);
+
                         // 2. Pass the camera-relative position to the shader
                         atmoPush.planetCenter_atmosphereRadius = glm::vec4(relativePlanetCenter, outerRadius);
                         
-                        // 3. Because the universe moves around the camera, the camera is ALWAYS at zero in the shader!
                         atmoPush.cameraPos_sunIntensity = glm::vec4(0.0f, 0.0f, 0.0f, planet->atmosphereIntensity);
                         
                         atmoPush.rayleigh_mie = glm::vec4(planet->rayleigh, planet->mie);
@@ -5356,6 +5355,7 @@ namespace Crescendo {
             vkDeviceWaitIdle(device);
         }
 
+
         // 2. Cleanup Old Resources
         cleanupSwapChain();
 
@@ -5469,7 +5469,6 @@ namespace Crescendo {
             vkDeviceWaitIdle(device); // now protected  
         }
 
-        vkDeviceWaitIdle(device);
         msaaSamples = newSamples;
 
         if (graphicsPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, graphicsPipeline,nullptr); graphicsPipeline = VK_NULL_HANDLE; }

@@ -33,8 +33,7 @@ namespace Crescendo {
         float fov = 80.0f; 
         float nearClip = 0.3f;
         // THE FIX: Crank this up so the planet (and the rest of the universe) doesn't vanish.
-        float farClip = 50000.0f;
-
+        float farClip = 50000000.0f;
         // Constructor
         Camera(glm::dvec3 position = glm::dvec3(0.0), glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f), float yaw = -90.0f, float pitch = 0.0f)
             : Front(glm::vec3(0.0f, 1.0f, 0.0f)), MovementSpeed(10.0f), MouseSensitivity(0.1f), Zoom(45.0f) {
@@ -67,12 +66,13 @@ namespace Crescendo {
 
         // 2. Mark as 'const'
         glm::mat4 GetProjectionMatrix(float aspectRatio) const {
-            return glm::perspective(glm::radians(fov), aspectRatio, 10000000.0f, 0.1f);
+            return glm::perspective(glm::radians(fov), aspectRatio, farClip, nearClip);
         }
 
         // 3. Mark as 'const'
         glm::mat4 GetViewMatrix() const {
-            return glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), Front, Up);
+            // Cast down from dvec3 to vec3 for the matrix, and look ahead of the current position
+            return glm::lookAt(glm::vec3(Position), glm::vec3(Position) + Front, Up);
         }
 
         struct ViewFrustum {
