@@ -19,9 +19,9 @@ namespace Crescendo {
     struct TransformPacket {
         PacketType type;
         uint32_t networkID;
-        glm::vec3 position; // (Fixed 'positoin' typo)
+        glm::vec3 position; 
         glm::vec3 rotation;
-    }; // <-- You were missing this closing bracket!
+    }; 
 #pragma pack(pop)
 
     class NetworkingServer {

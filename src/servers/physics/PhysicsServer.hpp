@@ -1,11 +1,12 @@
 #pragma once
 
-// 1. Standard / Engine Includes FIRST
+
 #include "scene/BaseEntity.hpp"
 #include "scene/Scene.hpp"
 #include "scene/components/ProceduralPlanetComponent.hpp"
 #include "modules/terrain/VoxelGenerator.hpp"
 #include "servers/camera/Camera.hpp"
+
 
 #include "servers/rendering/Vertex.hpp"
 #include <glm/glm.hpp>
@@ -14,16 +15,15 @@
 #include <unordered_map>
 
 
-// 2. The Core Jolt Header MUST BE HERE
 #include <Jolt/Jolt.h>
 #include <Jolt/RegisterTypes.h>
 #include <Jolt/Core/Factory.h>
 #include <Jolt/Core/TempAllocator.h>
 #include <Jolt/Core/JobSystemThreadPool.h>
 
-// 3. All other Jolt Headers go AFTER Jolt.h
-#include <Jolt/Math/Float3.h> // <--- Moved down!
-#include <Jolt/Geometry/Triangle.h> // <--- Added to fix 'VertexList'
+
+#include <Jolt/Math/Float3.h> 
+#include <Jolt/Geometry/Triangle.h> 
 #include <Jolt/Physics/PhysicsSystem.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyActivationListener.h>
@@ -31,7 +31,7 @@
 #include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 
-// Vehicle Headers
+
 #include <Jolt/Physics/Vehicle/VehicleConstraint.h>
 #include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
 #include <Jolt/Physics/Vehicle/VehicleCollisionTester.h>
@@ -111,7 +111,7 @@ public:
     ObjectVsBroadPhaseLayerFilterImpl object_vs_broadphase_layer_filter;
     ObjectLayerPairFilterImpl object_vs_object_layer_filter;
 
-    // 3. PHYSICS FIX: Add planetOrigin to the signature
+    // 3. PHYSICS Add planetOrigin to the signature
     uint32_t CreateTerrainCollider(const std::vector<float>& verts, const std::vector<uint32_t>& inds, const glm::vec3& chunkOrigin, const glm::vec3& planetOrigin, int stride) {
 
         // 1. Calculate the exact number of valid vertices
@@ -128,7 +128,6 @@ public:
         JPH::IndexedTriangleList joltInds;
         joltInds.reserve(inds.size() / 3);
         
-        // --- THE CRASH FIX: Sanitize the Indices and Reverse Winding ---
         for (size_t i = 0; i + 2 < inds.size(); i += 3) {
             uint32_t i0 = inds[i];
             uint32_t i1 = inds[i+1];
@@ -136,12 +135,11 @@ public:
 
             if (i0 < numVertices && i1 < numVertices && i2 < numVertices) {
                 if (i0 != i1 && i1 != i2 && i0 != i2) {
-                    // THE FIX: Swap i1 and i2 to reverse the Vulkan winding order for Jolt
+                    // Jolt expects counter-clockwise winding order, so we swap i1 and i2
                     joltInds.push_back(JPH::IndexedTriangle(i0, i2, i1));
                 }
             }
         }
-        // -------------------------------------------
 
         if (joltInds.empty()) return 0;
 
@@ -179,15 +177,12 @@ public:
 
         tempAllocator = new TempAllocatorImpl(10 * 1024 * 1024);
         
-        // --- THE FIX: Lock Jolt to exactly 4 cores ---
         jobSystem = new JobSystemThreadPool(cMaxPhysicsJobs, cMaxPhysicsBarriers, 4);
 
         physicsSystem = new PhysicsSystem();
         physicsSystem->Init(1024, 0, 1024, 1024, broad_phase_layer_interface, object_vs_broadphase_layer_filter, object_vs_object_layer_filter);
 
-        // --- FIX 1: Set Gravity to Z-Down ---
         physicsSystem->SetGravity(Vec3(0, 0, -9.81f)); 
-        // ------------------------------------
 
         bodyInterface = &physicsSystem->GetBodyInterface();
         std::cout << "[Physics] Initialization Complete." << std::endl;
@@ -335,11 +330,11 @@ public:
             
             if (entID < (int)entityList.size() && entityList[entID]) {
                 
-                // --- FIX 4: The "Anti-Gravity" Static Lock ---
+                
                 if (bodyInterface->GetMotionType(bodyID) == EMotionType::Static) {
                     continue; // NEVER move static objects
                 }
-                // -------------------------------------------
+                
 
                 if (bodyInterface->IsActive(bodyID)) {
                     Vec3 pos = bodyInterface->GetPosition(bodyID);

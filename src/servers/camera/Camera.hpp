@@ -14,8 +14,8 @@ namespace Crescendo {
     class Camera {
     public:
         // Camera Attributes
-        glm::dvec3 Position; // <--- UPGRADED TO DOUBLE
-        glm::vec3 Front;     // (Leave vectors as floats!)
+        glm::dvec3 Position; 
+        glm::vec3 Front;     
         glm::vec3 Up;
         glm::vec3 Right;
         glm::vec3 WorldUp;
@@ -32,7 +32,7 @@ namespace Crescendo {
         // Perspective State
         float fov = 80.0f; 
         float nearClip = 0.3f;
-        // THE FIX: Crank this up so the planet (and the rest of the universe) doesn't vanish.
+        // Crank this up so the planet (and the rest of the universe) doesn't vanish.
         float farClip = 50000000.0f;
         // Constructor
         Camera(glm::dvec3 position = glm::dvec3(0.0), glm::vec3 up = glm::vec3(0.0f, 0.0f, 1.0f), float yaw = -90.0f, float pitch = 0.0f)

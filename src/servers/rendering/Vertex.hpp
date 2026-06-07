@@ -1,6 +1,5 @@
 #pragma once
 #include <vulkan/vulkan_core.h>
-// [FIX] Prevent redefinition warnings if GLM is already enabled elsewhere
 #ifndef GLM_ENABLE_EXPERIMENTAL
 #define GLM_ENABLE_EXPERIMENTAL
 #endif

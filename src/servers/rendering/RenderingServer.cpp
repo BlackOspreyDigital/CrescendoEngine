@@ -235,7 +235,7 @@ namespace Crescendo {
         VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
         VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities);
         
-        // --- THE FIX: FORCE WAYLAND-SAFE V-SYNC ---
+        // FORCE WAYLAND-SAFE V-SYNC ---
         // VkPresentModeKHR presentMode = chooseSwapPresentMode(swapChainSupport.presentModes);
         VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR; // Guaranteed safe fallback
 
@@ -428,7 +428,7 @@ namespace Crescendo {
         allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
         allocInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
 
-        // [FIX] Manually populate the RAII wrapper members
+        // Manually populate the RAII wrapper members
         // The wrapper will still destroy these when it goes out of scope!
         shadowImage.allocator = allocator; 
         
@@ -439,7 +439,7 @@ namespace Crescendo {
         // 2. Create Global Sampler View (Array)
         VkImageViewCreateInfo viewInfo{};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = shadowImage.handle; // [FIX] Use .handle
+        viewInfo.image = shadowImage.handle; 
         viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY; 
         viewInfo.format = VK_FORMAT_D32_SFLOAT;
         viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
@@ -1468,7 +1468,7 @@ namespace Crescendo {
         VkPushConstantRange pushConstant{};
         pushConstant.offset = 0;
         
-        // [FIX] Change this from sizeof(PushConsts) to 128.
+        // Change this from sizeof(PushConsts) to 128.
         // The Skybox uses this same layout and needs 64 bytes.
         // If this is too small, the Skybox crashes and the Entity ID gets corrupted.
         pushConstant.size = 128; 
@@ -1846,10 +1846,9 @@ namespace Crescendo {
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depthStencil.depthTestEnable = VK_TRUE; 
         depthStencil.depthWriteEnable = VK_FALSE; 
-        // THE FIX: Reversed-Z comparison
         depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
 
-       VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
+        VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
         
         // Attachment 0: Scene Color
         colorBlendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
@@ -1893,7 +1892,8 @@ namespace Crescendo {
 
         return true;
     }
-
+    
+    // Atmosphere refactor next [JUNE]
     bool RenderingServer::createAtmospherePipeline() {
         auto vertShaderCode = readFile("assets/shaders/atmosphere.vert.spv");
         auto fragShaderCode = readFile("assets/shaders/atmosphere.frag.spv");
@@ -1906,8 +1906,6 @@ namespace Crescendo {
             {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragShaderModule, "main", nullptr}
         };
 
-        // 1. THE VERTEX FIX: Tell Vulkan how to read your 3D Vertex structure!
-        // The Atmosphere MUST have standard 3D vertex bindings!
         auto bindingDescription = Vertex::getBindingDescription();
         auto attributeDescriptions = Vertex::getAttributeDescriptions();
 
@@ -1944,7 +1942,7 @@ namespace Crescendo {
         VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
         depthStencil.depthTestEnable = VK_TRUE; 
         depthStencil.depthWriteEnable = VK_FALSE; 
-        // THE FIX: Reversed-Z comparison
+        // Reversed-Z comparison
         depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
 
         // 4. THE BLENDING: Pure Additive Blending (One + One)
@@ -2287,8 +2285,6 @@ namespace Crescendo {
         std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
         VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0, (uint32_t)dynamicStates.size(), dynamicStates.data()};
 
-        // [FIX] Ensure Layout has Push Constants (even if unused by Bloom)
-        // This makes it compatible with the Composite Pass which DOES use them.
         if (compositePipelineLayout == VK_NULL_HANDLE) {
             VkPushConstantRange pushConstantRange{};
             pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -2607,7 +2603,7 @@ namespace Crescendo {
         const VkDeviceSize MAX_INDICES_SIZE = 10 * 1024 * 1024;
         const VkDeviceSize COUNTER_SIZE = 2 * sizeof(uint32_t);
 
-        // (Your existing GPU-Only allocations)
+        // (GPU-Only allocations)
         densityBuffer = VulkanBuffer(allocator, DENSITY_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
         computeVertexBuffer = VulkanBuffer(allocator, MAX_VERTS_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
         computeIndexBuffer = VulkanBuffer(allocator, MAX_INDICES_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
@@ -2621,15 +2617,12 @@ namespace Crescendo {
         sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
         sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT; 
         
-        // [FIX] Give the RAII wrappers the allocator so they know how to destroy themselves!
         stagingVertBuffer.allocator = allocator;
         stagingIndexBuffer.allocator = allocator;
         counterBuffer.allocator = allocator;
 
         vmaCreateBuffer(allocator, &sVertInfo, &sAlloc, &stagingVertBuffer.handle, &stagingVertBuffer.allocation, nullptr);
         
-        
-
         VkBufferCreateInfo sIndInfo = sVertInfo;
         sIndInfo.size = MAX_INDICES_SIZE;
         vmaCreateBuffer(allocator, &sIndInfo, &sAlloc, &stagingIndexBuffer.handle, &stagingIndexBuffer.allocation, nullptr);
@@ -3305,7 +3298,7 @@ namespace Crescendo {
         fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         fbInfo.renderPass = bakeRenderPass;
         fbInfo.attachmentCount = 2;
-        fbInfo.pAttachments = attachments; // This fixes the 'undeclared identifier' typo too!
+        fbInfo.pAttachments = attachments; 
         fbInfo.width = LIGHTMAP_SIZE;
         fbInfo.height = LIGHTMAP_SIZE;
         fbInfo.layers = 1;
@@ -3438,7 +3431,7 @@ namespace Crescendo {
         
             data.albedoTint = glm::vec4(ent->albedoColor, (float)texID);
             
-            // THE FIX: Pass the planet radius into the unused sphereBounds.w
+            // Pass the planet radius into the unused sphereBounds.w
             float pRadius = 0.0f;
             if (ent->HasComponent<ProceduralPlanetComponent>()) {
                 pRadius = ent->GetComponent<ProceduralPlanetComponent>()->settings.radius;
@@ -3470,16 +3463,16 @@ namespace Crescendo {
         glm::vec2 viewportSize = editorUI.GetViewportSize();
         if (viewportSize.x > 0 && viewportSize.y > 0) aspectRatio = viewportSize.x / viewportSize.y;
         
-        // <--- 1. STRIP TRANSLATION SO CAMERA IS AT (0,0,0) IN RENDER SPACE --->
+        // Strip Translation so Camera is at (0,0,0) in render space
         glm::mat4 view = mainCamera.GetViewMatrix();
         
-        // THE FIX: Extract only the 3x3 rotation matrix, then expand it back to 4x4
+        // Extract only the 3x3 rotation matrix, then expand it back to 4x4
         glm::mat4 viewNoTranslation = glm::mat4(glm::mat3(view)); 
         
         glm::mat4 proj = glm::perspective(glm::radians(mainCamera.fov), aspectRatio, mainCamera.farClip, mainCamera.nearClip);
         proj[1][1] *= -1.0f; // The Vulkan Y-flip
         
-        // THE FIX: Multiply Projection by the Rotation-Only View!
+        // Multiply Projection by the Rotation-Only View!
         glm::mat4 vp = proj * viewNoTranslation; 
 
         // 2. Sun Logic (Grab defaults from EditorUI/Scene Environment)
@@ -3502,7 +3495,7 @@ namespace Crescendo {
                 sunColor = ent->albedoColor;
                 sunIntensity = ent->emission;
 
-                // THE FIX: Convert Inspector Euler Angles to Z-Up Forward Vector
+                // Convert Inspector Euler Angles to Z-Up Forward Vector
                 // Invert the pitch (x) so positive inspector values point the sun DOWN at the planet
                 float pitch = glm::radians(-ent->angles.x); 
                 float yaw   = glm::radians(ent->angles.y);
@@ -3536,7 +3529,7 @@ namespace Crescendo {
         globalData.sunDirection = glm::vec4(sunDirection, sunIntensity);
         globalData.sunColor = glm::vec4(sunColor, 1.0f);
 
-        // THE FIX: Pack all 4 parameters cleanly without overwriting!
+        // Pack all 4 parameters cleanly without overwriting!
         // .x = Ambient Intensity (For fading HDR to black in space)
         // .y = Sky Type (0=Solid, 1=Procedural, 2=HDR)
         // .z = Engine Time (For animated shaders like water/wind)
@@ -3563,7 +3556,7 @@ namespace Crescendo {
             if (ent && ent->className == "light_point" && globalData.pointLightParams.x < 16) {
                 int idx = globalData.pointLightParams.x; 
                 
-                // [THE FIX] Subtract the camera to put the light in Relative Render Space!
+                // Subtract the camera to put the light in Relative Render Space!
                 glm::vec3 relativeLightPos = glm::vec3(ent->origin - cameraWorldPos);
                 
                 globalData.pointLights[idx].positionAndRadius = glm::vec4(relativeLightPos, ent->scale.x);
@@ -3654,7 +3647,7 @@ namespace Crescendo {
                     if (!planet->rootNode) continue;
                 
                     auto drawShadowOctree = [&](auto& self, Crescendo::Terrain::OctreeNode* node) -> void {
-                        if (!node) return; // THE FIX: isVisible check removed so off-screen mountains cast shadows!
+                        if (!node) return; // isVisible check removed so off-screen mountains cast shadows!
                     
                         bool childrenReady = false;
                         if (!node->isLeaf) {
@@ -3972,7 +3965,7 @@ namespace Crescendo {
                         // Pass the TRUE sun direction to the atmosphere!
                         glm::vec3 trueSunDir = glm::normalize(sunDirection);
 
-                        // THE FIX: Pass the TRUE mathematical radius of the planet! 
+                        // Pass the TRUE mathematical radius of the planet! 
                         // Do NOT use innerRadius, or the thickest haze will be buried underground!
                         atmoPush.sunDirection_planetRadius = glm::vec4(trueSunDir, planet->settings.radius);
 
@@ -4443,7 +4436,6 @@ namespace Crescendo {
             sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
             destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
         
-        // THE FIX: Added the missing transition from Transfer Destination to Shader Read!
         } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
             barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -5454,7 +5446,7 @@ namespace Crescendo {
         
         // 5. Destroy Offscreen Render Passes
         if (viewportRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, viewportRenderPass, nullptr); viewportRenderPass = VK_NULL_HANDLE; }
-        if (transparentRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, transparentRenderPass, nullptr); transparentRenderPass = VK_NULL_HANDLE; } // [FIX] Fix Memory Leak!
+        if (transparentRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, transparentRenderPass, nullptr); transparentRenderPass = VK_NULL_HANDLE; }
         if (compositeRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, compositeRenderPass, nullptr); compositeRenderPass = VK_NULL_HANDLE; }
         if (bloomRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, bloomRenderPass, nullptr); bloomRenderPass = VK_NULL_HANDLE; }
         if (ssrRenderPass != VK_NULL_HANDLE) { vkDestroyRenderPass(device, ssrRenderPass, nullptr); ssrRenderPass = VK_NULL_HANDLE; } 

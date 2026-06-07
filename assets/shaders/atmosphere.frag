@@ -49,7 +49,6 @@ float analyticPlanetShadow(vec3 fragWorldPos, vec3 planetCenter, float planetRad
 
 void main() {
     vec3 rayDir = normalize(inWorldPos - push.cameraPos);
-    // THE INVERSION FIX: 
     // Convert Light Travel Direction into "Direction Towards Sun"
     vec3 sunDir = normalize(-push.sunDirection.xyz);
 
@@ -98,7 +97,7 @@ void main() {
     float stepSize = rayLength / float(NUM_IN_SCATTER_POINTS);
     vec3 currentPoint = push.cameraPos + rayDir * (d0 + stepSize * 0.5);
 
-    // THE FIX: Calculate scale heights dynamically!
+    // Calculate scale heights dynamically!
     // This ensures density perfectly approaches 0.0 exactly at the sphere's edge.
     float atmosphereThickness = push.atmosphereRadius - push.planetRadius;
     float rayleighScaleHeight = atmosphereThickness * 0.25; 
@@ -107,7 +106,7 @@ void main() {
     float opticalDepthR = 0.0;
     float opticalDepthM = 0.0;
 
-    // THE FIX: Declare the accumulators as pure floats BEFORE the loop!
+    // Declare the accumulators as pure floats BEFORE the loop!
     float totalRayleigh = 0.0;
     float totalMie = 0.0;
 
@@ -133,7 +132,7 @@ void main() {
         float sunOpticalDepthR = exp(-sunHeight / rayleighScaleHeight) * sunRayLength;
         float sunOpticalDepthM = exp(-sunHeight / mieScaleHeight) * sunRayLength;
 
-        // THE FIX: Attenuation must be a pure float density inside the loop!
+        // Attenuation must be a pure float density inside the loop!
         // We use an average of the coefficients for the density math.
         float avgRayleigh = (push.rayleighCoeff.x + push.rayleighCoeff.y + push.rayleighCoeff.z) / 3.0;
         float avgMie = push.mieCoeff;
@@ -152,7 +151,7 @@ void main() {
     float g = 0.76;
     float phaseM = 3.0 / (8.0 * 3.14159) * ((1.0 - g * g) * (1.0 + cosAngle * cosAngle)) / ((2.0 + g * g) * pow(1.0 + g * g - 2.0 * g * cosAngle, 1.5));
     
-    // THE FIX: Multiply the pure float densities by the vec3 colors here at the very end!
+    // Multiply the pure float densities by the vec3 colors here at the very end!
     vec3 scatterR = totalRayleigh * push.rayleighCoeff * phaseR;
     vec3 scatterM = totalMie * vec3(push.mieCoeff) * phaseM;
     

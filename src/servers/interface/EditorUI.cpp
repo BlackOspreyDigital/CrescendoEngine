@@ -1034,7 +1034,6 @@ namespace Crescendo {
                         
                         ImGui::Separator();
                         
-                        // THE FIX: Inject the Global Ambient Control right below the sky settings!
                         ImGui::SliderFloat("Ambient HDR Bounce", &scene->environment.ambientIntensity, 0.0f, 2.0f, "%.2f");
 
                         ImGui::Checkbox("Enable Fog", &scene->environment.enableFog);
@@ -1254,7 +1253,6 @@ namespace Crescendo {
                     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f)); // Transparent BG
                     
                     if (icons.folderIcon) {
-                        // FIX: Added "##folder" as the first argument!
                         if (ImGui::ImageButton("##folder", (ImTextureID)icons.folderIcon, ImVec2(thumbnailSize, thumbnailSize))) {
                             currentAssetDirectory /= path.filename();
                         }
