@@ -1893,7 +1893,6 @@ namespace Crescendo {
         return true;
     }
     
-    // Atmosphere 
     bool RenderingServer::createAtmospherePipeline() {
         auto vertShaderCode = readFile("assets/shaders/atmosphere.vert.spv");
         auto fragShaderCode = readFile("assets/shaders/atmosphere.frag.spv");
@@ -3978,6 +3977,7 @@ namespace Crescendo {
                     }
                 }
             }
+            
             
             // -----------------------------------------------------------------
             // 3. ITERATIVE REFRACTION (TRANSPARENT PASS)
