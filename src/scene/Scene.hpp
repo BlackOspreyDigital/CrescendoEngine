@@ -28,7 +28,7 @@ namespace Crescendo {
         glm::vec3 skyColor     = glm::vec3(0.5f, 0.7f, 1.0f);
         glm::vec3 groundColor  = glm::vec3(0.0f, 0.0f, 0.0f);
 
-        // NEW: Defaults to 1.0 so your legacy racing game scenes don't break!
+        // Defaults to 1.0 so your legacy racing game scenes don't break!
         float ambientIntensity = 1.0f;
         
         // Post Processing

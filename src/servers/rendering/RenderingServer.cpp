@@ -1893,7 +1893,7 @@ namespace Crescendo {
         return true;
     }
     
-    // Atmosphere refactor next [JUNE]
+    // Atmosphere 
     bool RenderingServer::createAtmospherePipeline() {
         auto vertShaderCode = readFile("assets/shaders/atmosphere.vert.spv");
         auto fragShaderCode = readFile("assets/shaders/atmosphere.frag.spv");
@@ -1909,11 +1909,10 @@ namespace Crescendo {
         auto bindingDescription = Vertex::getBindingDescription();
         auto attributeDescriptions = Vertex::getAttributeDescriptions();
 
-        VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-        vertexInputInfo.vertexBindingDescriptionCount = 1;
-        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
-        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInputInfo.vertexBindingDescriptionCount = 0;
+        vertexInputInfo.vertexAttributeDescriptionCount = 0;
 
         VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
         inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -1928,27 +1927,22 @@ namespace Crescendo {
         viewportState.scissorCount = 1;
         viewportState.pScissors = &scissor;
 
-        // 2. THE CULLING: Render both the inside and outside of the sphere
         VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_NONE; 
+        rasterizer.cullMode = VK_CULL_MODE_NONE;
         rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
         multisampling.rasterizationSamples = msaaSamples; 
 
-        // 3. THE DEPTH: Test against the planet, but don't overwrite it
         VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-        depthStencil.depthTestEnable = VK_TRUE; 
+        depthStencil.depthTestEnable = VK_FALSE; 
         depthStencil.depthWriteEnable = VK_FALSE; 
-        // Reversed-Z comparison
         depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
 
-        // 4. THE BLENDING: Pure Additive Blending (One + One)
         VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
 
-        // Primary Color Buffer
         colorBlendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
         colorBlendAttachments[0].blendEnable = VK_TRUE;
         colorBlendAttachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
@@ -1958,7 +1952,6 @@ namespace Crescendo {
         colorBlendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
         colorBlendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
 
-        // G-Buffer Normal (We shouldn't write normals for transparent air)
         colorBlendAttachments[1] = colorBlendAttachments[0];
         
         VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
@@ -1991,7 +1984,6 @@ namespace Crescendo {
         vkDestroyShaderModule(device, vertShaderModule, nullptr);
         return true;
     }
-
 
     bool RenderingServer::createCompositePipeline() {
         auto vertShaderCode = readFile("assets/shaders/fullscreen_vert.vert.spv");
@@ -3727,7 +3719,7 @@ namespace Crescendo {
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
     
             // -----------------------------------------------------------------
-            // DRAW SKYBOX (SIM SCALE DEEP SPACE)
+            // DRAW SKYBOX [WORLD SPACE]
             // -----------------------------------------------------------------
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
@@ -3934,7 +3926,7 @@ namespace Crescendo {
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
 
             // -----------------------------------------------------------------
-            // 2.5 DRAW VOLUMETRIC ATMOSPHERE (In the Read-Only Transparent Pass!)
+            // 2.5 DRAW ATMOSPHERE [Local Space] (In the Read-Only Transparent Pass!)
             // -----------------------------------------------------------------
             for (auto* ent : scene->entities) {
                 if (ent && ent->HasComponent<ProceduralPlanetComponent>()) {
@@ -3980,14 +3972,7 @@ namespace Crescendo {
                                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
                                            0, sizeof(AtmospherePush), &atmoPush);
 
-                        MeshResource& atmoMesh = meshes[planet->atmosphereMeshID];
-                        if (atmoMesh.vertexBuffer.handle != VK_NULL_HANDLE) {
-                            VkBuffer vBuffers[] = { atmoMesh.vertexBuffer.handle };
-                            VkDeviceSize offsets[] = {0};
-                            vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
-                            vkCmdBindIndexBuffer(commandBuffers[currentFrame], atmoMesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
-                            vkCmdDrawIndexed(commandBuffers[currentFrame], atmoMesh.indexCount, 1, 0, 0, 0);
-                        }
+                        vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
                         
                         vkCmdEndRenderPass(commandBuffers[currentFrame]);
                     }

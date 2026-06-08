@@ -1,20 +1,20 @@
 #version 450
 
-layout(location = 0) in vec3 inWorldPos;
 layout(location = 0) out vec4 outColor;
-// 9 Depth Mapping
 layout(binding = 9) uniform sampler2D sceneDepth;
 
 layout(push_constant) uniform AtmoPush {
     mat4 vp;                                   
     vec3 sunDirection;
     float planetRadius;     
-    vec3 planetCenter; float atmosphereRadius; 
-    vec3 cameraPos;    float sunIntensity;     
-    vec3 rayleighCoeff; float mieCoeff;        
+    vec3 planetCenter; 
+    float atmosphereRadius; 
+    vec3 cameraPos;    
+    float sunIntensity;     
+    vec3 rayleighCoeff; 
+    float mieCoeff;        
 } push;
 
-// Constants
 const int NUM_IN_SCATTER_POINTS = 10;
 
 vec2 raySphereIntersect(vec3 r0, vec3 rd, vec3 s0, float sr) {
@@ -48,12 +48,24 @@ float analyticPlanetShadow(vec3 fragWorldPos, vec3 planetCenter, float planetRad
 }
 
 void main() {
-    vec3 rayDir = normalize(inWorldPos - push.cameraPos);
-    // Convert Light Travel Direction into "Direction Towards Sun"
+    // 1. Calculate exact screen coordinates
+    ivec2 texSize = textureSize(sceneDepth, 0);
+    vec2 screenUV = gl_FragCoord.xy / vec2(texSize);
+    
+    // 2. MATHEMATICALLY GENERATE THE RAY DIRECTION
+    mat4 invVP = inverse(push.vp);
+    vec4 clipSpace = vec4(screenUV * 2.0 - 1.0, 0.5, 1.0); 
+    vec4 worldSpace = invVP * clipSpace;
+    worldSpace.xyz /= worldSpace.w;
+    
+    // In an RTE engine, camera is at (0,0,0), so the ray is perfectly the world coordinate!
+    vec3 rayDir = normalize(worldSpace.xyz);
     vec3 sunDir = normalize(-push.sunDirection.xyz);
 
-    // 1. Intersect Atmosphere
+    // 3. Intersect Atmosphere
     vec2 atmoHit = raySphereIntersect(push.cameraPos, rayDir, push.planetCenter, push.atmosphereRadius);
+    
+    // If we look out into deep space and completely miss the atmosphere shell, stop immediately!
     if (atmoHit.y < 0.0) {
         discard;
     }
@@ -61,39 +73,26 @@ void main() {
     float d0 = max(0.0, atmoHit.x); 
     float d1 = atmoHit.y;
 
-    // 2. Depth Buffer Ray Termination
-    ivec2 texSize = textureSize(sceneDepth, 0);
-    vec2 screenUV = gl_FragCoord.xy / vec2(texSize);
+    // 4. Depth Buffer Ray Termination
     float rawDepth = texture(sceneDepth, screenUV).r;
-    
-    // In Reversed-Z, 0.0 is the absolute void.
-    // ONLY stop the ray if we hit a solid physical object!
     if (rawDepth > 0.0) {
-        // Reconstruct the exact Euclidean distance using the VP matrix!
-        mat4 invVP = inverse(push.vp);
-        vec4 clipSpace = vec4(screenUV * 2.0 - 1.0, rawDepth, 1.0);
-        vec4 worldSpace = invVP * clipSpace;
-        worldSpace.xyz /= worldSpace.w;
+        vec4 depthClip = vec4(screenUV * 2.0 - 1.0, rawDepth, 1.0);
+        vec4 depthWorld = invVP * depthClip;
+        depthWorld.xyz /= depthWorld.w;
         
-        // Since camera is at (0,0,0) in RTE space, length() gives true Euclidean distance
-        float trueDepthDistance = length(worldSpace.xyz);
+        float trueDepthDistance = length(depthWorld.xyz);
         
         if (trueDepthDistance < atmoHit.y) {
             d1 = trueDepthDistance;
         }
     }
-
-    // SAFETY CATCH: If the terrain is closer than the atmosphere (e.g. standing next to a mountain),
-    // or if the depth buffer terminated the ray before d0, draw nothing!
-    if (d1 <= d0) {
-        outColor = vec4(0.0);
-        return;
-    }
-
-    // 3. Calculate ray length and step size using the corrected d1
-    float rayLength = d1 - d0;
-    if (rayLength <= 0.0) discard;
     
+    // 5. Safety Catch
+    if (d1 <= d0) {
+        discard; 
+    }
+    
+    float rayLength = d1 - d0;
     float stepSize = rayLength / float(NUM_IN_SCATTER_POINTS);
     vec3 currentPoint = push.cameraPos + rayDir * (d0 + stepSize * 0.5);
 

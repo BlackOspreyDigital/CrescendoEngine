@@ -6,7 +6,7 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtx/compatibility.hpp> // For glm::lerp
+#include <glm/gtx/compatibility.hpp> 
 #include <SDL2/SDL.h> 
 
 
@@ -71,9 +71,9 @@ namespace Crescendo {
 
         // 3. Mark as 'const'
         glm::mat4 GetViewMatrix() const {
-            // Cast down from dvec3 to vec3 for the matrix, and look ahead of the current position
-            return glm::lookAt(glm::vec3(Position), glm::vec3(Position) + Front, Up);
-        }
+            // In an RTE engine, the camera eye MUST be perfectly locked to the origin (0,0,0)
+            return glm::lookAt(glm::vec3(0.0f, 0.0f, 0.0f), Front, Up);
+    }
 
         struct ViewFrustum {
             glm::vec4 planes[6];

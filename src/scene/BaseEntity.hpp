@@ -29,11 +29,11 @@ public:
     }
 
     glm::ivec3 sector = {0, 0, 0};
-    glm::dvec3 origin = {0.0, 0.0, 0.0};       // <--- UPGRADED TO DOUBLE
+    glm::dvec3 origin = {0.0, 0.0, 0.0};       
     glm::vec3 angles = {0.0f, 0.0f, 0.0f};
     glm::vec3 scale  = {1.0f, 1.0f, 1.0f};
 
-    glm::dvec3 savedOrigin = glm::dvec3(0.0);  // <--- UPGRADED TO DOUBLE
+    glm::dvec3 savedOrigin = glm::dvec3(0.0);  
     glm::vec3 savedAngles = glm::vec3(0.0f);
     glm::vec3 savedScale = glm::vec3(1.0f);
 
@@ -59,7 +59,7 @@ public:
     int modelIndex = -1;
     int textureID = 0;
     int normalTextureID = 0;
-    int ormTextureID = 0;    // NEW: Occlusion, Roughness, Metallic Map
+    int ormTextureID = 0;    
     bool visible = true;
     std::string modelPath = "";
     std::string assetPath = "";
