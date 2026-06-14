@@ -4,6 +4,8 @@ A custom-built, low-level Vulkan graphics engine designed for developers who wan
 
 Crescendo is built on a strict "from-scratch" philosophy. It rejects the modern industry trend of relying on temporal upscaling, DLSS, and "half-measures" to salvage noisy, brute-forced rendering. Instead, the focus is on clever optimization, clean rasterization, and delivering crisp, native-resolution performance reminiscent of the golden era of graphics programming.
 
+-----------------------------------------------------------------------------------------------------
+
 ## Current State: Renderer Proof-of-Concept
 
 **Status: Highly Experimental**
@@ -12,10 +14,12 @@ Crescendo is currently in an active, heavy development phase.
 * **The Core Renderer:** Functions as a stable proof-of-concept demonstrating our custom Vulkan pipeline.
 * **Modules & Subsystems:** All other features (such as Jolt physics integration, voxel terrain handling, and advanced memory allocators) are treated as highly experimental, modular plugins. Expect frequent breaking changes as these systems are rapidly prototyped and refactored.
 
-## Core Architecture
+-----------------------------------------------------------------------------------------------------
 
-* **Graphics API:** Vulkan / WebASM / DX ( Coming Soon )
-* **Language:** C++
+## Architecture
+
+* **Graphics API:** Vulkan 
+* **Language:** C++, Lua
 * **Design Philosophy:** Modular, code-first, and natively performant. 
 
 ### Dependencies
