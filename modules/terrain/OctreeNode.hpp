@@ -1,36 +1,38 @@
 #pragma once
 #include <glm/glm.hpp>
-
 #include <memory>
 #include <array>
 #include <future>
-
 #include "servers/rendering/RenderingServer.hpp"
 
-namespace Crescendo { class Scene; }
+namespace Crescendo { 
+    class Scene; 
+    class PhysicsServer; 
+    class RenderingServer;
+
+}
 
 namespace Crescendo::Terrain {
-
     class TerrainManager;
-
     class OctreeNode {
     public:
         glm::vec3 center;
         float size;
-        int lod; 
-        
+        int lod;
+
         bool isLeaf = true;
-        int meshID = -1; 
+        int meshID = -1;
+        uint32_t physicsBodyID = 0; 
 
         std::array<std::unique_ptr<OctreeNode>, 8> children;
 
         OctreeNode(glm::vec3 c, float s, int l) : center(c), size(s), lod(l) {}
 
-        std::future<Crescendo::ChunkBakeResult> pendingBakeResult; 
+        std::future<Crescendo::ChunkBakeResult> pendingBakeResult;
         bool isGenerating = false;
         bool isVisible = true;
 
-        bool IsGeneratingTree()const {
+        bool IsGeneratingTree() const {
             if (isGenerating) return true;
             if (!isLeaf) {
                 for (const auto& child : children) {
@@ -41,13 +43,15 @@ namespace Crescendo::Terrain {
         }
 
         bool CheckForFinishedMeshes(Crescendo::RenderingServer* renderer, Crescendo::Scene* scene, const glm::vec3& chunkOrigin);
-        void Update(const glm::vec3& localCameraPos, float splitThreshold, TerrainManager* manager);
-        void Merge(TerrainManager* manager);
-                
+        
+        // 3. Your updated signatures!
+        void Update(const glm::vec3& localCameraPos, float splitThreshold, TerrainManager* manager, Crescendo::PhysicsServer* physicsServer);
+        void Merge(TerrainManager* manager, Crescendo::PhysicsServer* physicsServer);
+
         void Subdivide() {
             isLeaf = false;
             float newSize = size / 2.0f;
-            float q = size / 4.0f; 
+            float q = size / 4.0f;
 
             for (int i = 0; i < 8; i++) {
                 glm::vec3 offset = {

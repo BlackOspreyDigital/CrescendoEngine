@@ -1,9 +1,8 @@
 #include "OctreeNode.hpp"
 #include "TerrainManager.hpp"
-
 #include "servers/rendering/RenderingServer.hpp"
+#include "servers/physics/PhysicsServer.hpp"
 #include <algorithm> 
-
 
 namespace Crescendo::Terrain { 
     
@@ -17,6 +16,8 @@ namespace Crescendo::Terrain {
                 if (result.hasMesh) {
                     renderer->meshes.push_back(std::move(result.generatedMesh));
                     meshID = static_cast<int>(renderer->meshes.size() - 1);
+                    // --- SAVE THE PHYSICS ID SO WE CAN DELETE IT LATER ---
+                    physicsBodyID = result.physicsBodyID; 
                 } else {
                     meshID = -2; 
                 }
@@ -28,7 +29,6 @@ namespace Crescendo::Terrain {
 
         if (!isLeaf) {
             for (auto& child : children) {
-                // Let every single child process! Do not break the loop early.
                 if (child && child->CheckForFinishedMeshes(renderer, scene, child->center - glm::vec3(child->size / 2.0f))) {
                     integratedAny = true;
                 }
@@ -37,55 +37,50 @@ namespace Crescendo::Terrain {
         return integratedAny;
     }
 
-    void OctreeNode::Merge(TerrainManager* manager) {
+    void OctreeNode::Merge(TerrainManager* manager, Crescendo::PhysicsServer* physicsServer) {
         if (isLeaf) return;
         
         for (int i = 0; i < 8; i++) {
             if (children[i]) {
-                children[i]->Merge(manager);
+                children[i]->Merge(manager, physicsServer);
                 
-                // Remove from the bake queue so we don't bake a deleted chunk!
                 auto& queue = manager->chunkQueue;
                 queue.erase(std::remove(queue.begin(), queue.end(), children[i].get()), queue.end());
                 
-                // THIS FREES THE MEMORY!
+                // --- DESTROY THE JOLT PHYSICS BODY TO PREVENT RAM LEAKS ---
+                if (children[i]->physicsBodyID != 0 && physicsServer) {
+                    physicsServer->DestroyCollider(children[i]->physicsBodyID);
+                    children[i]->physicsBodyID = 0;
+                }
+                
                 children[i].reset();
             }
         }
         isLeaf = true;
     }
 
-    void OctreeNode::Update(const glm::vec3& localCameraPos, float splitThreshold, TerrainManager* manager) {
-    // 1. Calculate approximate distance to the SURFACE of the chunk
-    float distanceToCenter = glm::distance(localCameraPos, center);
-    float distanceToSurface = std::max(1.0f, distanceToCenter - (size * 0.866f)); 
-    
-    isVisible = true;
-
-    // --- HORIZON CULLING COMPLETELY REMOVED ---
-    // Frustum math in PlanetManager handles culling. This prevents the 
-    // engine from murdering chunks directly beneath the player's feet.
-
-    if (!isVisible && lod < 4) {
-        if (!isLeaf && !IsGeneratingTree()) Merge(manager); 
+    void OctreeNode::Update(const glm::vec3& localCameraPos, float splitThreshold, TerrainManager* manager, Crescendo::PhysicsServer* physicsServer) {
+        float distanceToCenter = glm::distance(localCameraPos, center);
+        float distanceToSurface = std::max(1.0f, distanceToCenter - (size * 0.866f)); 
         
-        if (isLeaf && meshID == -1 && !isGenerating) manager->EnqueueChunk(this);
-        return; 
-    }
+        isVisible = true;
 
-    // 2. Use the surface distance to dictate the split
-    bool shouldSplit = (size / distanceToSurface) > splitThreshold;
-
-    if (shouldSplit && lod > 0) {
-        if (isLeaf) Subdivide();
-        for (auto& child : children) {
-            if (child) child->Update(localCameraPos, splitThreshold, manager);
+        if (!isVisible && lod < 4) {
+            if (!isLeaf && !IsGeneratingTree()) Merge(manager, physicsServer); 
+            if (isLeaf && meshID == -1 && !isGenerating) manager->EnqueueChunk(this);
+            return; 
         }
 
-    } else {
-        if (!isLeaf && !IsGeneratingTree()) Merge(manager); 
-        
-        if (isLeaf && meshID == -1 && !isGenerating) manager->EnqueueChunk(this);
-    }
-} 
-} 
+        bool shouldSplit = (size / distanceToSurface) > splitThreshold;
+
+        if (shouldSplit && lod > 0) {
+            if (isLeaf) Subdivide();
+            for (auto& child : children) {
+                if (child) child->Update(localCameraPos, splitThreshold, manager, physicsServer);
+            }
+        } else {
+            if (!isLeaf && !IsGeneratingTree()) Merge(manager, physicsServer); 
+            if (isLeaf && meshID == -1 && !isGenerating) manager->EnqueueChunk(this);
+        }
+    } 
+}

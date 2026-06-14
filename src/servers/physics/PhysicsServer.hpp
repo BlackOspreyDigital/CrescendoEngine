@@ -166,6 +166,17 @@ public:
         return 0;
     }
 
+    void DestroyCollider(uint32_t bodyID_raw) {
+        if (!bodyInterface || bodyID_raw == 0) return;
+        
+        // Reconstruct the JPH::BodyID from the raw uint32_t index
+        JPH::BodyID id(bodyID_raw);
+        
+        // Must remove from the active simulation BEFORE destroying the memory
+        bodyInterface->RemoveBody(id);
+        bodyInterface->DestroyBody(id);
+    }
+
     BodyInterface* bodyInterface = nullptr;
     std::unordered_map<int, BodyID> entityBodyMap;
 

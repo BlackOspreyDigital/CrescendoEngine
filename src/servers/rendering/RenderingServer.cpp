@@ -3624,7 +3624,7 @@ namespace Crescendo {
                 vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
                                     
                 ShadowPushConsts push{};
-                push.lightSpaceMatrix = globalData.lightSpaceMatrices[i]; // The specific math for this slice!
+                push.lightSpaceMatrix = globalData.lightSpaceMatrices[i]; 
                 push.entityIndex = entityGPUIndices[ent];
                 
                 vkCmdPushConstants(commandBuffers[currentFrame], shadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShadowPushConsts), &push);
@@ -3798,7 +3798,7 @@ namespace Crescendo {
 
                     // 1. Cull the tree and queue up missing chunks
                     // Wrap ent->origin in a glm::vec3 cast!
-                    planet->rootNode->Update(camPos - glm::vec3(ent->origin), planet->lodSplitThreshold, planet->chunkManager.get());
+                    planet->rootNode->Update(camPos - glm::vec3(ent->origin), planet->lodSplitThreshold, planet->chunkManager.get(), scene->physics);
 
                     // 2. Sort the queue so chunks closest to the camera generate FIRST
                     auto& queue = planet->chunkManager->chunkQueue;
