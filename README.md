@@ -38,6 +38,24 @@ Install the required core dependencies, including Clang and the Vulkan toolchain
 ```bash
 sudo pacman -S base-devel cmake clang pkgconf sdl2 sdl2_image vulkan-headers vulkan-icd-loader shaderc lua ktx
 ```
+### Build Instructions
+
+Crescendo utilizes a standard CMake build pipeline. 
+
+**Option A: The Dev Script (Recommended)**
+For rapid iteration and standard compilation, a shell script is provided to automate the build directory generation, compilation, and execution (Always check before running)
+```bash
+chmod +x dev.sh
+./dev.sh 
+```
+
+**Option B: Manual Compilation (Standard)**
+If you need to pass specific compiler flags or debug parameters, you can compile the RHI and modules manually:
+```bash
+mkdir build && cd build
+CC=clang CXX=clang++ cmake ..
+make -j$(nproc)
+```
 
 ### Prerequisites (Windows)
 Direct X support coming soon!
