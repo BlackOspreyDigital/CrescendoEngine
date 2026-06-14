@@ -18,10 +18,6 @@ Crescendo is currently in an active, heavy development phase.
 * **Language:** C++
 * **Design Philosophy:** Modular, code-first, and natively performant. 
 
-## Compiling from Source
-
-*(Note to users: Crescendo is not a monolithic drag-and-drop editor. Utilizing this engine requires an understanding of source compilation and low-level system architecture.)*
-
 ### Dependencies
 * Vulkan SDK
 * CMake
