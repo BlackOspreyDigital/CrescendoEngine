@@ -38,6 +38,9 @@ Install the required core dependencies, including Clang and the Vulkan toolchain
 ```bash
 sudo pacman -S base-devel cmake clang pkgconf sdl2 sdl2_image vulkan-headers vulkan-icd-loader shaderc lua ktx
 ```
+
+-----------------------------------------------------------------------------------------------------
+
 ### Build Instructions
 
 Crescendo utilizes a standard CMake build pipeline. 
@@ -56,11 +59,14 @@ mkdir build && cd build
 CC=clang CXX=clang++ cmake ..
 make -j$(nproc)
 ```
+-----------------------------------------------------------------------------------------------------
 
 ### Prerequisites (Windows)
-Direct X support coming soon!
+*Direct X support coming soon!*
 
 ### Prerequisites (MacOs)
-Metal support coming soon!
+*Metal support coming soon!*
+
+-----------------------------------------------------------------------------------------------------
 
 Thanks for checking out the repo, if you would like to get involved please check out our website at htttps://www.theospreylibrary.com 
