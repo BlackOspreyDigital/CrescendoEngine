@@ -1,13 +1,13 @@
 # Crescendo Engine — Voxel Systems Plugin (Feature Branch)
 
-> **⚠️ Note on Installation & Usage:** > This is an active development branch focused on engine architecture refactoring. For stable builds, installation instructions, and general engine setup, please refer to the **[main branch](../../tree/main)**.
+> **⚠️ Note on Installation & Usage:** > This is an active development branch focused on engine architecture refactoring. For stable builds, installation instructions, and general engine setup, please refer to the **[main branch](/CrescendoEngine/tree/main)**.
 
 ---
 <p align="center">
-  <img src="assets/icons/voxelthumbnail.png" alt="Voxel Showcase 1" width="45%" />
+  <img src="assets/icons/voxelthumbnail.png" alt="Voxel Showcase 1" width="75%" />
 </p>
 
---- 
+---
 
 ## Branch Objective: Voxel Decoupling & Plugin Architecture
 
@@ -21,7 +21,7 @@ In earlier iterations, voxel rendering and spatial volume logic were hardcoded d
 ---
 
 <p align="center">
-  <img src="assets/icons/voxelthumbnail2.png" alt="Voxel Showcase 2" width="45%" />
+  <img src="assets/icons/voxelthumbnail2.png" alt="Voxel Showcase 2" width="75%" />
 </p>
 
 ---
