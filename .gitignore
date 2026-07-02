@@ -25,7 +25,11 @@ assets/hdr
 assets/audio
 assets/scripts
 assets/textures
-assets/icons
+
+assets/icons/*
+
+!assets/icons/voxelthumbnail.png
+!assets/icons/voxelthumbnail2.png
 
 # --- Dependencies (The Clutter Killers) ---
 # This stops Git from ever looking inside these folders
