@@ -12,6 +12,11 @@
 #include "core/EngineState.hpp"
 
 namespace Crescendo {
+    // Forward declare the module to keep Engine.hpp lightweight
+    namespace Modules { 
+        class BladesUI; 
+    }
+
     class ScriptSystem;
 
     class Engine {
@@ -27,7 +32,6 @@ namespace Crescendo {
         void ProcessEvents();
         void Update();
         void Render();
-        // ------------------------------------------------
 
         EngineState currentState = EngineState::Editor;
         EngineState previousState = EngineState::Editor;
@@ -38,15 +42,14 @@ namespace Crescendo {
         
         DisplayServer displayServer;
         
-        // --- 3. THE SWAP ---
         std::unique_ptr<IRenderer> renderer;
-        // -------------------
         
         PhysicsServer physicsServer;
         AudioServer audioServer;
 
-        // SYSTEMS
+        // DEV SYSTEMS
         std::unique_ptr<ScriptSystem> scriptSystem;
+        std::unique_ptr<Crescendo::Modules::BladesUI> bladesUI;
 
         Scene scene;
         

@@ -177,8 +177,6 @@ namespace Crescendo {
         }
     }
 
-    
-
     bool VoxelTerrainModule::CreateComputePipelines() {
         // 1. Create Descriptor Layout
         VkDescriptorSetLayoutBinding inputBinding{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -220,21 +218,21 @@ namespace Crescendo {
     void VoxelTerrainModule::GenerateChunkGPU(VkCommandBuffer cmd, const TerrainComputePush& pushData) {
         // 1. Reset the vertex/index counters to 0
         vkCmdFillBuffer(cmd, m_computeVertexBuffer.handle, 0, 2 * sizeof(uint32_t), 0);
-        
+
         // 2. Bind the Descriptor Set
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_computePipelineLayout, 0, 1, &m_computeDescriptorSet, 0, nullptr);
-        
+
         // 3. PASS 1: Density Generation
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_densityPipeline);
         vkCmdPushConstants(cmd, m_computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TerrainComputePush), &pushData);
         
         uint32_t groups = (pushData.resolution / 8) + 1;
         vkCmdDispatch(cmd, groups, groups, groups);
-        
+
         // 4. Barrier
         VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT};
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
-        
+
         // 5. PASS 2: Marching Cubes
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_marchingCubesPipeline);
         vkCmdDispatch(cmd, groups, groups, groups);

@@ -21,6 +21,7 @@
 #endif
 
 #include "IO/SceneManager.hpp"
+#include "modules/blades_ui/BladesUI.hpp"
 
 namespace Crescendo {
 
@@ -36,7 +37,7 @@ namespace Crescendo {
 
         scriptSystem = std::make_unique<ScriptSystem>();
         scriptSystem->Initialize();
-        
+        this->bladesUI = std::make_unique<Modules::BladesUI>();        
         if (!displayServer.initialize(title, width, height)) return false;
 
         // --- PLATFORM RENDERER INJECTION ---
@@ -107,7 +108,11 @@ namespace Crescendo {
     void Engine::Update() {
         float dt = 1.0f / 60.0f; 
         Input::Update();
-       
+
+        if (this->bladesUI) {
+            this->bladesUI->Update(dt);
+        }
+
         auto& cam = static_cast<RenderingServer*>(renderer.get())->mainCamera;
         
         if (currentState == EngineState::Playing && previousState == EngineState::Editor) {
@@ -228,8 +233,11 @@ namespace Crescendo {
             }
         }
 
+
         // Cast the camera's 64-bit position to a 32-bit float for the audio engine
         audioServer.UpdateListener(glm::vec3(cam.Position), cam.Front, cam.Up);
+
+        
     }
 
     void Engine::Render() {
