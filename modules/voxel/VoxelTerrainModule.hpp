@@ -10,7 +10,7 @@
 #include "servers/rendering/IRenderer.hpp"
 #include "servers/rendering/vulkan/VulkanResources.hpp" 
 
-namespace Crescendo {
+namespace Crescendo { 
     
     class Scene;
     class Camera;
@@ -42,6 +42,7 @@ namespace Crescendo {
                                  std::vector<VoxelDrawPacket>& outPackets);
 
         int BuildChunkMesh(IRenderer* renderer, const TerrainComputePush& pushData);
+        ChunkBakeResult BuildChunkMesh(IRenderer* renderer, const TerrainComputePush& pushData, bool needsCollision);
 
     private:
         VkDevice m_device = VK_NULL_HANDLE;
@@ -60,5 +61,6 @@ namespace Crescendo {
 
         bool CreateComputePipelines();
         void GenerateChunkGPU(VkCommandBuffer cmd, const TerrainComputePush& pushData);
+        
     };
 }

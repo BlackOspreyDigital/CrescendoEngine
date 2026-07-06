@@ -1344,6 +1344,12 @@ namespace Crescendo {
         return VK_NULL_HANDLE;
     }
 
+    // Inside RenderingServer.cpp
+    Crescendo::ChunkBakeResult RenderingServer::buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) {
+        // This method is now effectively deprecated as we moved logic to VoxelTerrainModule
+        return Crescendo::ChunkBakeResult{}; 
+    }
+
     //===============================================
     // PIPELINE LOGIC
     //===============================================
@@ -2907,6 +2913,8 @@ namespace Crescendo {
         vkFreeCommandBuffers(device, pool, 1, &commandBuffer);
         vkDestroyCommandPool(device, pool, nullptr);
     }
+
+    
 
     // --------------------------------------------------------------------
     // Render() / THE RENDER LOOP

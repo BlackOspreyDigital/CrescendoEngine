@@ -233,6 +233,9 @@ namespace Crescendo {
         const uint32_t SHADOW_DIM = 2048; 
         const uint32_t SHADOW_CASCADES = 4;
 
+        // Inside RenderingServer class in RenderingServer.hpp
+        ChunkBakeResult buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) override;
+
     private:
     
         VkInstance instance = VK_NULL_HANDLE;
