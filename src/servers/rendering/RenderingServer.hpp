@@ -132,13 +132,6 @@ namespace Crescendo {
         glm::mat4 invViewProj;  
     };
 
-    struct AtmospherePush {
-        glm::mat4 vp;                              // 64 bytes
-        glm::vec4 sunDirection_planetRadius;       // 16 bytes
-        glm::vec4 planetCenter_atmosphereRadius;   // 16 bytes
-        glm::vec4 cameraPos_sunIntensity;          // 16 bytes
-        glm::vec4 rayleigh_mie;                    // 16 bytes
-    }; 
 
     struct PostProcessPushConstants {
        float exposure;
@@ -227,23 +220,6 @@ namespace Crescendo {
         Camera mainCamera;
         std::vector<MeshResource> meshes;
         int waterTextureID = 0;
-
-        // --- TERRAIN COMPUTE GPU WORKSPACE ---
-        VkDescriptorSetLayout terrainComputeDescriptorLayout = VK_NULL_HANDLE;
-        VkPipelineLayout terrainComputePipelineLayout = VK_NULL_HANDLE;
-        VkPipeline densityComputePipeline = VK_NULL_HANDLE;
-        VkPipeline marchingCubesComputePipeline = VK_NULL_HANDLE;
-
-        VulkanBuffer densityBuffer;
-        VulkanBuffer computeVertexBuffer;
-        VulkanBuffer computeIndexBuffer;
-        
-        VkDescriptorSet terrainComputeDescriptorSet = VK_NULL_HANDLE;
-
-        // Voxel Gen
-        bool createTerrainComputePipelines();
-        void generateChunkGPU(VkCommandBuffer cmd, const TerrainComputePush& pushData);
-        int buildChunkMesh(const TerrainComputePush& pushData);
         
         // Constants
         const uint32_t SHADOW_DIM = 2048; 

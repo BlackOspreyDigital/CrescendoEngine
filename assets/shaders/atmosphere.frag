@@ -119,7 +119,7 @@ void main() {
         opticalDepthM += stepM;
 
         // 1. Pass 'sunDir' to the shadow function, NOT push.sunDirection
-        float lightVisibility = analyticPlanetShadow(currentPoint, push.planetCenter, push.planetRadius, sunDir);
+        float lightVisibility = analyticPlanetShwadow(currentPoint, push.planetCenter, push.planetRadius, sunDir);
         
         // 2. Ensure your optical depth calculation uses 'sunDir'
         vec2 sunRayIsect = raySphereIntersect(currentPoint, sunDir, push.planetCenter, push.atmosphereRadius);

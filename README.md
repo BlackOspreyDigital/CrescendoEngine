@@ -1,6 +1,6 @@
 # Crescendo Engine — Voxel Systems Plugin (Feature Branch)
 
-> **⚠️ Note on Installation & Usage:** > This is an active development branch focused on engine architecture refactoring. For stable builds, installation instructions, and general engine setup, please refer to the **[main branch](/CrescendoEngine/tree/main)**.
+> **⚠️ Note on Installation & Usage:** > This is an active development branch focused on engine architecture refactoring. For stable builds, installation instructions, and general engine setup, please refer to the **[main branch](BlackOspreyDigital/CrescendoEngine/tree/main)**.
 
 ---
 <p align="center">

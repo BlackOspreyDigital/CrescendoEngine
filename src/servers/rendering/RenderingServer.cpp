@@ -14,7 +14,6 @@
 #include <array>
 #include <set>
 #include "scene/Scene.hpp"
-#include "scene/components/ProceduralPlanetComponent.hpp"
 #include <cstring>
 #include <fstream>
 #include <algorithm>
@@ -30,8 +29,6 @@
 #include <glm/gtx/intersect.hpp>       
 #include <glm/gtx/matrix_decompose.hpp> 
 #include "backends/imgui_impl_vulkan.h"
-#include "modules/terrain/TerrainManager.hpp"
-#include "servers/physics/PhysicsServer.hpp"
 #include <vulkan/vulkan_core.h>  
 #include "servers/display/DisplayServer.hpp"
 #include "servers/rendering/RenderingServer.hpp"
@@ -118,10 +115,8 @@ namespace Crescendo {
         if (!createTextureImage()) return false; 
         createTextureImage("assets/textures/speakersymbol.png", speakerTexture);
         // ---------------------------------------------------------
-        // 1. BUILD COMPUTE PIPELINES FIRST
+        // 1. MOVING TO MODULES ( VOXELS & TERRAIN )
         // ---------------------------------------------------------
-        if (!createComputePipelines()) return false;
-        if (!createTerrainComputePipelines()) return false;
 
         // ---------------------------------------------------------
         // 2. FIRE THE LASER (Bake the Cubemap so skyImage exists!)
@@ -2509,193 +2504,6 @@ namespace Crescendo {
         return true;
     }
 
-    bool RenderingServer::createTerrainComputePipelines() {
-        // 1. Descriptor Set Layout
-        std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
-        
-        bindings[0].binding = 0;
-        bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[0].descriptorCount = 1;
-        bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        
-        bindings[1].binding = 1;
-        bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[1].descriptorCount = 1;
-        bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        
-        bindings[2].binding = 2;
-        bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[2].descriptorCount = 1;
-        bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        
-        bindings[3].binding = 3;
-        bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        bindings[3].descriptorCount = 1;
-        bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        
-        VkDescriptorSetLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
-        layoutInfo.pBindings = bindings.data();
-        
-        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &terrainComputeDescriptorLayout) != VK_SUCCESS) return false;
-        
-        VkPushConstantRange pushConstant{};
-        pushConstant.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        pushConstant.offset = 0;
-        pushConstant.size = sizeof(TerrainComputePush);
-        
-        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutInfo.setLayoutCount = 1;
-        pipelineLayoutInfo.pSetLayouts = &terrainComputeDescriptorLayout;
-        pipelineLayoutInfo.pushConstantRangeCount = 1;
-        pipelineLayoutInfo.pPushConstantRanges = &pushConstant;
-        
-        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &terrainComputePipelineLayout) != VK_SUCCESS) return false;
-        
-        // 2. Load the Compute Shaders
-        auto densityCode = readFile("assets/shaders/terrain_density.comp.spv");
-        auto marchingCode = readFile("assets/shaders/terrain_marching_cubes.comp.spv");
-        
-        VkShaderModule densityModule = createShaderModule(densityCode);
-        VkShaderModule marchingModule = createShaderModule(marchingCode);
-        
-        // Setup Density Pipeline
-        VkPipelineShaderStageCreateInfo densityStage{};
-        densityStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        densityStage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        densityStage.module = densityModule;
-        densityStage.pName = "main";
-        
-        VkComputePipelineCreateInfo computeInfo{};
-        computeInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        computeInfo.layout = terrainComputePipelineLayout;
-        computeInfo.stage = densityStage;
-        
-        vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computeInfo, nullptr, &densityComputePipeline);
-        
-        // Swap to Marching Cubes Pipeline
-        VkPipelineShaderStageCreateInfo marchingStage{};
-        marchingStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        marchingStage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        marchingStage.module = marchingModule;
-        marchingStage.pName = "main";
-        
-        computeInfo.stage = marchingStage;
-        vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computeInfo, nullptr, &marchingCubesComputePipeline);
-        
-        vkDestroyShaderModule(device, densityModule, nullptr);
-        vkDestroyShaderModule(device, marchingModule, nullptr);
-        
-        // 3. Allocate the VRAM Workspace (SSBOs)
-        const VkDeviceSize DENSITY_SIZE = 33 * 33 * 33 * sizeof(float);
-        const VkDeviceSize MAX_VERTS_SIZE = 50 * 1024 * 1024;
-        const VkDeviceSize MAX_INDICES_SIZE = 10 * 1024 * 1024;
-        const VkDeviceSize COUNTER_SIZE = 2 * sizeof(uint32_t);
-
-        // (GPU-Only allocations)
-        densityBuffer = VulkanBuffer(allocator, DENSITY_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-        computeVertexBuffer = VulkanBuffer(allocator, MAX_VERTS_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-        computeIndexBuffer = VulkanBuffer(allocator, MAX_INDICES_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-
-        // --- NEW: VMA 3.0 HOST-VISIBLE STAGING BUFFERS (FOR JOLT PHYSICS) ---
-        VkBufferCreateInfo sVertInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        sVertInfo.size = MAX_VERTS_SIZE;
-        sVertInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        
-        VmaAllocationCreateInfo sAlloc{};
-        sAlloc.usage = VMA_MEMORY_USAGE_AUTO;
-        sAlloc.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT; 
-        
-        stagingVertBuffer.allocator = allocator;
-        stagingIndexBuffer.allocator = allocator;
-        counterBuffer.allocator = allocator;
-
-        vmaCreateBuffer(allocator, &sVertInfo, &sAlloc, &stagingVertBuffer.handle, &stagingVertBuffer.allocation, nullptr);
-        
-        VkBufferCreateInfo sIndInfo = sVertInfo;
-        sIndInfo.size = MAX_INDICES_SIZE;
-        vmaCreateBuffer(allocator, &sIndInfo, &sAlloc, &stagingIndexBuffer.handle, &stagingIndexBuffer.allocation, nullptr);
-        
-        VkBufferCreateInfo counterBufInfo{};
-        counterBufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        counterBufInfo.size = COUNTER_SIZE;
-        counterBufInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-
-        VmaAllocationCreateInfo counterAllocInfo{};
-        counterAllocInfo.usage = VMA_MEMORY_USAGE_AUTO; 
-        counterAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT; 
-
-        vmaCreateBuffer(allocator, &counterBufInfo, &counterAllocInfo, &counterBuffer.handle, &counterBuffer.allocation, nullptr);
-        
-        // 4. Bind the Buffers to the Descriptor Set
-        VkDescriptorSetAllocateInfo allocInfo{};
-        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-        allocInfo.descriptorPool = descriptorPool;
-        allocInfo.descriptorSetCount = 1;
-        allocInfo.pSetLayouts = &terrainComputeDescriptorLayout;
-        
-        vkAllocateDescriptorSets(device, &allocInfo, &terrainComputeDescriptorSet);
-        
-        VkDescriptorBufferInfo dInfo{};
-        dInfo.buffer = densityBuffer.handle;
-        dInfo.offset = 0;
-        dInfo.range = VK_WHOLE_SIZE;
-        
-        VkDescriptorBufferInfo vInfo{};
-        vInfo.buffer = computeVertexBuffer.handle;
-        vInfo.offset = 0;
-        vInfo.range = VK_WHOLE_SIZE;
-        
-        VkDescriptorBufferInfo iInfo{};
-        iInfo.buffer = computeIndexBuffer.handle;
-        iInfo.offset = 0;
-        iInfo.range = VK_WHOLE_SIZE;
-        
-        VkDescriptorBufferInfo cInfo{};
-        cInfo.buffer = counterBuffer.handle;
-        cInfo.offset = 0;
-        cInfo.range = VK_WHOLE_SIZE;
-        
-        std::array<VkWriteDescriptorSet, 4> writes{};
-        
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = terrainComputeDescriptorSet;
-        writes[0].dstBinding = 0;
-        writes[0].dstArrayElement = 0;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[0].descriptorCount = 1;
-        writes[0].pBufferInfo = &dInfo;
-        
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = terrainComputeDescriptorSet;
-        writes[1].dstBinding = 1;
-        writes[1].dstArrayElement = 0;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[1].descriptorCount = 1;
-        writes[1].pBufferInfo = &vInfo;
-        
-        writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[2].dstSet = terrainComputeDescriptorSet;
-        writes[2].dstBinding = 2;
-        writes[2].dstArrayElement = 0;
-        writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[2].descriptorCount = 1;
-        writes[2].pBufferInfo = &iInfo;
-        
-        writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[3].dstSet = terrainComputeDescriptorSet;
-        writes[3].dstBinding = 3;
-        writes[3].dstArrayElement = 0;
-        writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        writes[3].descriptorCount = 1;
-        writes[3].pBufferInfo = &cInfo;
-        
-        vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-        
-        return true;
-    }
 
     bool RenderingServer::createOutlinePipeline() {
         auto vertShaderCode = readFile("assets/shaders/shader.vert.spv"); 
@@ -2792,173 +2600,6 @@ namespace Crescendo {
         VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         // (No binding descriptions here!)
         return true;
-    }
-
-    void RenderingServer::generateChunkGPU(VkCommandBuffer cmd, const TerrainComputePush& pushData) {
-        // 1. Reset the vertex/index counters to 0
-        vkCmdFillBuffer(cmd, counterBuffer.handle, 0, 2 * sizeof(uint32_t), 0);
-
-        // Barrier: Wait for the fill to finish before the shader tries to write to it
-        VkBufferMemoryBarrier fillBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-        fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        fillBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-        fillBarrier.buffer = counterBuffer.handle;
-        fillBarrier.offset = 0; fillBarrier.size = VK_WHOLE_SIZE;
-        
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 1, &fillBarrier, 0, nullptr);
-
-        // 2. Bind the Descriptor Set
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, terrainComputePipelineLayout, 0, 1, &terrainComputeDescriptorSet, 0, nullptr);
-
-        // 3. PASS 1: Density Generation
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, densityComputePipeline);
-        vkCmdPushConstants(cmd, terrainComputePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TerrainComputePush), &pushData);
-        
-        // Dispatch (Resolution / 8 because our shader uses local_size = 8)
-        uint32_t groups = (pushData.resolution / 8) + 1;
-        vkCmdDispatch(cmd, groups, groups, groups);
-
-        // Barrier: Wait for Density Pass to finish before Marching Cubes starts
-        VkBufferMemoryBarrier densityBarrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
-        densityBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        densityBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        densityBarrier.buffer = densityBuffer.handle;
-        densityBarrier.offset = 0; densityBarrier.size = VK_WHOLE_SIZE;
-        
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 1, &densityBarrier, 0, nullptr);
-
-        // 4. PASS 2: Marching Cubes
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, marchingCubesComputePipeline);
-        vkCmdDispatch(cmd, groups, groups, groups);
-
-        // Barrier: Ensure vertices are fully written before the Graphics queue tries to draw them
-        std::array<VkBufferMemoryBarrier, 2> geomBarriers{};
-        geomBarriers[0] = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, computeVertexBuffer.handle, 0, VK_WHOLE_SIZE};
-        geomBarriers[1] = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, computeIndexBuffer.handle, 0, VK_WHOLE_SIZE};
-        
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 2, geomBarriers.data(), 0, nullptr);
-    }
-
-    ChunkBakeResult RenderingServer::buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) {
-        ChunkBakeResult result;
-        VkCommandPool localPool;
-        
-        // 1. DISPATCH
-        VkCommandBuffer cmd = beginAsyncCommands(localPool);
-        // Plug the GPU memory into the shader! 
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, terrainComputePipelineLayout, 0, 1, &terrainComputeDescriptorSet, 0, nullptr);
-                
-        // Pass 1: Density (Padded to 33x33x33 to prevent boundary walls)
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, densityComputePipeline);
-        vkCmdPushConstants(cmd, terrainComputePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TerrainComputePush), &pushData);
-        vkCmdDispatch(cmd, 5, 5, 5); // <--- CHANGED THIS TO 5!
-        
-        VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0, nullptr, 0, nullptr);
-        
-        // Pass 2: Marching Cubes (Still 32x32x32 cubes)
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, marchingCubesComputePipeline);
-        vkCmdPushConstants(cmd, terrainComputePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(TerrainComputePush), &pushData);
-        vkCmdDispatch(cmd, 4, 4, 4); // <--- CHANGED TO 4 (Same as 32 / 8)
-        
-        endAsyncCommands(cmd, localPool);
-        
-        // 2. Read back vertex/index counts
-        uint32_t* counters;
-        vmaMapMemory(allocator, counterBuffer.allocation, (void**)&counters);
-        uint32_t vertexCount = counters[0];
-        uint32_t indexCount = counters[1];
-        vmaUnmapMemory(allocator, counterBuffer.allocation);
-        
-        // Safe memory overflow
-        // Clamp the vertices so we never write past the end of the staging buffer!
-        const uint32_t MAX_SAFE_VERTICES = 60000; 
-        if (vertexCount > MAX_SAFE_VERTICES) vertexCount = MAX_SAFE_VERTICES;
-        if (indexCount > MAX_SAFE_VERTICES * 3) indexCount = MAX_SAFE_VERTICES * 3;
-        // ----------------------------------------------
-
-        if (vertexCount == 0 || indexCount == 0) {
-            // Still need to reset counters if the chunk was empty air
-            cmd = beginAsyncCommands(localPool);
-
-            vkCmdFillBuffer(cmd, counterBuffer.handle, 0, 8, 0);
-
-            endAsyncCommands(cmd, localPool);
-            return result;
-        }
-
-        // 3. Allocate permanent VRAM (For Graphics)
-        VkDeviceSize vertSize = vertexCount * sizeof(Vertex);
-        VkDeviceSize indSize = indexCount * sizeof(uint32_t);
-
-        MeshResource newMesh;
-        newMesh.name = "GPU_Chunk";
-        newMesh.indexCount = indexCount;
-        newMesh.textureID = 0;
-        newMesh.vertexBuffer = VulkanBuffer(allocator, vertSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-        newMesh.indexBuffer = VulkanBuffer(allocator, indSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VMA_MEMORY_USAGE_GPU_ONLY);
-
-        // Exact-Size Dynamic Staging Buffers
-        VkBuffer tempVertBuf = VK_NULL_HANDLE, tempIndBuf = VK_NULL_HANDLE;
-        VmaAllocation tempVertAlloc = VK_NULL_HANDLE, tempIndAlloc = VK_NULL_HANDLE;
-
-        if (needsCollision) {
-            // Create raw VMA buffers matched EXACTLY to the vertSize and indSize
-            VkBufferCreateInfo vInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-            vInfo.size = vertSize; vInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-
-            VkBufferCreateInfo iInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-            iInfo.size = indSize; iInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-
-            VmaAllocationCreateInfo allocInfo{};
-            allocInfo.usage = VMA_MEMORY_USAGE_GPU_TO_CPU;
-
-            vmaCreateBuffer(allocator, &vInfo, &allocInfo, &tempVertBuf, &tempVertAlloc, nullptr);
-            vmaCreateBuffer(allocator, &iInfo, &allocInfo, &tempIndBuf, &tempIndAlloc, nullptr);
-        }
-        // ---------------------------------------------------------
-
-        // 4. Data Transfer AND Counter Reset
-        cmd = beginAsyncCommands(localPool);
-
-        // Copy the geometry to GPU memory
-        VkBufferCopy vCopy{0, 0, vertSize}, iCopy{0, 0, indSize};
-        vkCmdCopyBuffer(cmd, computeVertexBuffer.handle, newMesh.vertexBuffer.handle, 1, &vCopy);
-        vkCmdCopyBuffer(cmd, computeIndexBuffer.handle, newMesh.indexBuffer.handle, 1, &iCopy);
-
-        if (needsCollision) {
-            // Copy to our exactly-sized temporary staging buffers
-            vkCmdCopyBuffer(cmd, computeVertexBuffer.handle, tempVertBuf, 1, &vCopy);
-            vkCmdCopyBuffer(cmd, computeIndexBuffer.handle, tempIndBuf, 1, &iCopy);
-        }
-
-        // Reset counters to prevent CPU stall
-        vkCmdFillBuffer(cmd, counterBuffer.handle, 0, 8, 0);
-        endAsyncCommands(cmd, localPool);
-
-        // 5. Data Extraction
-        if (needsCollision) {
-            const int STRIDE = sizeof(Vertex) / sizeof(float);
-            float* rawVerts;
-            vmaMapMemory(allocator, tempVertAlloc, (void**)&rawVerts);
-            result.collisionVerts.assign(rawVerts, rawVerts + (vertexCount * STRIDE));
-            vmaUnmapMemory(allocator, tempVertAlloc);
-        
-            uint32_t* rawInds;
-            vmaMapMemory(allocator, tempIndAlloc, (void**)&rawInds);
-            result.collisionIndices.assign(rawInds, rawInds + indexCount);
-            vmaUnmapMemory(allocator, tempIndAlloc);
-
-            // --- CLEANUP: Destroy the temporary buffers immediately! ---
-            vmaDestroyBuffer(allocator, tempVertBuf, tempVertAlloc);
-            vmaDestroyBuffer(allocator, tempIndBuf, tempIndAlloc);
-        }
-
-        result.generatedMesh = std::move(newMesh);
-        result.hasMesh = true;
-        return result;
     }
    
     //===============================================
@@ -3365,36 +3006,36 @@ namespace Crescendo {
 
     void RenderingServer::render(Scene* scene, SceneManager* sceneManager, EngineState& engineState) {
         if (!scene) return;
-                    
+
         // --- SAFELY REBUILD PIPELINES BEFORE THE FRAME STARTS ---
         if (msaaNeedsRebuild) {
             SetMSAASamples(pendingMsaaSamples);
             msaaNeedsRebuild = false;
         }
-            
+
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
-        
+
         uint32_t imageIndex;
         VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
-        
+
         if (result == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapChain(window); return; }
-        
+
         // Pass the state reference to the UI!
         editorUI.Prepare(scene, sceneManager, mainCamera, viewportDescriptorSet, engineState);
-        
+
         vkResetFences(device, 1, &inFlightFences[currentFrame]);
         vkResetCommandBuffer(commandBuffers[currentFrame], 0);
 
-        // ---------------------------------------------------------
-        // PHASE 0: UPLOAD ENTITY DATA TO GPU (SSBO)
-        // ---------------------------------------------------------
+        // =========================================================================
+        // PHASE 0: MODULAR SYSTEM UPDATES & SSBO UPLOAD
+        // =========================================================================
+
+        // 1. Let the Voxel Module handle 64-bit octree streaming & async Jolt threads BEFORE recording!
+        m_voxelModule.Update(scene, this, mainCamera);
+
         EntityData* gpuData = (EntityData*)entityStorageBuffersMapped[currentFrame];
         int entityCount = 0;
-
-        // Map used to link an Entity Pointer to its GPU Index
         std::map<CBaseEntity*, uint32_t> entityGPUIndices;
-
-        // Get 64-Bit Camera
         glm::dvec3 cameraWorldPos = mainCamera.Position;
 
         for (auto* ent : scene->entities) {
@@ -3402,36 +3043,29 @@ namespace Crescendo {
 
             EntityData& data = gpuData[entityCount];
 
-            // 1. Calculate the difference in 64-bit double space
             glm::dvec3 entityWorldPos = ent->origin;
             glm::dvec3 relativePos = entityWorldPos - cameraWorldPos;
-
-            // 2. Cast it down to 32-bit float using the glm::vec3 constructor!
             glm::vec3 renderPos = glm::vec3(relativePos);
 
-            // 3. Upload to GPU
             data.pos = glm::vec4(renderPos, 1.0f);
-            data.rot   = glm::vec4(glm::radians(ent->angles), 0.0f);
+            data.rot = glm::vec4(glm::radians(ent->angles), 0.0f);
             data.scale = glm::vec4(ent->scale, 1.0f);
 
-            // Material & Volume logic remains the same...
             int texID = (ent->textureID > 0) ? ent->textureID : 0;
             if (texID == 0 && ent->modelIndex < meshes.size() && meshes[ent->modelIndex].textureID > 0) {
                 texID = meshes[ent->modelIndex].textureID;
             }
         
             data.albedoTint = glm::vec4(ent->albedoColor, (float)texID);
-            
-            // Pass the planet radius into the unused sphereBounds.w
+
+            // NOTE: To make SSBO 100% voxel-agnostic later, move this to ent->boundingRadius!
             float pRadius = 0.0f;
             if (ent->HasComponent<ProceduralPlanetComponent>()) {
                 pRadius = ent->GetComponent<ProceduralPlanetComponent>()->settings.radius;
             }
             data.sphereBounds = glm::vec4(0.0f, 0.0f, 0.0f, pRadius);
-            
+
             data.pbrParams = glm::vec4(ent->roughness, ent->metallic, ent->emission, ent->normalStrength);
-            data.volumeParams = glm::vec4(ent->transmission, ent->thickness, ent->attenuationDistance, ent->ior);
-            data.volumeColor  = glm::vec4(ent->attenuationColor, 0.0f);
             data.volumeParams = glm::vec4(ent->transmission, ent->thickness, ent->attenuationDistance, ent->ior);
             data.volumeColor  = glm::vec4(ent->attenuationColor, (float)ent->normalTextureID); 
             data.advancedPbr = glm::vec4(ent->clearcoat, ent->clearcoatRoughness, ent->sheen, (float)ent->ormTextureID);       
@@ -3446,32 +3080,23 @@ namespace Crescendo {
         // ---------------------------------------------------------
         // RENDER COMMANDS
         // ---------------------------------------------------------
-
         VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         vkBeginCommandBuffer(commandBuffers[currentFrame], &beginInfo);
 
         float aspectRatio = 1.0f;
         glm::vec2 viewportSize = editorUI.GetViewportSize();
         if (viewportSize.x > 0 && viewportSize.y > 0) aspectRatio = viewportSize.x / viewportSize.y;
-        
-        // Strip Translation so Camera is at (0,0,0) in render space
+
         glm::mat4 view = mainCamera.GetViewMatrix();
-        
-        // Extract only the 3x3 rotation matrix, then expand it back to 4x4
         glm::mat4 viewNoTranslation = glm::mat4(glm::mat3(view)); 
-        
         glm::mat4 proj = glm::perspective(glm::radians(mainCamera.fov), aspectRatio, mainCamera.farClip, mainCamera.nearClip);
-        proj[1][1] *= -1.0f; // The Vulkan Y-flip
-        
-        // Multiply Projection by the Rotation-Only View!
+        proj[1][1] *= -1.0f;
         glm::mat4 vp = proj * viewNoTranslation; 
 
-        // 2. Sun Logic (Grab defaults from EditorUI/Scene Environment)
         glm::vec3 sunDirection = glm::normalize(scene->environment.sunDirection);
         glm::vec3 sunColor = scene->environment.sunColor;
         float sunIntensity = scene->environment.sunIntensity;
-        
-        // 1. Sync Sky Colors from env_sky
+
         for (auto* ent : scene->entities) {
             if (ent && ent->className == "env_sky") {
                 scene->environment.skyColor = ent->albedoColor; 
@@ -3480,14 +3105,10 @@ namespace Crescendo {
             }
         }
 
-        // 2. Sync Sun Position & Properties from light_directional
         for (auto* ent : scene->entities) {
             if (ent && ent->className == "light_directional") {
                 sunColor = ent->albedoColor;
                 sunIntensity = ent->emission;
-
-                // Convert Inspector Euler Angles to Z-Up Forward Vector
-                // Invert the pitch (x) so positive inspector values point the sun DOWN at the planet
                 float pitch = glm::radians(-ent->angles.x); 
                 float yaw   = glm::radians(ent->angles.y);
 
@@ -3495,10 +3116,8 @@ namespace Crescendo {
                 lightDir.x = cos(yaw) * cos(pitch);
                 lightDir.y = sin(yaw) * cos(pitch);
                 lightDir.z = sin(pitch); 
-
                 sunDirection = glm::normalize(lightDir);
 
-                // Update the global environment so the rest of the renderer (shadows, PBR) uses it
                 scene->environment.sunDirection = sunDirection;
                 scene->environment.sunColor = sunColor;
                 scene->environment.sunIntensity = sunIntensity;
@@ -3506,25 +3125,14 @@ namespace Crescendo {
             }
         }
 
-        // =========================================================
-        // 2. UPDATE GLOBAL UNIFORMS (GUB)
-        // =========================================================
+        // UPDATE GLOBAL UNIFORMS (GUB)
         GlobalUniforms globalData{};
         globalData.viewProj = vp;
         globalData.view = view;
         globalData.proj = proj;
-        // Cast to vec3 before packing it into the vec4
         globalData.cameraPos = glm::vec4(glm::vec3(mainCamera.Position), 1.0f);
-        
-        // Now the sliders will push into the shader!
         globalData.sunDirection = glm::vec4(sunDirection, sunIntensity);
         globalData.sunColor = glm::vec4(sunColor, 1.0f);
-
-        // Pack all 4 parameters cleanly without overwriting!
-        // .x = Ambient Intensity (For fading HDR to black in space)
-        // .y = Sky Type (0=Solid, 1=Procedural, 2=HDR)
-        // .z = Engine Time (For animated shaders like water/wind)
-        // .w = Viewport Width
         globalData.params = glm::vec4(
             scene->environment.ambientIntensity,
             static_cast<float>(scene->environment.skyType), 
@@ -3533,45 +3141,22 @@ namespace Crescendo {
         );
 
         globalData.fogColor = scene->environment.fogColor;
-        if (!scene->environment.enableFog) {
-            globalData.fogColor.w = 0.0f; // Force density to exactly 0 to turn it off!
-        }
+        if (!scene->environment.enableFog) globalData.fogColor.w = 0.0f;
         globalData.fogParams   = scene->environment.fogParams;
         globalData.skyColor    = glm::vec4(scene->environment.skyColor, 1.0f);
         globalData.groundColor = glm::vec4(scene->environment.groundColor, 1.0f);
-        
-        // --- EXTRACT POINT LIGHTS ---
         globalData.pointLightParams.x = 0; 
-        
-        /*for (auto* ent : scene->entities) {
-            if (ent && ent->className == "light_point" && globalData.pointLightParams.x < 16) {
-                int idx = globalData.pointLightParams.x; 
-                
-                // Subtract the camera to put the light in Relative Render Space!
-                glm::vec3 relativeLightPos = glm::vec3(ent->origin - cameraWorldPos);
-                
-                globalData.pointLights[idx].positionAndRadius = glm::vec4(relativeLightPos, ent->scale.x);
-                globalData.pointLights[idx].colorAndIntensity = glm::vec4(ent->albedoColor, ent->emission);
-                globalData.pointLightParams.x++;
-            }
-        }
-        */
 
         calculateCascades(scene, mainCamera, aspectRatio, globalData);
-
-        // Upload to GPU (Binding 3)
         memcpy(globalUniformBuffersMapped[currentFrame], &globalData, sizeof(GlobalUniforms));
 
-        // ---> 2. THE PASTED ENTITY SORTING BLOCK <---
         std::vector<CBaseEntity*> opaqueList;
         std::vector<std::pair<float, CBaseEntity*>> transPairs;
-        // Cast to vec3 for the sorting distance checks
         glm::vec3 camPos = glm::vec3(mainCamera.Position);
 
         for (auto* ent : scene->entities) {
             if (!ent || ent->modelIndex >= meshes.size() || ent->className == "prop_water") continue;
             if (ent->transmission > 0.0f) {
-                // Cast the entity origin down to a 32-bit float just for the distance check
                 glm::vec3 entPosFloat = glm::vec3(ent->origin);
                 float distSq = glm::dot(entPosFloat - camPos, entPosFloat - camPos);
                 transPairs.push_back({distSq, ent});
@@ -3589,13 +3174,12 @@ namespace Crescendo {
         vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
         vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
 
-        // Loop through all 4 shadow slices
         for (uint32_t i = 0; i < SHADOW_CASCADES; i++) {
             VkRenderPassBeginInfo shadowPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
             shadowPassInfo.renderPass = shadowRenderPass;
             shadowPassInfo.framebuffer = shadowFramebuffers[i];
             shadowPassInfo.renderArea.extent = {SHADOW_DIM, SHADOW_DIM};
-            
+
             VkClearValue clearDepth;
             clearDepth.depthStencil = {0.0f};
             shadowPassInfo.clearValueCount = 1;
@@ -3605,11 +3189,9 @@ namespace Crescendo {
 
             VkViewport viewport{0.0f, 0.0f, (float)SHADOW_DIM, (float)SHADOW_DIM, 0.0f, 1.0f};
             vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &viewport);
-            
             VkRect2D scissor{{0, 0}, {SHADOW_DIM, SHADOW_DIM}};
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
 
-            // INVERT THE BIAS FOR REVERSED Z!
             float scaledConstantBias = scene->environment.shadowBiasConstant * 100.0f;
             vkCmdSetDepthBias(commandBuffers[currentFrame], -scaledConstantBias, 0.0f, -scene->environment.shadowBiasSlope);
 
@@ -3622,58 +3204,24 @@ namespace Crescendo {
                 VkDeviceSize offsets[] = {0};
                 vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
-                                    
-                ShadowPushConsts push{};
-                push.lightSpaceMatrix = globalData.lightSpaceMatrices[i]; 
-                push.entityIndex = entityGPUIndices[ent];
-                
+
+                ShadowPushConsts push{ globalData.lightSpaceMatrices[i], entityGPUIndices[ent] };
                 vkCmdPushConstants(commandBuffers[currentFrame], shadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShadowPushConsts), &push);
                 vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
             }
 
-            // 2. Draw the PLANET OCTREES into the shadow map
-            for (auto* ent : scene->entities) {
-                if (ent && ent->HasComponent<ProceduralPlanetComponent>()) {
-                    auto planet = ent->GetComponent<ProceduralPlanetComponent>();
-                    if (!planet->rootNode) continue;
-                
-                    auto drawShadowOctree = [&](auto& self, Crescendo::Terrain::OctreeNode* node) -> void {
-                        if (!node) return; // isVisible check removed so off-screen mountains cast shadows!
-                    
-                        bool childrenReady = false;
-                        if (!node->isLeaf) {
-                            childrenReady = true;
-                            for (auto& child : node->children) {
-                                if (child && child->meshID == -1) { childrenReady = false; break; }
-                            }
-                        }
-                    
-                        if (node->isLeaf || !childrenReady) {
-                            if (node->meshID >= 0) {
-                                MeshResource& mesh = meshes[node->meshID];
-                                if (mesh.vertexBuffer.handle != VK_NULL_HANDLE) {
-                                    VkBuffer vBuffers[] = { mesh.vertexBuffer.handle };
-                                    VkDeviceSize offsets[] = {0};
-                                    vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
-                                    vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
-                                
-                                    ShadowPushConsts push{};
-                                    push.lightSpaceMatrix = globalData.lightSpaceMatrices[i];
-                                    push.entityIndex = entityGPUIndices[ent];
-                                    vkCmdPushConstants(commandBuffers[currentFrame], shadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShadowPushConsts), &push);
-                                
-                                    vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
-                                }
-                            }
-                        }
-                    
-                        if (childrenReady && !node->isLeaf) {
-                            for (auto& child : node->children) { self(self, child.get()); }
-                        }
-                    };
-                
-                    drawShadowOctree(drawShadowOctree, planet->rootNode.get());
-                }
+            // 2. --- MODULAR VOXEL HOOK: Draw Voxel Shadows ---
+            std::vector<VoxelDrawPacket> voxelShadows;
+            m_voxelModule.GatherShadowPackets(scene, entityGPUIndices, voxelShadows);
+            for (const auto& packet : voxelShadows) {
+                VkBuffer vBuffers[] = { packet.vertexBuffer };
+                VkDeviceSize offsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
+                vkCmdBindIndexBuffer(commandBuffers[currentFrame], packet.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+                ShadowPushConsts push{ globalData.lightSpaceMatrices[i], packet.entityGPUIndex };
+                vkCmdPushConstants(commandBuffers[currentFrame], shadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShadowPushConsts), &push);
+                vkCmdDrawIndexed(commandBuffers[currentFrame], packet.indexCount, 1, 0, 0, 0);
             }
 
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
@@ -3688,81 +3236,49 @@ namespace Crescendo {
         viewportPassInfo.renderArea.extent = swapChainExtent;
 
         bool useMSAA = msaaSamples != VK_SAMPLE_COUNT_1_BIT;
-        std::vector<VkClearValue> clearValues;
-
+        std::vector<VkClearValue> clearValues(useMSAA ? 6 : 3);
+        clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};      
+        clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
+        clearValues[2].depthStencil = {0.0f, 0};            
         if (useMSAA) {
-            clearValues.resize(6);
-            // Changed from 0.1f to 0.0f
-            clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};      
-            clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
-            clearValues[2].depthStencil = {0.0f, 0};            
             clearValues[3].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
             clearValues[4].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
             clearValues[5].depthStencil = {0.0f, 0};            
-        } else {
-            clearValues.resize(3);
-            // Changed from 0.1f to 0.0f
-            clearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};      
-            clearValues[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};      
-            clearValues[2].depthStencil = {0.0f, 0};            
         }
 
         viewportPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
         viewportPassInfo.pClearValues = clearValues.data();
-        
+
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &viewportPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-            
+
             VkViewport viewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
             vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &viewport);
             VkRect2D scissor{{0, 0}, swapChainExtent};
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
-    
+
             // -----------------------------------------------------------------
             // DRAW SKYBOX [WORLD SPACE]
             // -----------------------------------------------------------------
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipeline);
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
             {
-                // 1. The 112-Byte struct
                 struct SkyboxPush {
-                    glm::mat4 invViewProj;  // 64 bytes
-                    glm::vec4 sunDirection; // 16 bytes (xyz = dir, w = intensity)
-                    glm::vec4 zenithColor;  // 16 bytes
-                    glm::vec4 horizonColor; // 16 bytes
+                    glm::mat4 invViewProj;  
+                    glm::vec4 sunDirection; 
+                    glm::vec4 zenithColor;  
+                    glm::vec4 horizonColor; 
                 } skyPush;
 
                 glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view));
                 skyPush.invViewProj = glm::inverse(proj * viewNoTrans);
+                skyPush.sunDirection = glm::vec4(scene->environment.sunDirection, scene->environment.sunIntensity);
+                skyPush.zenithColor = glm::vec4(glm::vec3(0.0f), 1.0f);
+                skyPush.horizonColor = glm::vec4(0.0f, 0.0f, 0.005f, 1.0f);
 
-                // 2. True Deep Space 
-                glm::vec3 sunDir = scene->environment.sunDirection;
-                
-                // Use the dynamic intensity from the light_directional entity!
-                float sunIntensity = scene->environment.sunIntensity;
-                
-                // Pitch black void. The ONLY blue you will ever see now comes 
-                // mathematically from the Rayleigh scattering of your planets!
-                glm::vec3 zenith = glm::vec3(0.0f, 0.0f, 0.0f);  
-                glm::vec3 horizon = glm::vec3(0.0f, 0.0f, 0.005f); // Tiny baseline so stars still render
-
-                // 3. Pack everything into the struct
-                skyPush.sunDirection = glm::vec4(sunDir, sunIntensity);
-                skyPush.zenithColor = glm::vec4(zenith, 1.0f);
-                skyPush.horizonColor = glm::vec4(horizon, 1.0f);
-                
-                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
-                                   VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
-                                   0, sizeof(SkyboxPush), &skyPush);
+                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SkyboxPush), &skyPush);
+                vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
             }
-            vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
-                    
-            // -----------------------------------------------------------------
-            // DRAW ENTITIES (OPAQUE & TRANSPARENT)
-            // -----------------------------------------------------------------
-            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, 
-                                    pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
-            
+
             // Generic Draw Helper
             auto DrawList = [&](const std::vector<CBaseEntity*>& list) {
                 for (auto* ent : list) {
@@ -3773,224 +3289,61 @@ namespace Crescendo {
                     VkDeviceSize offsets[] = {0};
                     vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
                     vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
-                                        
-                    PushConsts push{};
-                    push.entityIndex = entityGPUIndices[ent];
+
+                    PushConsts push{ entityGPUIndices[ent] };
                     vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConsts), &push);
                     vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
                 }
             };
 
             // -----------------------------------------------------------------
-            // 2. DRAW OPAQUE & OCTREES
+            // 1. DRAW OPAQUE & VOXEL TERRAIN
             // -----------------------------------------------------------------
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, opaquePipeline);
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
-            
-            // First, draw standard opaque models (like the player, ships, etc)
+
             DrawList(opaqueList);
 
-            // Traverse and stream the Procedural Planets! [Updated GPU method]
-            for (auto* ent : scene->entities) {
-                if (ent && ent->HasComponent<ProceduralPlanetComponent>()) {
-                    auto planet = ent->GetComponent<ProceduralPlanetComponent>();
-                    if (!planet->rootNode) continue;
+            // --- MODULAR VOXEL HOOK: Draw Opaque Terrain Packets ---
+            std::vector<VoxelDrawPacket> terrainPackets;
+            m_voxelModule.GatherOpaquePackets(scene, entityGPUIndices, terrainPackets);
+            for (const auto& packet : terrainPackets) {
+                VkBuffer vBuffers[] = { packet.vertexBuffer };
+                VkDeviceSize offsets[] = {0};
+                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
+                vkCmdBindIndexBuffer(commandBuffers[currentFrame], packet.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
-                    // 1. Cull the tree and queue up missing chunks
-                    // Wrap ent->origin in a glm::vec3 cast!
-                    planet->rootNode->Update(camPos - glm::vec3(ent->origin), planet->lodSplitThreshold, planet->chunkManager.get(), scene->physics);
-
-                    // 2. Sort the queue so chunks closest to the camera generate FIRST
-                    auto& queue = planet->chunkManager->chunkQueue;
-                    std::sort(queue.begin(), queue.end(), [&](Crescendo::Terrain::OctreeNode* a, Crescendo::Terrain::OctreeNode* b) {
-                        // Cast the 64-bit origin down to a 32-bit vec3 just for the distance check
-                    float distA = glm::length((camPos - glm::vec3(ent->origin)) - a->center);
-                    float distB = glm::length((camPos - glm::vec3(ent->origin)) - b->center);
-                        return distA > distB; // > Descending order: Furthest at front, Closest at back
-                    });
-
-                    // 3. Process the Bake Queue (Launch Async Threads!)
-                    int chunksLaunched = 0;
-                    while (!queue.empty() && chunksLaunched < 1) { 
-                        auto* node = queue.back(); // Grab the closest chunk (O(1) fast!)
-                        queue.pop_back();          // Instantly remove it from the back
-
-                        // Mark as generating so we don't accidentally queue it again
-                        node->isGenerating = true; 
-
-                        TerrainComputePush pushData{}; 
-                        pushData.chunkOrigin = node->center - glm::vec3(node->size / 2.0f);
-                        pushData.chunkSize = node->size;
-                        pushData.planetCenter = glm::vec3(0.0f);
-                        pushData.planetRadius = planet->settings.radius;
-                        pushData.amplitude = planet->settings.amplitude;
-                        pushData.frequency = planet->settings.frequency;
-                        pushData.octaves = planet->settings.octaves;
-                        pushData.resolution = 32;
-                        pushData.lod = node->lod;
-
-                        bool needsCollision = (node->lod <= 1);
-                        
-                        // --- THE TRULY ASYNC LAUNCH ---
-                        auto* physicsServer = scene->physics; // Grab the pointer for the background thread
-                        
-                        // 1. Grab the planet's world origin to pass to the thread!
-                        glm::vec3 planetOrigin = ent->origin; 
-
-                        // 2. Add 'planetOrigin' to the capture list [ ] so the thread can see it!
-                        node->pendingBakeResult = std::async(std::launch::async, [this, pushData, needsCollision, physicsServer, planetOrigin]() -> Crescendo::ChunkBakeResult {
-                            
-                            // 1. GPU Compute (Runs in background)
-                            ChunkBakeResult result = this->buildChunkMesh(pushData, needsCollision);
-                            
-                            // 2. Jolt Physics (Runs in background!)
-                            if (needsCollision && result.hasMesh && physicsServer) {
-                                int stride = sizeof(Vertex) / sizeof(float);
-                                
-                                // 3. Pass the planetOrigin into the collider generator!
-                                result.physicsBodyID = physicsServer->CreateTerrainCollider(result.collisionVerts, result.collisionIndices, pushData.chunkOrigin, planetOrigin, stride);
-                                
-                                // OPTIMIZATION: Clear the heavy RAM arrays since Jolt has the data now!
-                                result.collisionVerts.clear();
-                                result.collisionIndices.clear();
-                            }
-                            
-                            return result; // Hand the completely finished package back
-                        });
-                        
-                        chunksLaunched++;
-                    }
-
-                    // 4. Check for ANY finished background threads and integrate them!
-                    planet->rootNode->CheckForFinishedMeshes(this, scene, planet->rootNode->center - glm::vec3(planet->rootNode->size / 2.0f));
-
-                    // 4.5 Recursive Octree Streaming Lambda
-                    auto drawOctree = [&](auto& self, Crescendo::Terrain::OctreeNode* node) -> void {
-                        if (!node) return;
-                        if (!node->isVisible) return; 
-
-                        bool childrenReady = false;
-                        if (!node->isLeaf) {
-                            childrenReady = true;
-                            for (auto& child : node->children) {
-                                if (child && child->meshID == -1) { 
-                                    childrenReady = false;
-                                    break;
-                                }
-                            }
-                        }
-
-                        // THE RENDER STATE MACHINE
-                        if (node->isLeaf || !childrenReady) {
-                            
-                            if (node->meshID >= 0) { 
-                                // Scenario A: We have a mesh! Draw it.
-                                MeshResource& mesh = meshes[node->meshID];
-                                if (mesh.vertexBuffer.handle != VK_NULL_HANDLE) {
-                                    VkBuffer vBuffers[] = { mesh.vertexBuffer.handle };
-                                    VkDeviceSize offsets[] = {0};
-                                    vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
-                                    vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
-                                    
-                                    PushConsts push{};
-                                    push.entityIndex = entityGPUIndices[ent];
-                                    vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConsts), &push);
-                                    
-                                    vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
-                                }
-                            } else if (!node->isLeaf) {
-                                // Scenario B: The parent has no mesh (-1), but the children aren't completely done.
-                                // We CANNOT stop here, or the planet turns invisible. We must draw the children that ARE done.
-                                for (auto& child : node->children) {
-                                    self(self, child.get());
-                                }
-                            }
-                            
-                        } else if (childrenReady && !node->isLeaf) {
-                            // Scenario C: All high-res children are 100% baked and ready. Draw them!
-                            for (auto& child : node->children) {
-                                self(self, child.get());
-                            }
-                        }
-                    };
-
-                    // 5. Fire the draw calls!
-                    drawOctree(drawOctree, planet->rootNode.get());
-
-                    
-                }
+                PushConsts push{ packet.entityGPUIndex };
+                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConsts), &push);
+                vkCmdDrawIndexed(commandBuffers[currentFrame], packet.indexCount, 1, 0, 0, 0);
             }
 
             // Close the opaque pass so the depth buffer transitions to READ_ONLY
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
 
             // -----------------------------------------------------------------
-            // 2.5 DRAW ATMOSPHERE [Local Space] (In the Read-Only Transparent Pass!)
+            // 2. --- MODULAR ATMOSPHERE HOOK: Draw Atmosphere (Transparent Pass) ---
             // -----------------------------------------------------------------
-            for (auto* ent : scene->entities) {
-                if (ent && ent->HasComponent<ProceduralPlanetComponent>()) {
-                    auto planet = ent->GetComponent<ProceduralPlanetComponent>();
-                    if (planet->atmosphereMeshID != -1) {
-                        
-                        VkRenderPassBeginInfo transPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-                        transPassInfo.renderPass = transparentRenderPass; 
-                        transPassInfo.framebuffer = viewportFramebuffer; 
-                        transPassInfo.renderArea.extent = swapChainExtent;
-                        
-                        vkCmdBeginRenderPass(commandBuffers[currentFrame], &transPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-                        
-                        vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, atmospherePipeline);
-                        
-                        AtmospherePush atmoPush{};
-                        // Use the matrix that has the translation stripped!
-                        glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view));
-                        atmoPush.vp = proj * viewNoTrans;
-                        
-                        float innerRadius = planet->settings.radius + planet->atmosphereFloor;
-                        float outerRadius = planet->settings.radius * planet->atmosphereCeiling;
+            m_atmosphereModule.RecordCommands(
+                commandBuffers[currentFrame], 
+                pipelineLayout, 
+                scene, 
+                mainCamera, 
+                proj, 
+                view, 
+                swapChainExtent, 
+                transparentRenderPass, 
+                viewportFramebuffer
+            );
 
-                        // 1. THE RTE MATH: Subtract the 64-bit camera position from the 64-bit planet origin, 
-                        // THEN cast the small difference to a 32-bit float.
-                        glm::vec3 relativePlanetCenter = glm::vec3(ent->origin - mainCamera.Position);
-
-                        // Pass the TRUE sun direction to the atmosphere!
-                        glm::vec3 trueSunDir = glm::normalize(sunDirection);
-
-                        // Pass the TRUE mathematical radius of the planet! 
-                        // Do NOT use innerRadius, or the thickest haze will be buried underground!
-                        atmoPush.sunDirection_planetRadius = glm::vec4(trueSunDir, planet->settings.radius);
-
-                        // 2. Pass the camera-relative position to the shader
-                        atmoPush.planetCenter_atmosphereRadius = glm::vec4(relativePlanetCenter, outerRadius);
-                        
-                        atmoPush.cameraPos_sunIntensity = glm::vec4(0.0f, 0.0f, 0.0f, planet->atmosphereIntensity);
-                        
-                        atmoPush.rayleigh_mie = glm::vec4(planet->rayleigh, planet->mie);
-
-                        vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, 
-                                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 
-                                           0, sizeof(AtmospherePush), &atmoPush);
-
-                        vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
-                        
-                        vkCmdEndRenderPass(commandBuffers[currentFrame]);
-                    }
-                }
-            }
-            
-            
             // -----------------------------------------------------------------
             // 3. ITERATIVE REFRACTION (TRANSPARENT PASS)
             // -----------------------------------------------------------------
-            
-            // Wrap your entire mip-mapping and barrier block in a reusable lambda!
             auto UpdateRefractionTexture = [&]() {
                 VkImageMemoryBarrier barriers[2] = {};
                 barriers[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
                 barriers[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-                barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 barriers[0].image = viewportImage.handle;
                 barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
                 barriers[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -3999,8 +3352,6 @@ namespace Crescendo {
                 barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
                 barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
                 barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-                barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 barriers[1].image = refractionImage.handle;
                 barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, refractionMipLevels, 0, 1};
                 barriers[1].srcAccessMask = 0;
@@ -4009,10 +3360,8 @@ namespace Crescendo {
                 vkCmdPipelineBarrier(commandBuffers[currentFrame], VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
 
                 VkImageBlit blit{};
-                blit.srcOffsets[0] = {0, 0, 0};
                 blit.srcOffsets[1] = {(int32_t)swapChainExtent.width, (int32_t)swapChainExtent.height, 1};
                 blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-                blit.dstOffsets[0] = {0, 0, 0};
                 blit.dstOffsets[1] = {(int32_t)swapChainExtent.width, (int32_t)swapChainExtent.height, 1};
                 blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
 
@@ -4022,18 +3371,13 @@ namespace Crescendo {
                 barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
                 barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
                 vkCmdPipelineBarrier(commandBuffers[currentFrame], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barriers[0]);
 
                 int32_t mipWidth = swapChainExtent.width;
                 int32_t mipHeight = swapChainExtent.height;
-                VkImageMemoryBarrier mipBarrier{};
-                mipBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+                VkImageMemoryBarrier mipBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
                 mipBarrier.image = refractionImage.handle;
-                mipBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                mipBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 mipBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                mipBarrier.subresourceRange.baseArrayLayer = 0;
                 mipBarrier.subresourceRange.layerCount = 1;
                 mipBarrier.subresourceRange.levelCount = 1;
 
@@ -4043,30 +3387,19 @@ namespace Crescendo {
                     mipBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
                     mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                     mipBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-
                     vkCmdPipelineBarrier(commandBuffers[currentFrame], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &mipBarrier);
 
                     VkImageBlit mipBlit{};
-                    mipBlit.srcOffsets[0] = {0, 0, 0};
                     mipBlit.srcOffsets[1] = {mipWidth, mipHeight, 1};
-                    mipBlit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                    mipBlit.srcSubresource.mipLevel = i - 1;
-                    mipBlit.srcSubresource.baseArrayLayer = 0;
-                    mipBlit.srcSubresource.layerCount = 1;
-                    mipBlit.dstOffsets[0] = {0, 0, 0};
+                    mipBlit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1};
                     mipBlit.dstOffsets[1] = { mipWidth > 1 ? mipWidth / 2 : 1, mipHeight > 1 ? mipHeight / 2 : 1, 1 };
-                    mipBlit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                    mipBlit.dstSubresource.mipLevel = i;
-                    mipBlit.dstSubresource.baseArrayLayer = 0;
-                    mipBlit.dstSubresource.layerCount = 1;
-
+                    mipBlit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1};
                     vkCmdBlitImage(commandBuffers[currentFrame], refractionImage.handle, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, refractionImage.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &mipBlit, VK_FILTER_LINEAR);
 
                     mipBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
                     mipBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                     mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
                     mipBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
                     vkCmdPipelineBarrier(commandBuffers[currentFrame], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &mipBarrier);
 
                     if (mipWidth > 1) mipWidth /= 2;
@@ -4078,38 +3411,28 @@ namespace Crescendo {
                 mipBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 mipBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
                 mipBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
                 vkCmdPipelineBarrier(commandBuffers[currentFrame], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &mipBarrier);
             };
 
-            // --- THE MAGIC LOOP ---
-            // Draw glass objects one by one, snapshotting the screen between them!
             for (auto* transEnt : transparentList) {
-                // 1. Snapshot the screen (including any previously drawn glass!)
                 UpdateRefractionTexture();
 
-                // 2. Open the Render Pass
                 VkRenderPassBeginInfo transPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
                 transPassInfo.renderPass = transparentRenderPass; 
                 transPassInfo.framebuffer = viewportFramebuffer; 
                 transPassInfo.renderArea.extent = swapChainExtent;
                 vkCmdBeginRenderPass(commandBuffers[currentFrame], &transPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-                // 3. Draw exactly ONE transparent entity
                 vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, transparentPipeline);
                 vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
-                
+
                 std::vector<CBaseEntity*> singleList = { transEnt };
                 DrawList(singleList);
 
-                // 4. Close the pass so the next object can snapshot it
                 vkCmdEndRenderPass(commandBuffers[currentFrame]);
             }
 
-            // -----------------------------------------------------------------
             // 4. WATER OBJECTS
-            // -----------------------------------------------------------------
-            // If we have water, we need to do one last snapshot so water refracts the glass!
             bool hasWater = false;
             std::vector<CBaseEntity*> waterList;
             for (auto* ent : scene->entities) {
@@ -4135,9 +3458,7 @@ namespace Crescendo {
                 vkCmdEndRenderPass(commandBuffers[currentFrame]);
             }
 
-        // -----------------------------------------------------------------
-        // 5. EDITOR SYMBOLS & OUTLINES (Drawn last so they overlay the scene!)
-        // -----------------------------------------------------------------
+        // 5. EDITOR SYMBOLS & OUTLINES
         VkRenderPassBeginInfo symbolPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         symbolPassInfo.renderPass = transparentRenderPass; 
         symbolPassInfo.framebuffer = viewportFramebuffer; 
@@ -4145,26 +3466,18 @@ namespace Crescendo {
 
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &symbolPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         
-        // Ensure Vulkan knows the screen size!
         VkViewport symbolViewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
         vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &symbolViewport);
         VkRect2D symbolScissor{{0, 0}, swapChainExtent};
         vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &symbolScissor);
 
-        // --- THE OUTLINE DRAW CALL ---
         int selectedIndex = editorUI.GetSelectedObjectIndex();
-
-        // MASSIVE SAFETY CHECK: Ensure index is valid AND the pointer isn't null!
         if (editorUI.GetShowSelectionOutline() && selectedIndex >= 0 && selectedIndex < scene->entities.size() && scene->entities[selectedIndex] != nullptr) {
-            
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, outlinePipeline);
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
 
-            // A recursive lambda to dig through the entity and all its children
             auto drawOutline = [&](auto& self, CBaseEntity* ent) -> void {
-                if (!ent) return; // ASan caught this previously failing because ent was a dangling pointer
-                
-                // If this specific node has a mesh, draw it!
+                if (!ent) return; 
                 if (ent->modelIndex >= 0 && ent->modelIndex < meshes.size()) {
                     MeshResource& mesh = meshes[ent->modelIndex];
                     if (mesh.vertexBuffer.handle != VK_NULL_HANDLE) {
@@ -4173,30 +3486,20 @@ namespace Crescendo {
                         vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
                         vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
 
-                        PushConsts push{};
-                        push.entityIndex = entityGPUIndices[ent]; // <--- If ent is freed memory, this crashes!
+                        PushConsts push{ entityGPUIndices[ent] };
                         vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConsts), &push);
-
                         vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
                     }
                 }
-                
-                // Recursively check all children
                 for (CBaseEntity* child : ent->children) {
-                    // One more safety check just in case the scene graph got mangled
-                    if (child != nullptr) {
-                        self(self, child);
-                    }
+                    if (child != nullptr) self(self, child);
                 }
             };
 
-            // Fire the laser!
             drawOutline(drawOutline, scene->entities[selectedIndex]);
         }
 
-        // --- DRAW SYMBOLS ---
         symbolServer.DrawSymbols(commandBuffers[currentFrame], mainCamera.Right, mainCamera.Up, descriptorSets[currentFrame], symbolTextureSet);
-        
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
 
         // =========================================================
@@ -4207,45 +3510,33 @@ namespace Crescendo {
             ssrPassInfo.renderPass = ssrRenderPass;
             ssrPassInfo.framebuffer = ssrFramebuffer;
             ssrPassInfo.renderArea.extent = swapChainExtent;
-            
-            // Clear to black (no reflections) so if disabled, it doesn't leave garbage on screen
+
             VkClearValue ssrClear = {{{0.0f, 0.0f, 0.0f, 0.0f}}};
             ssrPassInfo.clearValueCount = 1;
             ssrPassInfo.pClearValues = &ssrClear;
 
             vkCmdBeginRenderPass(commandBuffers[currentFrame], &ssrPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-            
+
             if (renderSettings.enableSSR) {
-                // Determine resolution scale
                 float scale = renderSettings.halfResSSR ? 0.5f : 1.0f;
                 uint32_t currentWidth = static_cast<uint32_t>(swapChainExtent.width * scale);
                 uint32_t currentHeight = static_cast<uint32_t>(swapChainExtent.height * scale);
 
                 VkViewport ssrViewport{0.0f, 0.0f, (float)currentWidth, (float)currentHeight, 0.0f, 1.0f};
                 vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &ssrViewport);
-                
                 VkRect2D ssrScissor{{0, 0}, {currentWidth, currentHeight}};
                 vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &ssrScissor);
-                
+
                 vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, ssrPipeline);
-                vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                        ssrPipelineLayout, 0, 1, &ssrDescriptorSet, 0, nullptr);
+                vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, ssrPipelineLayout, 0, 1, &ssrDescriptorSet, 0, nullptr);
 
-                SSRPushConstants ssrPush{};
-                ssrPush.proj = proj;
-                ssrPush.view = view;
-                ssrPush.invProj = glm::inverse(proj);
-                ssrPush.invView = glm::inverse(view);
-
-                vkCmdPushConstants(commandBuffers[currentFrame], ssrPipelineLayout,
-                                   VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SSRPushConstants), &ssrPush);
-
+                SSRPushConstants ssrPush{ proj, view, glm::inverse(proj), glm::inverse(view) };
+                vkCmdPushConstants(commandBuffers[currentFrame], ssrPipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SSRPushConstants), &ssrPush);
                 vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
             }
-            
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
         }        
-        
+
         // [BLOOM EXTRACT]
         {
             VkRenderPassBeginInfo bloomPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -4263,39 +3554,35 @@ namespace Crescendo {
             VkRect2D bloomScissor{{0, 0}, {swapChainExtent.width / 4, swapChainExtent.height / 4}};
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &bloomScissor);
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bloomPipeline);
-            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    compositePipelineLayout, 0, 1, &compositeDescriptorSet, 0, nullptr);
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipelineLayout, 0, 1, &compositeDescriptorSet, 0, nullptr);
             vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
         }
-    
+
         // ---------------------------------------------------------
         // POST-PROCESSING
         // ---------------------------------------------------------
-    
         VkRenderPassBeginInfo compositePassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         compositePassInfo.renderPass = compositeRenderPass;  
         compositePassInfo.framebuffer = finalFramebuffer;    
         compositePassInfo.renderArea.extent = swapChainExtent;
         compositePassInfo.clearValueCount = 1;
         compositePassInfo.pClearValues = &clearValues[0]; 
-    
+
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &compositePassInfo, VK_SUBPASS_CONTENTS_INLINE);
             VkViewport compositeViewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
             vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &compositeViewport);
             vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &scissor);
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipeline);
-            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                    compositePipelineLayout, 0, 1, &compositeDescriptorSet, 0, nullptr);
-            
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, compositePipelineLayout, 0, 1, &compositeDescriptorSet, 0, nullptr);
+
             postProcessSettings.ssaoUVScale = renderSettings.halfResSSAO ? 0.5f : 1.0f;
             postProcessSettings.ssrUVScale = renderSettings.halfResSSR ? 0.5f : 1.0f;
 
-            vkCmdPushConstants(commandBuffers[currentFrame], compositePipelineLayout,
-                                VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PostProcessPushConstants), &postProcessSettings);
+            vkCmdPushConstants(commandBuffers[currentFrame], compositePipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PostProcessPushConstants), &postProcessSettings);
             vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
-            
+
         // ---------------------------------------------------------
         // UI & SWAPCHAIN
         // ---------------------------------------------------------
@@ -4304,17 +3591,16 @@ namespace Crescendo {
         swapChainPassInfo.framebuffer = swapChainFramebuffers[imageIndex]; 
         swapChainPassInfo.renderArea.extent = swapChainExtent;
         swapChainPassInfo.clearValueCount = 2; 
-        
         swapChainPassInfo.pClearValues = clearValues.data();
-            
+
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &swapChainPassInfo, VK_SUBPASS_CONTENTS_INLINE);
             editorUI.Render(commandBuffers[currentFrame]);
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
-            
+
         if (vkEndCommandBuffer(commandBuffers[currentFrame]) != VK_SUCCESS) {
             throw std::runtime_error("failed to record command buffer!");
         }
-    
+
         VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
         VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
@@ -4332,19 +3618,17 @@ namespace Crescendo {
             if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
                 throw std::runtime_error("failed to submit draw command buffer!");
             } 
-        
-    
-        VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-        presentInfo.waitSemaphoreCount = 1;
-        presentInfo.pWaitSemaphores = signalSemaphores;
-        presentInfo.swapchainCount = 1;
-        presentInfo.pSwapchains = &swapChain;
-        presentInfo.pImageIndices = &imageIndex;
-    
-        result = vkQueuePresentKHR(presentQueue, &presentInfo);
 
+            VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+            presentInfo.waitSemaphoreCount = 1;
+            presentInfo.pWaitSemaphores = signalSemaphores;
+            presentInfo.swapchainCount = 1;
+            presentInfo.pSwapchains = &swapChain;
+            presentInfo.pImageIndices = &imageIndex;
+
+            result = vkQueuePresentKHR(presentQueue, &presentInfo);
         }
-    
+
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
             recreateSwapChain(window);
         }
@@ -5498,21 +4782,14 @@ namespace Crescendo {
             if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
             if (shadowPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
             if (ssrPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, ssrPipelineLayout, nullptr);
-            if (computePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, computePipelineLayout, nullptr);
             
             if (symbolTextureLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, symbolTextureLayout, nullptr);
             if (postProcessLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, postProcessLayout, nullptr);
             if (ssrDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, ssrDescriptorLayout, nullptr);
-            if (computeDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, computeDescriptorLayout, nullptr);
             if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
         
             if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
             if (shadowRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, shadowRenderPass, nullptr);
-        
-            if (densityComputePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, densityComputePipeline, nullptr);
-            if (marchingCubesComputePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, marchingCubesComputePipeline, nullptr);
-            if (terrainComputePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, terrainComputePipelineLayout, nullptr);
-            if (terrainComputeDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, terrainComputeDescriptorLayout, nullptr);
         
             // 3. DESTROY SHADOWS
             for (auto fb : shadowFramebuffers) {
@@ -5536,9 +4813,6 @@ namespace Crescendo {
             normalBakeImage.destroy(); 
                     
             // 5. DESTROY BUFFERS
-            densityBuffer.destroy();
-            computeVertexBuffer.destroy();
-            computeIndexBuffer.destroy();
             counterBuffer.destroy();
             stagingVertBuffer.destroy();
             stagingIndexBuffer.destroy();
