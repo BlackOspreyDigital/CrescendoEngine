@@ -154,7 +154,6 @@ namespace Crescendo {
         symbolServer.Initialize(device, transparentRenderPass, descriptorSetLayout, symbolTextureLayout);
         if (!createGraphicsPipeline()) return false;
         if (!createWaterPipeline()) return false;       
-        if (!createAtmospherePipeline()) return false; 
         if (!createTransparentPipeline()) return false;
         if (!createOpaquePipeline()) return false;
         if (!createBloomPipeline()) return false;
@@ -1885,97 +1884,6 @@ namespace Crescendo {
         vkDestroyShaderModule(device, fragShaderModule, nullptr);
         vkDestroyShaderModule(device, vertShaderModule, nullptr);
 
-        return true;
-    }
-    
-    bool RenderingServer::createAtmospherePipeline() {
-        auto vertShaderCode = readFile("assets/shaders/atmosphere.vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/atmosphere.frag.spv");
-
-        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
-        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
-
-        VkPipelineShaderStageCreateInfo shaderStages[] = {
-            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vertShaderModule, "main", nullptr},
-            {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fragShaderModule, "main", nullptr}
-        };
-
-        auto bindingDescription = Vertex::getBindingDescription();
-        auto attributeDescriptions = Vertex::getAttributeDescriptions();
-
-        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        vertexInputInfo.vertexBindingDescriptionCount = 0;
-        vertexInputInfo.vertexAttributeDescriptionCount = 0;
-
-        VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        inputAssembly.primitiveRestartEnable = VK_FALSE;
-
-        VkViewport viewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
-        VkRect2D scissor{{0, 0}, swapChainExtent};
-
-        VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-        viewportState.viewportCount = 1;
-        viewportState.pViewports = &viewport;
-        viewportState.scissorCount = 1;
-        viewportState.pScissors = &scissor;
-
-        VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-        rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_NONE;
-        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-
-        VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-        multisampling.rasterizationSamples = msaaSamples; 
-
-        VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-        depthStencil.depthTestEnable = VK_FALSE; 
-        depthStencil.depthWriteEnable = VK_FALSE; 
-        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
-
-        VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
-
-        colorBlendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        colorBlendAttachments[0].blendEnable = VK_TRUE;
-        colorBlendAttachments[0].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-        colorBlendAttachments[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
-        colorBlendAttachments[0].colorBlendOp = VK_BLEND_OP_ADD;
-        colorBlendAttachments[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        colorBlendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-        colorBlendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
-
-        colorBlendAttachments[1] = colorBlendAttachments[0];
-        
-        VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-        colorBlending.attachmentCount = 2;
-        colorBlending.pAttachments = colorBlendAttachments;
-
-        std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-        VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, nullptr, 0, (uint32_t)dynamicStates.size(), dynamicStates.data()};
-
-        VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-        pipelineInfo.stageCount = 2;
-        pipelineInfo.pStages = shaderStages;
-        pipelineInfo.pVertexInputState = &vertexInputInfo;
-        pipelineInfo.pInputAssemblyState = &inputAssembly;
-        pipelineInfo.pViewportState = &viewportState;
-        pipelineInfo.pRasterizationState = &rasterizer;
-        pipelineInfo.pMultisampleState = &multisampling;
-        pipelineInfo.pDepthStencilState = &depthStencil;
-        pipelineInfo.pColorBlendState = &colorBlending;
-        pipelineInfo.pDynamicState = &dynamicState;
-        pipelineInfo.layout = pipelineLayout; 
-        pipelineInfo.renderPass = viewportRenderPass;
-        pipelineInfo.subpass = 0;
-
-        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &atmospherePipeline) != VK_SUCCESS) {
-            return false;
-        }
-
-        vkDestroyShaderModule(device, fragShaderModule, nullptr);
-        vkDestroyShaderModule(device, vertShaderModule, nullptr);
         return true;
     }
 
@@ -4737,7 +4645,6 @@ namespace Crescendo {
         if (opaquePipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, opaquePipeline, nullptr);opaquePipeline = VK_NULL_HANDLE; }
         if (transparentPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, transparentPipeline, nullptr); transparentPipeline = VK_NULL_HANDLE; }
         if (waterPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, waterPipeline, nullptr); waterPipeline = VK_NULL_HANDLE; }
-        if (atmospherePipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, atmospherePipeline, nullptr); atmospherePipeline = VK_NULL_HANDLE; }
 
         recreateSwapChain(window);
 
@@ -4745,7 +4652,6 @@ namespace Crescendo {
         createOpaquePipeline();
         createTransparentPipeline();
         createWaterPipeline();
-        createAtmospherePipeline();
 
         std::cout << "[Engine] MSAA successfully changed to " << newSamples << " samples." << std::endl;
     }
@@ -4770,7 +4676,6 @@ namespace Crescendo {
             if (transparentPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, transparentPipeline, nullptr);
             if (opaquePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, opaquePipeline, nullptr);
             if (waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, waterPipeline, nullptr);
-            if (atmospherePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, atmospherePipeline, nullptr);
             if (bloomPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bloomPipeline, nullptr);
             if (compositePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, compositePipeline, nullptr);
             if (shadowPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, shadowPipeline, nullptr);

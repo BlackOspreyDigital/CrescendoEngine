@@ -12,7 +12,7 @@
 #include <glm/glm.hpp>
 #include <mutex>
 
-#include "vulkan/VulkanResources.hpp"
+#include "servers/rendering/vulkan/VulkanResources.hpp" 
 #include <vector>
 #include <optional>
 #include <glm/glm.hpp>
@@ -24,6 +24,11 @@
 #include "servers/interface/SymbolServer.hpp"
 #include "core/EngineState.hpp"
 #include "IO/ConfigManager.hpp"
+#include "servers/rendering/vulkan/VulkanResources.hpp" // <-- Make sure 'vulkan/' is here!
+
+// Your new modules:
+#include "modules/voxel/VoxelTerrainModule.hpp"
+#include "modules/atmosphere/VolumetricAtmosphereModule.hpp"
 
 struct VmaAllocator_T;
 typedef struct VmaAllocator_T* VmaAllocator;
@@ -36,6 +41,7 @@ namespace tinygltf { class Model; class Node; }
 namespace Crescendo {
     class DisplayServer;
     class Scene;
+    class CBaseEntity;
 
     struct TextureResource {
         VulkanImage image;
@@ -167,7 +173,6 @@ namespace Crescendo {
         void shutdown() override;
 
         void render(Scene* scene, SceneManager* sceneManager, EngineState& engineState) override;
-        ChunkBakeResult buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) override;
         void calculateCascades(Scene* scene, Camera& camera, float aspectRatio, GlobalUniforms& globalData);
         void SetMSAASamples(VkSampleCountFlagBits newSamples);
 
@@ -221,6 +226,9 @@ namespace Crescendo {
         std::vector<MeshResource> meshes;
         int waterTextureID = 0;
         
+        Crescendo::VoxelTerrainModule m_voxelModule;
+        Crescendo::VolumetricAtmosphereModule m_atmosphereModule;
+
         // Constants
         const uint32_t SHADOW_DIM = 2048; 
         const uint32_t SHADOW_CASCADES = 4;
@@ -282,7 +290,6 @@ namespace Crescendo {
         VkPipeline opaquePipeline = VK_NULL_HANDLE;
         VkPipeline skyPipeline = VK_NULL_HANDLE;
         VkPipeline waterPipeline = VK_NULL_HANDLE;
-        VkPipeline atmospherePipeline = VK_NULL_HANDLE;
 
         // Wireframe
         VkPipeline outlinePipeline = VK_NULL_HANDLE;
@@ -417,7 +424,6 @@ namespace Crescendo {
         bool createTransparentPipeline();
         bool createOpaquePipeline();
         bool createWaterPipeline();
-        bool createAtmospherePipeline();
         bool createTextureImage();        
         bool createTextureImage(const std::string& path, VulkanImage& outImage);
         bool createTextureSampler();          

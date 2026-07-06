@@ -1,6 +1,10 @@
 #include "modules/voxel/VoxelTerrainModule.hpp"
 #include "servers/rendering/RenderingServer.hpp"
-#include "servers/scene/Scene.hpp"
+#include "servers/physics/PhysicsServer.hpp" 
+#include "servers/rendering/RenderTypes.hpp" 
+#include "scene/Scene.hpp"
+#include "scene/BaseEntity.hpp" 
+#include "scene/Component.hpp" 
 #include "servers/camera/Camera.hpp"
 #include <algorithm>
 
@@ -28,18 +32,15 @@ namespace Crescendo {
             auto planet = ent->GetComponent<ProceduralPlanetComponent>();
             if (!planet->rootNode) continue;
 
-            // 1. Update Octree LODs in 64-bit space
             planet->rootNode->Update(camPos - glm::vec3(ent->origin), planet->lodSplitThreshold, planet->chunkManager.get(), scene->physics);
 
-            // 2. Sort the chunk generation queue by camera distance
             auto& queue = planet->chunkManager->chunkQueue;
             std::sort(queue.begin(), queue.end(), [&](Crescendo::Terrain::OctreeNode* a, Crescendo::Terrain::OctreeNode* b) {
                 float distA = glm::length((camPos - glm::vec3(ent->origin)) - a->center);
                 float distB = glm::length((camPos - glm::vec3(ent->origin)) - b->center);
-                return distA > distB; // Furthest at front, closest at back for O(1) pop_back()
+                return distA > distB; 
             });
 
-            // 3. Process the Bake Queue (Launch Async Threads!)
             int chunksLaunched = 0;
             while (!queue.empty() && chunksLaunched < 1) { 
                 auto* node = queue.back();
@@ -62,7 +63,6 @@ namespace Crescendo {
                 auto* physicsServer = scene->physics;
                 glm::vec3 planetOrigin = ent->origin; 
 
-                // Launch background thread for GPU mesh acquisition & Jolt physics baking
                 node->pendingBakeResult = std::async(std::launch::async, [vkRenderer, pushData, needsCollision, physicsServer, planetOrigin]() -> Crescendo::ChunkBakeResult {
                     
                     ChunkBakeResult result = vkRenderer->buildChunkMesh(pushData, needsCollision);
@@ -71,25 +71,26 @@ namespace Crescendo {
                         int stride = sizeof(Vertex) / sizeof(float);
                         result.physicsBodyID = physicsServer->CreateTerrainCollider(result.collisionVerts, result.collisionIndices, pushData.chunkOrigin, planetOrigin, stride);
                         
-                        // Clear heavy RAM arrays once Jolt has grabbed the collider mesh
                         result.collisionVerts.clear();
                         result.collisionIndices.clear();
                     }
-                    return result; 
+                    
+                    // <-- FIXED: std::move() prevents the deleted constructor error! -->
+                    return std::move(result); 
                 });
                 
                 chunksLaunched++;
             }
 
-            // 4. Integrate finished background threads into the active scene
             planet->rootNode->CheckForFinishedMeshes(vkRenderer, scene, planet->rootNode->center - glm::vec3(planet->rootNode->size / 2.0f));
         }
     }
 
-    void VoxelTerrainModule::GatherOpaquePackets(Scene* scene, 
-                                                 const std::map<CBaseEntity*, uint32_t>& entityMap, 
-                                                 std::vector<VoxelDrawPacket>& outPackets) {
-        if (!scene) return;
+    void VoxelTerrainModule::GatherOpaquePackets(Scene* scene, IRenderer* renderer,
+                                             const std::map<CBaseEntity*, uint32_t>& entityMap, 
+                                             std::vector<VoxelDrawPacket>& outPackets) {
+        if (!scene || !renderer) return;
+        auto* vkRenderer = static_cast<RenderingServer*>(renderer); // <-- Grab the renderer!
 
         for (auto* ent : scene->entities) {
             if (!ent || !ent->HasComponent<ProceduralPlanetComponent>()) continue;
@@ -101,7 +102,6 @@ namespace Crescendo {
             if (it == entityMap.end()) continue;
             uint32_t gpuIndex = it->second;
 
-            // Recursive lambda to traverse the tree and harvest draw packets
             auto gatherOctree = [&](auto& self, Crescendo::Terrain::OctreeNode* node) -> void {
                 if (!node || !node->isVisible) return; 
 
@@ -115,9 +115,11 @@ namespace Crescendo {
 
                 if (node->isLeaf || !childrenReady) {
                     if (node->meshID >= 0) { 
-                        // Fetch the mesh from the rendering server's public asset bank
-                        // (Assuming you expose a way to get MeshResource by ID, or pass the mesh bank in)
-                        outPackets.push_back({ /* vertexBuffer */, /* indexBuffer */, /* indexCount */, gpuIndex });
+                        // <-- FIXED: Fetch the exact Vulkan handles from the Server! -->
+                        MeshResource& mesh = vkRenderer->meshes[node->meshID];
+                        if (mesh.vertexBuffer.handle != VK_NULL_HANDLE) {
+                            outPackets.push_back({ mesh.vertexBuffer.handle, mesh.indexBuffer.handle, mesh.indexCount, gpuIndex });
+                        }
                     } else if (!node->isLeaf) {
                         for (auto& child : node->children) self(self, child.get());
                     }
@@ -130,5 +132,49 @@ namespace Crescendo {
         }
     }
     
-    // Implement GatherShadowPackets similarly (ignoring isVisible so offscreen mountains cast shadows!)
+    // <-- IMPLEMENTED: GatherShadowPackets -->
+    void VoxelTerrainModule::GatherShadowPackets(Scene* scene, IRenderer* renderer,
+                                             const std::map<CBaseEntity*, uint32_t>& entityMap, 
+                                             std::vector<VoxelDrawPacket>& outPackets) {
+        if (!scene || !renderer) return;
+        auto* vkRenderer = static_cast<RenderingServer*>(renderer);
+
+        for (auto* ent : scene->entities) {
+            if (!ent || !ent->HasComponent<ProceduralPlanetComponent>()) continue;
+            
+            auto planet = ent->GetComponent<ProceduralPlanetComponent>();
+            if (!planet->rootNode) continue;
+
+            auto it = entityMap.find(ent);
+            if (it == entityMap.end()) continue;
+            uint32_t gpuIndex = it->second;
+
+            auto gatherShadowOctree = [&](auto& self, Crescendo::Terrain::OctreeNode* node) -> void {
+                if (!node) return; // We do NOT check isVisible here, so off-screen mountains cast shadows!
+
+                bool childrenReady = false;
+                if (!node->isLeaf) {
+                    childrenReady = true;
+                    for (auto& child : node->children) {
+                        if (child && child->meshID == -1) { childrenReady = false; break; }
+                    }
+                }
+
+                if (node->isLeaf || !childrenReady) {
+                    if (node->meshID >= 0) { 
+                        MeshResource& mesh = vkRenderer->meshes[node->meshID];
+                        if (mesh.vertexBuffer.handle != VK_NULL_HANDLE) {
+                            outPackets.push_back({ mesh.vertexBuffer.handle, mesh.indexBuffer.handle, mesh.indexCount, gpuIndex });
+                        }
+                    }
+                }
+                
+                if (childrenReady && !node->isLeaf) {
+                    for (auto& child : node->children) self(self, child.get());
+                }
+            };
+
+            gatherShadowOctree(gatherShadowOctree, planet->rootNode.get());
+        }
+    }
 }

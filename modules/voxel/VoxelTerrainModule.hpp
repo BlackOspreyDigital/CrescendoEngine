@@ -8,7 +8,7 @@
 #include <glm/glm.hpp>
 
 #include "servers/rendering/IRenderer.hpp"
-#include "servers/rendering/VulkanResources.hpp"
+#include "servers/rendering/vulkan/VulkanResources.hpp" 
 
 namespace Crescendo {
     
@@ -16,7 +16,6 @@ namespace Crescendo {
     class Camera;
     class CBaseEntity;
 
-    // The clean contract: No trees, no voxels, just raw GPU execution data!
     struct VoxelDrawPacket {
         VkBuffer vertexBuffer;
         VkBuffer indexBuffer;
@@ -32,28 +31,22 @@ namespace Crescendo {
         bool Initialize(VkDevice device, VmaAllocator allocator);
         void Shutdown();
 
-        // 1. Called once per frame BEFORE command recording
-        // Handles 64-bit octree LODs, chunk queue sorting, and async Jolt physics threads
         void Update(Scene* scene, IRenderer* renderer, const Camera& camera);
 
-        // 2. Called DURING command recording by the Rendering Server
-        // Collects ready-to-draw leaf meshes without exposing spatial hierarchies
-        void GatherOpaquePackets(Scene* scene, 
+        void GatherOpaquePackets(Scene* scene, IRenderer* renderer,
                                  const std::map<CBaseEntity*, uint32_t>& entityMap, 
                                  std::vector<VoxelDrawPacket>& outPackets);
 
-        void GatherShadowPackets(Scene* scene, 
+        void GatherShadowPackets(Scene* scene, IRenderer* renderer,
                                  const std::map<CBaseEntity*, uint32_t>& entityMap, 
                                  std::vector<VoxelDrawPacket>& outPackets);
 
-        // Compute Pipeline accessors for background thread mesh baking
         int BuildChunkMesh(IRenderer* renderer, const TerrainComputePush& pushData);
 
     private:
         VkDevice m_device = VK_NULL_HANDLE;
         VmaAllocator m_allocator = nullptr;
 
-        // Relocated from RenderingServer.hpp!
         VkDescriptorSetLayout m_computeDescriptorLayout = VK_NULL_HANDLE;
         VkPipelineLayout m_computePipelineLayout = VK_NULL_HANDLE;
         VkPipeline m_densityPipeline = VK_NULL_HANDLE;
