@@ -7,6 +7,7 @@
 #include "scene/Component.hpp" 
 #include "servers/camera/Camera.hpp"
 #include <algorithm>
+#include "modules/terrain/TerrainManager.hpp"
 
 namespace Crescendo {
 

@@ -3120,7 +3120,7 @@ namespace Crescendo {
 
             // 2. --- MODULAR VOXEL HOOK: Draw Voxel Shadows ---
             std::vector<VoxelDrawPacket> voxelShadows;
-            m_voxelModule.GatherShadowPackets(scene, entityGPUIndices, voxelShadows);
+            m_voxelModule.GatherShadowPackets(scene, this, entityGPUIndices, voxelShadows);
             for (const auto& packet : voxelShadows) {
                 VkBuffer vBuffers[] = { packet.vertexBuffer };
                 VkDeviceSize offsets[] = {0};
@@ -3214,8 +3214,7 @@ namespace Crescendo {
 
             // --- MODULAR VOXEL HOOK: Draw Opaque Terrain Packets ---
             std::vector<VoxelDrawPacket> terrainPackets;
-            m_voxelModule.GatherOpaquePackets(scene, entityGPUIndices, terrainPackets);
-            for (const auto& packet : terrainPackets) {
+                m_voxelModule.GatherOpaquePackets(scene, this, entityGPUIndices, terrainPackets);            for (const auto& packet : terrainPackets) {
                 VkBuffer vBuffers[] = { packet.vertexBuffer };
                 VkDeviceSize offsets[] = {0};
                 vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);

@@ -105,7 +105,13 @@ file(GLOB_RECURSE ENGINE_SOURCES "src/*.cpp" "src/*.c")
 # Filter out the standalone tools so they don't get compiled into the engine!
 list(FILTER ENGINE_SOURCES EXCLUDE REGEX "src/tools/.*")
 
-file(GLOB_RECURSE MODULE_SOURCES "modules/gltf/*.cpp" "modules/image/*.cpp" "modules/terrain/*.cpp")
+file(GLOB_RECURSE MODULE_SOURCES 
+    "modules/gltf/*.cpp" 
+    "modules/image/*.cpp" 
+    "modules/terrain/*.cpp" 
+    "modules/voxel/*.cpp"    
+    "modules/atmosphere/*.cpp"
+)
 
 # SEPARATE VULKAN AND WEBGPU BACKENDS
 if (EMSCRIPTEN)
