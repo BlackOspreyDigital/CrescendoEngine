@@ -106,14 +106,31 @@ namespace Crescendo {
     }
 
     void Engine::Update() {
-        float dt = 1.0f / 60.0f; 
-        Input::Update();
+    float dt = 1.0f / 60.0f; 
+    Input::Update();
 
-        if (this->bladesUI) {
-            this->bladesUI->Update(dt);
+    // ------------------------------------------------------------------
+    // 1. BLADES UI INPUT & UPDATE
+    // ------------------------------------------------------------------
+    if (this->bladesUI) {
+        // Optional: Toggle visibility with a dedicated key (e.g., F10 or Tab)
+        // if (Input::GetKeyDown(SDL_SCANCODE_F10)) {
+        //     this->showBladesDashboard = !this->showBladesDashboard;
+        // }
+
+        // Trigger carousel navigation
+        if (Input::GetKeyDown(SDL_SCANCODE_LEFT)) {
+            this->bladesUI->MoveLeft();
+        }
+        if (Input::GetKeyDown(SDL_SCANCODE_RIGHT)) {
+            this->bladesUI->MoveRight();
         }
 
-        auto& cam = static_cast<RenderingServer*>(renderer.get())->mainCamera;
+        // Update spring-damper physics
+        this->bladesUI->Update(dt);
+    }
+
+    auto& cam = static_cast<RenderingServer*>(renderer.get())->mainCamera;
         
         if (currentState == EngineState::Playing && previousState == EngineState::Editor) {
             std::cout << "[Engine] Play Mode: Saving initial state..." << std::endl;
@@ -232,7 +249,6 @@ namespace Crescendo {
                 }
             }
         }
-
 
         // Cast the camera's 64-bit position to a 32-bit float for the audio engine
         audioServer.UpdateListener(glm::vec3(cam.Position), cam.Front, cam.Up);
