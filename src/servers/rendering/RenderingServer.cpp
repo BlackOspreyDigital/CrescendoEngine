@@ -34,7 +34,7 @@
 #include "servers/rendering/RenderingServer.hpp"
 #include "Vertex.hpp"
 #include "IO/ConfigManager.hpp"
-
+#include "modules/blades_ui/BladesUI.hpp"
 
 namespace Crescendo {
     
@@ -1344,7 +1344,6 @@ namespace Crescendo {
         return VK_NULL_HANDLE;
     }
 
-    // Inside RenderingServer.cpp
     Crescendo::ChunkBakeResult RenderingServer::buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) {
         // This method is now effectively deprecated as we moved logic to VoxelTerrainModule
         return Crescendo::ChunkBakeResult{}; 
@@ -2418,7 +2417,6 @@ namespace Crescendo {
         return true;
     }
 
-
     bool RenderingServer::createOutlinePipeline() {
         auto vertShaderCode = readFile("assets/shaders/shader.vert.spv"); 
         auto fragShaderCode = readFile("assets/shaders/outline.frag.spv"); 
@@ -2515,6 +2513,281 @@ namespace Crescendo {
         // (No binding descriptions here!)
         return true;
     }
+
+    bool Crescendo::RenderingServer::createBladeUIResources() {
+        // =========================================================================
+        // 1. CREATE THE INSTANCE DATA SSBO (Mapped to Host Memory)
+        // =========================================================================
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = 10 * sizeof(Crescendo::Modules::BladeRenderData); // 480 bytes
+        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationCreateInfo vmaAllocInfo{};
+        vmaAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        // We map it so we can memcpy() directly to it every frame without a staging buffer
+        vmaAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+        if (vmaCreateBuffer(allocator, &bufferInfo, &vmaAllocInfo, &bladeInstanceSSBO.buffer, &bladeInstanceSSBO.allocation, nullptr) != VK_SUCCESS) {
+            std::cerr << "[RenderingServer] Failed to create Blade UI SSBO!" << std::endl;
+            return false;
+        }
+
+        // =========================================================================
+        // 2. CREATE THE 2D QUAD VERTEX BUFFER
+        // =========================================================================
+        
+        // REMOVED 'Crescendo::' from Vertex here
+        const std::vector<Vertex> uiQuadVertices = {
+            // Position                 // Color               // Normal              // TexCoord
+            {{-1.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}},
+            {{ 1.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f}},
+            {{ 1.0f,  1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+            {{ 1.0f,  1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+            {{-1.0f,  1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+            {{-1.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}}
+        };
+
+        // REMOVED 'Crescendo::' from Vertex here as well
+        size_t quadSize = uiQuadVertices.size() * sizeof(Vertex);
+
+        VkBufferCreateInfo quadInfo{};
+        quadInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        quadInfo.size = quadSize;
+        quadInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        quadInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationCreateInfo quadAllocInfo{};
+        quadAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        quadAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+
+        if (vmaCreateBuffer(allocator, &quadInfo, &quadAllocInfo, &quadVertexBuffer.buffer, &quadVertexBuffer.allocation, nullptr) != VK_SUCCESS) {
+            std::cerr << "[RenderingServer] Failed to create Blade UI Quad Buffer!" << std::endl;
+            return false;
+        }
+
+        // Upload the quad vertices
+        void* quadData;
+        vmaMapMemory(allocator, quadVertexBuffer.allocation, &quadData);
+        memcpy(quadData, uiQuadVertices.data(), quadSize);
+        vmaUnmapMemory(allocator, quadVertexBuffer.allocation);
+
+        // =========================================================================
+        // 3. SET UP THE MTSDF SAMPLER & TEXTURE (Descriptor Set 1)
+        // =========================================================================
+        // Create the Linear Sampler strictly required for Distance Field math
+        VkSamplerCreateInfo samplerInfo{};
+        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samplerInfo.magFilter = VK_FILTER_LINEAR; 
+        samplerInfo.minFilter = VK_FILTER_LINEAR; 
+        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samplerInfo.anisotropyEnable = VK_FALSE;
+        samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        samplerInfo.unnormalizedCoordinates = VK_FALSE;
+
+        vkCreateSampler(device, &samplerInfo, nullptr, &mtsdfAtlasSampler);
+
+        // NOTE: Once you run your msdf-atlas-gen tool, you will load the texture here
+        // e.g., mtsdfAtlasImage = KtxLoader::Load("assets/ui/atlas.ktx2");
+
+        // =========================================================================
+        // 4. WRITE THE DESCRIPTOR SETS
+        // =========================================================================
+
+        // (Ensure you have allocated `bladeInstanceDescriptorSet` from your DescriptorPool!)
+        VkDescriptorBufferInfo ssboInfo{};
+        ssboInfo.buffer = bladeInstanceSSBO.buffer;
+        ssboInfo.offset = 0;
+        ssboInfo.range = VK_WHOLE_SIZE;
+
+        VkWriteDescriptorSet descriptorWrite{};
+        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        descriptorWrite.dstSet = bladeInstanceDescriptorSet;
+        descriptorWrite.dstBinding = 0;
+        descriptorWrite.dstArrayElement = 0;
+        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        descriptorWrite.descriptorCount = 1;
+        descriptorWrite.pBufferInfo = &ssboInfo;
+
+        vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+
+        return true;
+    }
+
+    bool Crescendo::RenderingServer::createBladeUIPipeline() {
+        // 1. Setup Descriptor Set Layouts (Set 0: SSBO, Set 1: Atlas)
+        VkDescriptorSetLayoutBinding ssboBinding{};
+        ssboBinding.binding = 0;
+        ssboBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        ssboBinding.descriptorCount = 1;
+        ssboBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutBinding atlasBinding{};
+        atlasBinding.binding = 0;
+        atlasBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        atlasBinding.descriptorCount = 1;
+        atlasBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT; 
+
+        VkDescriptorSetLayoutBinding bindings[] = {ssboBinding, atlasBinding};
+        
+        VkDescriptorSetLayoutCreateInfo layoutInfo{};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layoutInfo.bindingCount = 2;
+        layoutInfo.pBindings = bindings;
+
+        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &bladeDescriptorLayout) != VK_SUCCESS) {
+            return false;
+        }
+
+        // 2. Setup Pipeline Layout (Push constants for View/Proj Matrix)
+        VkPushConstantRange pushConstant{};
+        pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        pushConstant.offset = 0;
+        pushConstant.size = sizeof(glm::mat4);
+
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 1; 
+        pipelineLayoutInfo.pSetLayouts = &bladeDescriptorLayout;
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &pushConstant;
+
+        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &bladeUIPipelineLayout) != VK_SUCCESS) {
+            return false;
+        }
+
+        // 3. COLOR BLENDING (CRITICAL FOR MTSDF DROP SHADOWS)
+        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
+        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachment.blendEnable = VK_TRUE; 
+        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+
+        VkPipelineColorBlendStateCreateInfo colorBlending{};
+        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlending.logicOpEnable = VK_FALSE;
+        colorBlending.attachmentCount = 1; // Swapchain only has 1 color attachment
+        colorBlending.pAttachments = &colorBlendAttachment;
+
+        // 4. DEPTH STENCIL (CRITICAL FOR 2.5D SORTING)
+        VkPipelineDepthStencilStateCreateInfo depthStencil{};
+        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depthStencil.depthTestEnable = VK_TRUE;      
+        depthStencil.depthWriteEnable = VK_FALSE;    // DO NOT write depth for transparent drop shadows
+        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        depthStencil.depthBoundsTestEnable = VK_FALSE;
+        depthStencil.stencilTestEnable = VK_FALSE;
+
+        // 5. Load Shaders
+        // (Ensure you compile your procedural shaders to these paths!)
+        auto vertShaderCode = readFile("assets/shaders/blade.vert.spv");
+        auto fragShaderCode = readFile("assets/shaders/blade.frag.spv");
+
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+        VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertShaderStageInfo.module = vertShaderModule;
+        vertShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageInfo.module = fragShaderModule;
+        fragShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+
+        // 6. Define Vertex Input (Reuse your engine's existing Vertex struct!)
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
+        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+        // 7. Input Assembly
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+        // 8. Viewport & Scissor (Using Dynamic States)
+        VkPipelineViewportStateCreateInfo viewportState{};
+        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+
+        std::vector<VkDynamicState> dynamicStates = {
+            VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR
+        };
+
+        VkPipelineDynamicStateCreateInfo dynamicState{};
+        dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+        dynamicState.pDynamicStates = dynamicStates.data();
+
+        // 9. Rasterization
+        VkPipelineRasterizationStateCreateInfo rasterizer{};
+        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizer.depthClampEnable = VK_FALSE;
+        rasterizer.rasterizerDiscardEnable = VK_FALSE;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE; // Important: Don't cull so 2.5D rotations don't accidentally disappear
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+        // 10. Multisampling (Swapchain is usually 1 Sample)
+        VkPipelineMultisampleStateCreateInfo multisampling{};
+        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampling.sampleShadingEnable = VK_FALSE;
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT; // MSAA is done in your offscreen pass, not here
+
+        // 11. Build the Final Graphics Pipeline
+        VkGraphicsPipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.layout = bladeUIPipelineLayout;
+
+        // CRITICAL FIX: Target the main Swapchain RenderPass, NOT the GBuffer viewportRenderPass
+        pipelineInfo.renderPass = renderPass; 
+        pipelineInfo.subpass = 0;
+
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &bladeUIPipeline) != VK_SUCCESS) {
+            std::cerr << "[RenderingServer] Failed to create Blade UI Pipeline!" << std::endl;
+            return false;
+        }
+
+        // 12. Cleanup Modules
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+
+        return true;
+    }
+
+    
    
     //===============================================
     // RENDER STAGING
@@ -2915,7 +3188,6 @@ namespace Crescendo {
     }
 
     
-
     // --------------------------------------------------------------------
     // Render() / THE RENDER LOOP
     // --------------------------------------------------------------------
@@ -3452,7 +3724,9 @@ namespace Crescendo {
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
         }        
 
-        // [BLOOM EXTRACT]
+        // =========================================================
+        // PASS 3: BLOOM (DOWNSAMPLE & UPSAMPLE)
+        // =========================================================
         {
             VkRenderPassBeginInfo bloomPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
             bloomPassInfo.renderPass = bloomRenderPass;
@@ -3475,7 +3749,7 @@ namespace Crescendo {
         }
 
         // ---------------------------------------------------------
-        // POST-PROCESSING
+        // POST-PROCESS COMPOSITE PASS (HDR -> LDR)
         // ---------------------------------------------------------
         VkRenderPassBeginInfo compositePassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         compositePassInfo.renderPass = compositeRenderPass;  
@@ -3506,16 +3780,64 @@ namespace Crescendo {
         swapChainPassInfo.framebuffer = swapChainFramebuffers[imageIndex]; 
         swapChainPassInfo.renderArea.extent = swapChainExtent;
         swapChainPassInfo.clearValueCount = 2; 
+        
         swapChainPassInfo.pClearValues = clearValues.data();
-
+            
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &swapChainPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-            editorUI.Render(commandBuffers[currentFrame]);
-        vkCmdEndRenderPass(commandBuffers[currentFrame]);
+            
+            // =========================================================
+            // BLADES UI INJECTION ( Experimental )
+            // =========================================================
+            
+            // 1. Get the latest physics math from the UI system
+            const auto& frameData = bladesUI.GetFrameData();
+            size_t copySize = frameData.size() * sizeof(Crescendo::Modules::BladeRenderData);
 
+            // 2. Map, Copy, and Unmap the SSBO memory
+            void* mappedData;
+            vmaMapMemory(allocator, bladeInstanceSSBO.allocation, &mappedData);
+            memcpy(mappedData, frameData.data(), copySize);
+            vmaUnmapMemory(allocator, bladeInstanceSSBO.allocation);
+
+            // 3. Bind the Blade UI Pipeline
+            vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bladeUIPipeline);
+
+            // 4. Bind the SSBO and MTSDF Atlas
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bladeUIPipelineLayout, 0, 1, &bladeInstanceDescriptorSet, 0, nullptr);
+            // vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bladeUIPipelineLayout, 1, 1, &mtsdfAtlasDescriptorSet, 0, nullptr);
+
+            // 5. Push the UI Camera Matrix 
+            glm::mat4 uiProj = glm::perspective(glm::radians(45.0f), (float)swapChainExtent.width / (float)swapChainExtent.height, 0.1f, 1000.0f);
+            uiProj[1][1] *= -1.0f; // Vulkan Y-flip
+            glm::mat4 uiView = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -600.0f)); 
+            glm::mat4 uiViewProj = uiProj * uiView;
+
+            vkCmdPushConstants(commandBuffers[currentFrame], bladeUIPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &uiViewProj);
+
+            // 6. Bind the basic Quad Vertex buffer
+            VkDeviceSize offsets[] = {0};
+            // Ensure you use your actual quad buffer handle here (e.g., quadVertexBuffer.buffer)
+            vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, &quadVertexBuffer.buffer, offsets);
+
+            // 7. FIRE THE INSTANCED DRAW CALL
+            vkCmdDraw(commandBuffers[currentFrame], 6, static_cast<uint32_t>(frameData.size()), 0, 0);
+
+            // =========================================================
+            // END BLADES UI INJECTION
+            // =========================================================
+
+            // ImGui renders last, sitting on top of everything
+            editorUI.Render(commandBuffers[currentFrame]);
+            
+        vkCmdEndRenderPass(commandBuffers[currentFrame]);
+            
+        // ---------------------------------------------------------
+        // COMMAND BUFFER SUBMISSION & PRESENTATION
+        // ---------------------------------------------------------
         if (vkEndCommandBuffer(commandBuffers[currentFrame]) != VK_SUCCESS) {
             throw std::runtime_error("failed to record command buffer!");
         }
-
+    
         VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         VkSemaphore waitSemaphores[] = {imageAvailableSemaphores[currentFrame]};
         VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
@@ -3533,17 +3855,17 @@ namespace Crescendo {
             if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, inFlightFences[currentFrame]) != VK_SUCCESS) {
                 throw std::runtime_error("failed to submit draw command buffer!");
             } 
-
+        
             VkPresentInfoKHR presentInfo{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
             presentInfo.waitSemaphoreCount = 1;
             presentInfo.pWaitSemaphores = signalSemaphores;
             presentInfo.swapchainCount = 1;
             presentInfo.pSwapchains = &swapChain;
             presentInfo.pImageIndices = &imageIndex;
-
+        
             result = vkQueuePresentKHR(presentQueue, &presentInfo);
         }
-
+    
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
             recreateSwapChain(window);
         }
@@ -4793,5 +5115,3 @@ namespace Crescendo {
         std::cout << "[RenderingServer] Shutdown Complete." << std::endl;
     }
 }
-
-// This shit genuinely insane || Osprey "Far Above"

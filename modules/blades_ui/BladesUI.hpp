@@ -1,5 +1,6 @@
 #pragma once
 #include <vector>
+#include <cstdint>
 #include <glm/glm.hpp>
 
 namespace Crescendo::Modules {

@@ -4,7 +4,7 @@
 layout(location = 0) in vec3 inPosition; // Just a flat quad centered at 0,0
 layout(location = 1) in vec2 inUV;       // 0.0 to 1.0
 
-// Matches your 48-byte BladeRenderData exactly
+// Matches 48-byte BladeRenderData exactly
 struct BladeInstance {
     vec3 position;        // Offset 0
     float rotationY;      // Offset 12
@@ -15,7 +15,7 @@ struct BladeInstance {
     int labelAtlasID;     // Offset 44
 };
 
-// SSBO holding your 10 blades
+// SSBO holding 5 blades
 layout(std140, set = 0, binding = 0) readonly buffer InstanceBuffer {
     BladeInstance instances[];
 };

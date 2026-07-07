@@ -29,6 +29,7 @@
 // Your new modules:
 #include "modules/voxel/VoxelTerrainModule.hpp"
 #include "modules/atmosphere/VolumetricAtmosphereModule.hpp"
+#include "modules/blades_ui/BladesUI.hpp"
 
 struct VmaAllocator_T;
 typedef struct VmaAllocator_T* VmaAllocator;
@@ -403,6 +404,34 @@ namespace Crescendo {
         VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);
         uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
         VkShaderModule createShaderModule(const std::vector<char>& code);
+
+        // --- BLADES UI RESOURCES ---
+        
+        // 1. Pipeline & Layouts
+        Crescendo::Modules::BladesUI bladesUI;
+        VkPipeline bladeUIPipeline = VK_NULL_HANDLE;
+        VkPipelineLayout bladeUIPipelineLayout = VK_NULL_HANDLE;
+        VulkanBuffer quadVertexBuffer;
+        
+        // Set 0: The SSBO containing the 48-byte BladeRenderData structs
+        // Set 1: The MTSDF Texture Atlas and Sampler
+        VkDescriptorSetLayout bladeDescriptorLayout = VK_NULL_HANDLE; 
+        
+        // 2. The SSBO (Using your VulkanResources wrappers)
+        // Note: In a real engine you usually want one SSBO per "frame in flight" 
+        // to prevent CPU/GPU race conditions, but a single buffer is fine for testing.
+        VulkanBuffer bladeInstanceSSBO; 
+        VkDescriptorSet bladeInstanceDescriptorSet = VK_NULL_HANDLE;
+
+        // 3. The MTSDF Atlas Image
+        VulkanImage mtsdfAtlasImage;
+        VkImageView mtsdfAtlasView = VK_NULL_HANDLE;
+        VkSampler mtsdfAtlasSampler = VK_NULL_HANDLE;
+        VkDescriptorSet mtsdfAtlasDescriptorSet = VK_NULL_HANDLE;
+
+        // 4. Setup Methods
+        bool createBladeUIPipeline();
+        bool createBladeUIResources();
         
         bool createInstance();
         bool setupDebugMessenger();
