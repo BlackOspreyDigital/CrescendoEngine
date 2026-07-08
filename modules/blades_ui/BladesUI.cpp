@@ -1,64 +1,76 @@
 #include "BladesUI.hpp"
+#include "UI_Icons.hpp" 
 #include <algorithm>
 #include <cmath>
 
 namespace Crescendo::Modules {
 
     BladesUI::BladesUI() {
-        // Mock up 5 dummy blades for the renderer to chew on
-        const int NUM_BLADES = 5;
+        // Let's create 10 dummy blades to see your icons in action
+        const int NUM_BLADES = 10;
         for (int i = 0; i < NUM_BLADES; ++i) {
             BladeRenderData data{};
             data.scale = 1.0f;
             data.colorTint = glm::vec4(1.0f);
-            data.baseMaterialID = 0; // Replaced textureID
-            data.labelAtlasID = 0;   // Replaced labelHash
+            data.baseMaterialID = 0; 
+            
+            // Pull the exact UV bounds from the Python-generated array!
+            // (We use modulo so it loops safely if you spawn more blades than icons)
+            int iconCount = sizeof(Crescendo::Modules::Icons::ATLAS_UVS) / sizeof(glm::vec4);
+            data.iconUVBounds = Crescendo::Modules::Icons::ATLAS_UVS[i % iconCount]; 
+            
             bladeData.push_back(data);
         }
     }
 
     void BladesUI::Update(float dt) {
-        // 1. Premium Spring Physics Constants
-        const float k = 150.0f; // Stiffness (higher = snappier)
-        const float d = 15.0f;  // Damping (higher = heavier/less bounce)
-        const float BLADE_SPACING = 400.0f; 
+        // 1. Spring Physics (Applied directly to the Index value)
+        const float k = 120.0f; // Stiffness
+        const float d = 14.0f;  // Damping
         
-        // 2. Global Scroll Physics
-        float targetX = -static_cast<float>(activeIndex) * BLADE_SPACING; 
-        float force = -k * (currentX - targetX) - d * scrollVelocity;
+        float targetIndex = static_cast<float>(activeIndex);
+        float force = -k * (currentX - targetIndex) - d * scrollVelocity;
         scrollVelocity += force * dt;
-        currentX += scrollVelocity * dt;
+        currentX += scrollVelocity * dt; // currentX smoothly glides between 0.0, 1.0, 2.0, etc.
 
-        // 3. Update individual blade transforms for the 2.5D Carousel effect
+        // 2. The 360 Tab Stacking Math
         for (size_t i = 0; i < bladeData.size(); ++i) {
             auto& blade = bladeData[i];
 
-            // Base X position relative to the center of the screen
-            float bladeBaseX = (static_cast<float>(i) * BLADE_SPACING) + currentX;
+            // diff = How many slots away from the center this blade is right now
+            float diff = static_cast<float>(i) - currentX;
+            float absDiff = std::abs(diff);
+
+            // Smoothly calculate glow/highlight (1.0 = center, 0.0 = edge)
+            float selected = std::max(0.0f, 1.0f - absDiff);
+            blade.selectedFactor = selected * selected * (3.0f - 2.0f * selected); 
+
+            // --- X-AXIS STACKING ---
+            float stackBaseX = 600.0f;  // Push inactive blades way off to the sides
+            float stackSpacing = 70.0f; // The width of the "tab" peeking out
             
-            // Calculate distance from center (1.0 = one full space away)
-            float distFromCenter = std::abs(bladeBaseX) / BLADE_SPACING;
-            
-            // Selected factor: 1.0 when perfectly centered, 0.0 when 1+ space away
-            float selected = std::max(0.0f, 1.0f - distFromCenter);
-            blade.selectedFactor = selected;
-            
-            // --- 2.5D MATH ---
-            
-            // Position: Slide X, stay on Y, pop forward on Z when selected
-            blade.position = glm::vec3(bladeBaseX, 0.0f, selected * 50.0f);
-            
-            // Scale: Grow by 20% when perfectly centered
-            blade.scale = 1.0f + (selected * 0.2f); 
-            
-            // Rotation: Slight curve towards the viewer depending on which side they are on
-            // (Clamped to avoid extreme clipping on the edges of ultra-wide monitors)
-            float rotationAngle = std::clamp(bladeBaseX / 1500.0f, -0.4f, 0.4f);
-            blade.rotationY = rotationAngle;
-            
-            // Alpha: Fade blades to black/transparent the further they get from the center
-            float alpha = std::clamp(1.0f - (distFromCenter * 0.4f), 0.0f, 1.0f);
-            blade.colorTint = glm::vec4(1.0f, 1.0f, 1.0f, alpha);
+            float targetX = 0.0f;
+            if (diff <= -1.0f) {
+                // Stacked on the Left
+                targetX = -stackBaseX + ((diff + 1.0f) * stackSpacing);
+            } else if (diff >= 1.0f) {
+                // Stacked on the Right
+                targetX = stackBaseX + ((diff - 1.0f) * stackSpacing);
+            } else {
+                // Smoothly sliding across the screen
+                targetX = diff * stackBaseX; 
+            }
+
+            // --- Z-AXIS DEPTH ---
+            // Active blade pops to Z=50. Inactive blades fall back to Z=35, Z=20, etc.
+            // This guarantees they overlap correctly!
+            float targetZ = 50.0f - (absDiff * 15.0f);
+
+            // Apply Transforms
+            blade.position = glm::vec3(targetX, 0.0f, targetZ);
+            blade.scale = 1.0f;      // Kept at 1.0 because our Vertex shader handles the widescreen size
+            blade.rotationY = 0.0f;  // Perfectly flat facing the camera
+            blade.colorTint = glm::vec4(1.0f); 
         }
     }
 

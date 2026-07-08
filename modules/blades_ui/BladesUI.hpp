@@ -3,20 +3,19 @@
 #include <cstdint>
 #include <glm/glm.hpp>
 
+
 namespace Crescendo::Modules {
 
     // Aligned to std430/std140 (48 bytes total stride) & matched to Material.hpp conventions
-    struct alignas(16) BladeRenderData {
-        glm::vec3 position;       // Offset 0  (12 bytes)
-        float rotationY;          // Offset 12 (4 bytes)  -> Fills Chunk 1 (16 bytes)
-        
-        glm::vec4 colorTint;      // Offset 16 (16 bytes) -> Fills Chunk 2 (16 bytes)
-        
-        float scale;              // Offset 32 (4 bytes)
-        float selectedFactor;     // Offset 36 (4 bytes)
-        int32_t baseMaterialID;   // Offset 40 (4 bytes)  -> Replaces uint32_t (Default: -1)
-        int32_t labelAtlasID;     // Offset 44 (4 bytes)  -> Replaces uint32_t (Default: -1)
-                                  // Fills Chunk 3 (16 bytes total, 0 wasted!)
+    struct BladeRenderData {
+        glm::vec3 position;        // Offset 0
+        float rotationY;           // Offset 12
+        glm::vec4 colorTint;       // Offset 16
+        float scale;               // Offset 32
+        float selectedFactor;      // Offset 36
+        int baseMaterialID;        // Offset 40
+        float padding;             // Offset 44
+        glm::vec4 iconUVBounds;    // Offset 48 (u0, v0, u1, v1)
     };
 
     class BladesUI {

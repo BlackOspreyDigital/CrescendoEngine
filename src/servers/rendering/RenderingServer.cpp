@@ -169,6 +169,10 @@ namespace Crescendo {
         // --- wireframe view ---
         if (!createOutlinePipeline()) return false;
         // if (!createBillboardPipeline()) return false;
+
+        if (!createBladeUIPipeline()) return false;
+        if (!createBladeUIResources()) return false;
+        
        
         if (!createFramebuffers()) return false;
 
@@ -2516,31 +2520,38 @@ namespace Crescendo {
 
     bool Crescendo::RenderingServer::createBladeUIResources() {
         // =========================================================================
-        // 1. CREATE THE INSTANCE DATA SSBO (Mapped to Host Memory)
+        // 1. CREATE PER-FRAME INSTANCE DATA SSBOs
         // =========================================================================
-        VkBufferCreateInfo bufferInfo{};
-        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = 10 * sizeof(Crescendo::Modules::BladeRenderData); // 480 bytes
+        VkDeviceSize bufferSize = 10 * sizeof(Crescendo::Modules::BladeRenderData); // 480 bytes
+
+        bladeInstanceSSBOs.resize(MAX_FRAMES_IN_FLIGHT);
+        bladeInstanceSSBOsMapped.resize(MAX_FRAMES_IN_FLIGHT);
+        bladeInstanceDescriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
+
+        VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        bufferInfo.size = bufferSize;
         bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         VmaAllocationCreateInfo vmaAllocInfo{};
         vmaAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-        // We map it so we can memcpy() directly to it every frame without a staging buffer
         vmaAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
-        if (vmaCreateBuffer(allocator, &bufferInfo, &vmaAllocInfo, &bladeInstanceSSBO.buffer, &bladeInstanceSSBO.allocation, nullptr) != VK_SUCCESS) {
-            std::cerr << "[RenderingServer] Failed to create Blade UI SSBO!" << std::endl;
-            return false;
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            // [CRITICAL FIX] Give RAII wrapper the allocator so it can destroy itself!
+            bladeInstanceSSBOs[i].allocator = allocator; 
+
+            if (vmaCreateBuffer(allocator, &bufferInfo, &vmaAllocInfo, &bladeInstanceSSBOs[i].handle, &bladeInstanceSSBOs[i].allocation, nullptr) != VK_SUCCESS) {
+                std::cerr << "[RenderingServer] Failed to create Blade UI SSBO for frame " << i << "!" << std::endl;
+                return false;
+            }
+            vmaMapMemory(allocator, bladeInstanceSSBOs[i].allocation, &bladeInstanceSSBOsMapped[i]);
         }
 
         // =========================================================================
         // 2. CREATE THE 2D QUAD VERTEX BUFFER
         // =========================================================================
-        
-        // REMOVED 'Crescendo::' from Vertex here
         const std::vector<Vertex> uiQuadVertices = {
-            // Position                 // Color               // Normal              // TexCoord
             {{-1.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}},
             {{ 1.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f}},
             {{ 1.0f,  1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
@@ -2549,36 +2560,35 @@ namespace Crescendo {
             {{-1.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}}
         };
 
-        // REMOVED 'Crescendo::' from Vertex here as well
         size_t quadSize = uiQuadVertices.size() * sizeof(Vertex);
 
-        VkBufferCreateInfo quadInfo{};
-        quadInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        VkBufferCreateInfo quadInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         quadInfo.size = quadSize;
         quadInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
         quadInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
         VmaAllocationCreateInfo quadAllocInfo{};
         quadAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-        quadAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        // [CRITICAL FIX] Removed MAPPED_BIT since we manually unmap this static buffer!
+        quadAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT; 
 
-        if (vmaCreateBuffer(allocator, &quadInfo, &quadAllocInfo, &quadVertexBuffer.buffer, &quadVertexBuffer.allocation, nullptr) != VK_SUCCESS) {
+        // Ensure RAII wrapper has the allocator so it can destroy itself
+        quadVertexBuffer.allocator = allocator; 
+
+        if (vmaCreateBuffer(allocator, &quadInfo, &quadAllocInfo, &quadVertexBuffer.handle, &quadVertexBuffer.allocation, nullptr) != VK_SUCCESS) {
             std::cerr << "[RenderingServer] Failed to create Blade UI Quad Buffer!" << std::endl;
             return false;
         }
 
-        // Upload the quad vertices
         void* quadData;
         vmaMapMemory(allocator, quadVertexBuffer.allocation, &quadData);
         memcpy(quadData, uiQuadVertices.data(), quadSize);
         vmaUnmapMemory(allocator, quadVertexBuffer.allocation);
 
         // =========================================================================
-        // 3. SET UP THE MTSDF SAMPLER & TEXTURE (Descriptor Set 1)
+        // 3. SET UP THE SAMPLER & TEXTURE (Descriptor Set 1)
         // =========================================================================
-        // Create the Linear Sampler strictly required for Distance Field math
-        VkSamplerCreateInfo samplerInfo{};
-        samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         samplerInfo.magFilter = VK_FILTER_LINEAR; 
         samplerInfo.minFilter = VK_FILTER_LINEAR; 
         samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -2590,35 +2600,89 @@ namespace Crescendo {
 
         vkCreateSampler(device, &samplerInfo, nullptr, &mtsdfAtlasSampler);
 
-        // NOTE: Once you run your msdf-atlas-gen tool, you will load the texture here
-        // e.g., mtsdfAtlasImage = KtxLoader::Load("assets/ui/atlas.ktx2");
+        // [FIX 1] LOAD BOTH IMAGES!
+        // 1. Load the icons
+        if (!createTextureImage("assets/ui/ui_icons.png", mtsdfAtlasImage)) {
+            std::cerr << "[RenderingServer] Failed to load UI Icons Atlas!" << std::endl;
+        }
+        mtsdfAtlasView = mtsdfAtlasImage.view; 
+
+        // 2. Load the background
+        if (!createTextureImage("assets/ui/Blade_Card.png", bladeBackgroundImage)) {
+            std::cerr << "[RenderingServer] Failed to load blade background!" << std::endl;
+        }
 
         // =========================================================================
-        // 4. WRITE THE DESCRIPTOR SETS
+        // 4. ALLOCATE & WRITE PER-FRAME DESCRIPTOR SETS
         // =========================================================================
+        std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, bladeDescriptorLayout);
+        VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocInfo.descriptorPool = descriptorPool;
+        allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
+        allocInfo.pSetLayouts = layouts.data();
 
-        // (Ensure you have allocated `bladeInstanceDescriptorSet` from your DescriptorPool!)
-        VkDescriptorBufferInfo ssboInfo{};
-        ssboInfo.buffer = bladeInstanceSSBO.buffer;
-        ssboInfo.offset = 0;
-        ssboInfo.range = VK_WHOLE_SIZE;
+        if (vkAllocateDescriptorSets(device, &allocInfo, bladeInstanceDescriptorSets.data()) != VK_SUCCESS) {
+            std::cerr << "[RenderingServer] Failed to allocate Blade UI Descriptor Sets!" << std::endl;
+            return false;
+        }
 
-        VkWriteDescriptorSet descriptorWrite{};
-        descriptorWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptorWrite.dstSet = bladeInstanceDescriptorSet;
-        descriptorWrite.dstBinding = 0;
-        descriptorWrite.dstArrayElement = 0;
-        descriptorWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        descriptorWrite.descriptorCount = 1;
-        descriptorWrite.pBufferInfo = &ssboInfo;
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            
+            // WRITE 0: The SSBO
+            VkDescriptorBufferInfo ssboInfo{};
+            ssboInfo.buffer = bladeInstanceSSBOs[i].handle;
+            ssboInfo.offset = 0;
+            ssboInfo.range = bufferSize;
 
-        vkUpdateDescriptorSets(device, 1, &descriptorWrite, 0, nullptr);
+            VkWriteDescriptorSet ssboWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            ssboWrite.dstSet = bladeInstanceDescriptorSets[i];
+            ssboWrite.dstBinding = 0;
+            ssboWrite.dstArrayElement = 0;
+            ssboWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            ssboWrite.descriptorCount = 1;
+            ssboWrite.pBufferInfo = &ssboInfo;
+
+            // WRITE 1: The Texture Atlas (ui_icons.png)
+            VkDescriptorImageInfo atlasInfo{};
+            atlasInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            atlasInfo.imageView = mtsdfAtlasView;
+            atlasInfo.sampler = mtsdfAtlasSampler;
+
+            VkWriteDescriptorSet atlasWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            atlasWrite.dstSet = bladeInstanceDescriptorSets[i];
+            atlasWrite.dstBinding = 1;
+            atlasWrite.dstArrayElement = 0;
+            atlasWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            atlasWrite.descriptorCount = 1;
+            atlasWrite.pImageInfo = &atlasInfo;
+
+            // WRITE 2: The Background Texture (Blade_Card.png)
+            VkDescriptorImageInfo bgInfo{};
+            bgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            bgInfo.imageView = bladeBackgroundImage.view;
+            bgInfo.sampler = textureSampler; // Reusing global sampler
+
+            // [FIX 2] ACTUALLY CREATE THE WRITE STRUCT FOR THE BACKGROUND
+            VkWriteDescriptorSet bgWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            bgWrite.dstSet = bladeInstanceDescriptorSets[i];
+            bgWrite.dstBinding = 2; // Binding 2!
+            bgWrite.dstArrayElement = 0;
+            bgWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bgWrite.descriptorCount = 1;
+            bgWrite.pImageInfo = &bgInfo;
+
+            // [FIX 3] PUT ALL 3 WRITES INTO THE ARRAY
+            VkWriteDescriptorSet writes[] = { ssboWrite, atlasWrite, bgWrite };
+            
+            // NOW we can safely tell Vulkan there are 3 updates!
+            vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
+        }
 
         return true;
     }
 
     bool Crescendo::RenderingServer::createBladeUIPipeline() {
-        // 1. Setup Descriptor Set Layouts (Set 0: SSBO, Set 1: Atlas)
+        // 1. Setup Descriptor Set Layouts (Set 0: SSBO, Set 1: Atlas, Set 2: Background)
         VkDescriptorSetLayoutBinding ssboBinding{};
         ssboBinding.binding = 0;
         ssboBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -2626,17 +2690,25 @@ namespace Crescendo {
         ssboBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
         VkDescriptorSetLayoutBinding atlasBinding{};
-        atlasBinding.binding = 0;
+        atlasBinding.binding = 1; 
         atlasBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         atlasBinding.descriptorCount = 1;
         atlasBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT; 
 
-        VkDescriptorSetLayoutBinding bindings[] = {ssboBinding, atlasBinding};
+        // ADD THIS: The Background Texture Binding
+        VkDescriptorSetLayoutBinding bgBinding{};
+        bgBinding.binding = 2; 
+        bgBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bgBinding.descriptorCount = 1;
+        bgBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        // Add bgBinding to the array!
+        VkDescriptorSetLayoutBinding bindings[] = {ssboBinding, atlasBinding, bgBinding}; 
         
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 2;
-        layoutInfo.pBindings = bindings;
+        layoutInfo.bindingCount = 3; // CHANGE THIS TO 3!
+        layoutInfo.pBindings = bindings; 
 
         if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &bladeDescriptorLayout) != VK_SUCCESS) {
             return false;
@@ -2786,9 +2858,7 @@ namespace Crescendo {
 
         return true;
     }
-
     
-   
     //===============================================
     // RENDER STAGING
     //===============================================
@@ -3779,45 +3849,66 @@ namespace Crescendo {
         swapChainPassInfo.renderPass = renderPass; 
         swapChainPassInfo.framebuffer = swapChainFramebuffers[imageIndex]; 
         swapChainPassInfo.renderArea.extent = swapChainExtent;
-        swapChainPassInfo.clearValueCount = 2; 
         
-        swapChainPassInfo.pClearValues = clearValues.data();
+        // [FIX 1] EXPLICITLY CLEAR SWAPCHAIN DEPTH TO 1.0f (Far Plane)
+        VkClearValue swapChainClears[2];
+        swapChainClears[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}}; // Black Background
+        swapChainClears[1].depthStencil = {1.0f, 0};           // 1.0 Depth allows our UI to draw
+
+        swapChainPassInfo.clearValueCount = 2; 
+        swapChainPassInfo.pClearValues = swapChainClears;
             
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &swapChainPassInfo, VK_SUBPASS_CONTENTS_INLINE);
             
             // =========================================================
-            // BLADES UI INJECTION ( Experimental )
+            // BLADES UI INJECTION
             // =========================================================
             
+            // --- QUICK INPUT & PHYSICS TEST ---
+            const Uint8* keyState = SDL_GetKeyboardState(NULL);
+            static bool leftPressed = false;
+            static bool rightPressed = false;
+
+            if (keyState[SDL_SCANCODE_LEFT] && !leftPressed) { bladesUI.MoveLeft(); leftPressed = true; } 
+            else if (!keyState[SDL_SCANCODE_LEFT]) { leftPressed = false; }
+
+            if (keyState[SDL_SCANCODE_RIGHT] && !rightPressed) { bladesUI.MoveRight(); rightPressed = true; } 
+            else if (!keyState[SDL_SCANCODE_RIGHT]) { rightPressed = false; }
+
+            bladesUI.Update(0.016f); 
+            // ----------------------------------------
+
+            // [FIX 2] SET THE DYNAMIC VIEWPORT & SCISSOR
+            VkViewport uiViewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
+            vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &uiViewport);
+            
+            VkRect2D uiScissor{{0, 0}, swapChainExtent};
+            vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &uiScissor);
+
             // 1. Get the latest physics math from the UI system
             const auto& frameData = bladesUI.GetFrameData();
             size_t copySize = frameData.size() * sizeof(Crescendo::Modules::BladeRenderData);
 
-            // 2. Map, Copy, and Unmap the SSBO memory
-            void* mappedData;
-            vmaMapMemory(allocator, bladeInstanceSSBO.allocation, &mappedData);
-            memcpy(mappedData, frameData.data(), copySize);
-            vmaUnmapMemory(allocator, bladeInstanceSSBO.allocation);
+            // 2. Direct memory copy to THIS frame's mapped GPU memory address
+            memcpy(bladeInstanceSSBOsMapped[currentFrame], frameData.data(), copySize);
 
             // 3. Bind the Blade UI Pipeline
             vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bladeUIPipeline);
 
-            // 4. Bind the SSBO and MTSDF Atlas
-            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bladeUIPipelineLayout, 0, 1, &bladeInstanceDescriptorSet, 0, nullptr);
-            // vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bladeUIPipelineLayout, 1, 1, &mtsdfAtlasDescriptorSet, 0, nullptr);
+            // 4. Bind THIS frame's SSBO Descriptor Set
+            vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bladeUIPipelineLayout, 0, 1, &bladeInstanceDescriptorSets[currentFrame], 0, nullptr);
 
             // 5. Push the UI Camera Matrix 
             glm::mat4 uiProj = glm::perspective(glm::radians(45.0f), (float)swapChainExtent.width / (float)swapChainExtent.height, 0.1f, 1000.0f);
             uiProj[1][1] *= -1.0f; // Vulkan Y-flip
-            glm::mat4 uiView = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -600.0f)); 
+            glm::mat4 uiView = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -300.0f));
             glm::mat4 uiViewProj = uiProj * uiView;
 
             vkCmdPushConstants(commandBuffers[currentFrame], bladeUIPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &uiViewProj);
 
             // 6. Bind the basic Quad Vertex buffer
             VkDeviceSize offsets[] = {0};
-            // Ensure you use your actual quad buffer handle here (e.g., quadVertexBuffer.buffer)
-            vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, &quadVertexBuffer.buffer, offsets);
+            vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, &quadVertexBuffer.handle, offsets);
 
             // 7. FIRE THE INSTANCED DRAW CALL
             vkCmdDraw(commandBuffers[currentFrame], 6, static_cast<uint32_t>(frameData.size()), 0, 0);
@@ -3826,8 +3917,8 @@ namespace Crescendo {
             // END BLADES UI INJECTION
             // =========================================================
 
-            // ImGui renders last, sitting on top of everything
-            editorUI.Render(commandBuffers[currentFrame]);
+            // [FIX 3] Temporarily comment out ImGui so it doesn't cover the blades!
+            // editorUI.Render(commandBuffers[currentFrame]);
             
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
             
@@ -5010,6 +5101,9 @@ namespace Crescendo {
             if (shadowPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, shadowPipeline, nullptr);
             if (ssrPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, ssrPipeline, nullptr);
             if (equirectToCubePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, equirectToCubePipeline, nullptr);
+            if (bladeUIPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bladeUIPipeline, nullptr);
+            if (bladeUIPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, bladeUIPipelineLayout, nullptr);
+            if (bladeDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, bladeDescriptorLayout, nullptr);
             if (outlinePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, outlinePipeline, nullptr);
             if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
             if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
@@ -5035,9 +5129,11 @@ namespace Crescendo {
             if (shadowSampler != VK_NULL_HANDLE) vkDestroySampler(device, shadowSampler, nullptr);
             shadowImage.destroy();
             
-            // 4. DESTROY EVERY SINGLE IMAGE (Updated with the missing ones!)
+            // 4. DESTROY EVERY SINGLE IMAGE
             speakerTexture.destroy(); 
-            skyImage.destroy(); // manually trigger the cleanup while device is still active
+            skyImage.destroy(); 
+            mtsdfAtlasImage.destroy(); // Automatically destroys mtsdfAtlasView for you!
+            if (mtsdfAtlasSampler != VK_NULL_HANDLE) vkDestroySampler(device, mtsdfAtlasSampler, nullptr);
             
             textureImage.destroy(); 
             positionBakeImage.destroy(); 
@@ -5072,6 +5168,10 @@ namespace Crescendo {
 
             for (auto& buf : globalUniformBuffers) buf.destroy();
             globalUniformBuffers.clear();
+
+            for (auto& buf : bladeInstanceSSBOs) buf.destroy();
+            bladeInstanceSSBOs.clear();
+            quadVertexBuffer.destroy();
         
             cleanupSwapChain();
             

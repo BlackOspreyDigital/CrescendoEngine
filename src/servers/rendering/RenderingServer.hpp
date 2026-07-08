@@ -24,7 +24,7 @@
 #include "servers/interface/SymbolServer.hpp"
 #include "core/EngineState.hpp"
 #include "IO/ConfigManager.hpp"
-#include "servers/rendering/vulkan/VulkanResources.hpp" // <-- Make sure 'vulkan/' is here!
+#include "servers/rendering/vulkan/VulkanResources.hpp" 
 
 // Your new modules:
 #include "modules/voxel/VoxelTerrainModule.hpp"
@@ -413,21 +413,20 @@ namespace Crescendo {
         VkPipelineLayout bladeUIPipelineLayout = VK_NULL_HANDLE;
         VulkanBuffer quadVertexBuffer;
         
-        // Set 0: The SSBO containing the 48-byte BladeRenderData structs
-        // Set 1: The MTSDF Texture Atlas and Sampler
         VkDescriptorSetLayout bladeDescriptorLayout = VK_NULL_HANDLE; 
         
-        // 2. The SSBO (Using your VulkanResources wrappers)
-        // Note: In a real engine you usually want one SSBO per "frame in flight" 
-        // to prevent CPU/GPU race conditions, but a single buffer is fine for testing.
-        VulkanBuffer bladeInstanceSSBO; 
-        VkDescriptorSet bladeInstanceDescriptorSet = VK_NULL_HANDLE;
+        // 2. Per-Frame SSBOs & Descriptors (Prevents CPU/GPU Race Conditions!)
+        std::vector<VulkanBuffer> bladeInstanceSSBOs; 
+        std::vector<void*> bladeInstanceSSBOsMapped;
+        std::vector<VkDescriptorSet> bladeInstanceDescriptorSets;
 
         // 3. The MTSDF Atlas Image
         VulkanImage mtsdfAtlasImage;
         VkImageView mtsdfAtlasView = VK_NULL_HANDLE;
         VkSampler mtsdfAtlasSampler = VK_NULL_HANDLE;
         VkDescriptorSet mtsdfAtlasDescriptorSet = VK_NULL_HANDLE;
+
+        VulkanImage bladeBackgroundImage;
 
         // 4. Setup Methods
         bool createBladeUIPipeline();
