@@ -32,6 +32,8 @@ namespace Crescendo::Modules {
         // Returns a const reference to avoid deep copying the whole array every frame
         const std::vector<BladeRenderData>& GetFrameData() const;
 
+        int GetActiveIndex() const { return activeIndex; }
+
     private:
         int32_t activeIndex = 0;
         float scrollVelocity = 0.0f;

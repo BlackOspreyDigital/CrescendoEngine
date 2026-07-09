@@ -30,6 +30,7 @@
 #include "modules/voxel/VoxelTerrainModule.hpp"
 #include "modules/atmosphere/VolumetricAtmosphereModule.hpp"
 #include "modules/blades_ui/BladesUI.hpp"
+#include "core/CrescendoOS.hpp"
 
 struct VmaAllocator_T;
 typedef struct VmaAllocator_T* VmaAllocator;
@@ -237,8 +238,14 @@ namespace Crescendo {
         // Inside RenderingServer class in RenderingServer.hpp
         ChunkBakeResult buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) override;
 
+        void SetOS(Core::CrescendoOS* osPtr) { this->os = osPtr; }
+        Core::CrescendoOS* GetOS() const { return this->os; }
+
+        // EMULATION / FULSCREEN HELPERS
+        void renderFullscreenQuad(VkCommandBuffer cmdBuffer, VkImageView imageView);
+
     private:
-    
+        Core::CrescendoOS* os = nullptr;
         VkInstance instance = VK_NULL_HANDLE;
         VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
         VkSurfaceKHR surface = VK_NULL_HANDLE;

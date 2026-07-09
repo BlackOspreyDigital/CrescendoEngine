@@ -21,7 +21,8 @@
 #endif
 
 #include "IO/SceneManager.hpp"
-#include "modules/blades_ui/BladesUI.hpp"
+// [INJECTION 1] Swapped BladesUI for CrescendoOS
+#include "core/CrescendoOS.hpp"
 
 namespace Crescendo {
 
@@ -37,7 +38,11 @@ namespace Crescendo {
 
         scriptSystem = std::make_unique<ScriptSystem>();
         scriptSystem->Initialize();
-        this->bladesUI = std::make_unique<Modules::BladesUI>();        
+        
+        // --- BOOT CRESCENDO OS SUPERVISOR ---
+        this->crescendoOS = std::make_unique<Core::CrescendoOS>();
+        this->crescendoOS->Initialize();        
+                
         if (!displayServer.initialize(title, width, height)) return false;
 
         // --- PLATFORM RENDERER INJECTION ---
@@ -48,6 +53,8 @@ namespace Crescendo {
         #else
                 renderer = std::make_unique<RenderingServer>();
                 if (!renderer->initialize(&displayServer)) return false;
+
+                static_cast<RenderingServer*>(renderer.get())->SetOS(this->crescendoOS.get());
                 sceneManager = std::make_unique<SceneManager>(static_cast<RenderingServer*>(renderer.get()));
         #endif
         
@@ -75,7 +82,6 @@ namespace Crescendo {
     // THE MAIN LOOP 
     // =========================================================
     #ifdef __EMSCRIPTEN__
-    // 1. The WebAssembly Frame Wrapper
     void WebMainLoopStep(void* arg) {
         Engine* engine = static_cast<Engine*>(arg);
         engine->ProcessEvents();
@@ -86,11 +92,8 @@ namespace Crescendo {
 
     void Engine::Run() {
         #ifdef __EMSCRIPTEN__
-            // 2. Web Mode: Give control to the browser so it can draw!
-            // 0 = sync with monitor refresh rate, true = simulate infinite loop safely
             emscripten_set_main_loop_arg(WebMainLoopStep, this, 0, true);
         #else
-            // 3. Desktop Mode: Classic infinite loop
             while (isRunning) {
                 ProcessEvents();
                 Update();
@@ -106,31 +109,39 @@ namespace Crescendo {
     }
 
     void Engine::Update() {
-    float dt = 1.0f / 60.0f; 
-    Input::Update();
+        float dt = 1.0f / 60.0f; 
+        Input::Update();
 
-    // ------------------------------------------------------------------
-    // 1. BLADES UI INPUT & UPDATE
-    // ------------------------------------------------------------------
-    if (this->bladesUI) {
-        // Optional: Toggle visibility with a dedicated key (e.g., F10 or Tab)
-        // if (Input::GetKeyDown(SDL_SCANCODE_F10)) {
-        //     this->showBladesDashboard = !this->showBladesDashboard;
-        // }
+        // ------------------------------------------------------------------
+        // 1. CRESCENDO OS SUPERVISOR & BLADES UI UPDATE
+        // ------------------------------------------------------------------
+        if (this->crescendoOS) {
+            // --- MASTER ESCAPE HATCH ---
+            // Pressing F1 instantly suspends active workspace/game and returns to 360 Dashboard
+            if (Input::GetKeyDown(SDL_SCANCODE_F1)) {
+                this->crescendoOS->ExitToOS();
+            }
 
-        // Trigger carousel navigation
-        if (Input::GetKeyDown(SDL_SCANCODE_LEFT)) {
-            this->bladesUI->MoveLeft();
+            // --- DASHBOARD NAVIGATION (When in OS Shell mode) ---
+            if (this->crescendoOS->GetCurrentMode() == Core::MasterMode::OS_Dashboard) {
+                auto& blades = this->crescendoOS->GetBladesUI();
+                
+                if (Input::GetKeyDown(SDL_SCANCODE_LEFT)) {
+                    blades.MoveLeft();
+                }
+                if (Input::GetKeyDown(SDL_SCANCODE_RIGHT)) {
+                    blades.MoveRight();
+                }
+                if (Input::GetKeyDown(SDL_SCANCODE_RETURN)) {
+                    this->crescendoOS->OnTabSelected(blades.GetActiveIndex());
+                }
+            }
+
+            // Step the OS state machine and spring-damper physics
+            this->crescendoOS->Update(dt);
         }
-        if (Input::GetKeyDown(SDL_SCANCODE_RIGHT)) {
-            this->bladesUI->MoveRight();
-        }
 
-        // Update spring-damper physics
-        this->bladesUI->Update(dt);
-    }
-
-    auto& cam = static_cast<RenderingServer*>(renderer.get())->mainCamera;
+        auto& cam = static_cast<RenderingServer*>(renderer.get())->mainCamera;
         
         if (currentState == EngineState::Playing && previousState == EngineState::Editor) {
             std::cout << "[Engine] Play Mode: Saving initial state..." << std::endl;
@@ -150,7 +161,6 @@ namespace Crescendo {
                     }
 
                     if (ent->targetName == "SpawnPoint") {
-                        // Change the vector to a dvec3 so both sides of the + are 64-bit doubles!
                         spawnLocation = ent->origin + glm::dvec3(0.0, 0.0, 1.0);
                         ent->scale = glm::vec3(0.0f); 
                     }
@@ -250,10 +260,7 @@ namespace Crescendo {
             }
         }
 
-        // Cast the camera's 64-bit position to a 32-bit float for the audio engine
         audioServer.UpdateListener(glm::vec3(cam.Position), cam.Front, cam.Up);
-
-        
     }
 
     void Engine::Render() {
@@ -270,21 +277,20 @@ namespace Crescendo {
         if (activePlayer) { delete activePlayer; activePlayer = nullptr; }
         if (sceneManager) { sceneManager.reset(); }
 
-        // This will actually call 'delete' on every entity, triggering their 
-        // destructors, which forces the ProceduralPlanetComponent to wait 
-        // for its background threads to finish BEFORE moving to the next line.
         scene.Clear(); 
         
         physicsServer.Cleanup(); 
 
+        // [INJECTION 2] Cleanly reset the OS supervisor before tearing down Vulkan
+        if (crescendoOS) {
+            crescendoOS.reset();
+        }
+
         if (renderer) { 
             renderer->shutdown(); 
-            // Force the unique_ptr to destroy the RenderingServer now
-            // fires all RAII destructors while the device/allocators handles are still technically valid
             renderer.reset();
         }
 
         displayServer.shutdown();
-    
     }
 }

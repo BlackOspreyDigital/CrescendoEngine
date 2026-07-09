@@ -112,6 +112,7 @@ file(GLOB_RECURSE MODULE_SOURCES
     "modules/voxel/*.cpp"    
     "modules/atmosphere/*.cpp"
     "modules/blades_ui/*.cpp"
+    "modules/emulator/*.cpp"
 )
 
 # SEPARATE VULKAN AND WEBGPU BACKENDS

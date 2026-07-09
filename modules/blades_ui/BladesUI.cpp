@@ -45,31 +45,36 @@ namespace Crescendo::Modules {
             float selected = std::max(0.0f, 1.0f - absDiff);
             blade.selectedFactor = selected * selected * (3.0f - 2.0f * selected); 
 
-            // --- X-AXIS STACKING ---
-            float stackBaseX = 600.0f;  // Push inactive blades way off to the sides
-            float stackSpacing = 70.0f; // The width of the "tab" peeking out
+            // --- SEAMLESS X & Z STACKING ---
+            const float stackBaseX = 550.0f;   // Distance where card reaches the edge stack
+            const float stackSpacing = 35.0f;  // How much each inactive tab peeks out
             
-            float targetX = 0.0f;
-            if (diff <= -1.0f) {
-                // Stacked on the Left
-                targetX = -stackBaseX + ((diff + 1.0f) * stackSpacing);
-            } else if (diff >= 1.0f) {
-                // Stacked on the Right
-                targetX = stackBaseX + ((diff - 1.0f) * stackSpacing);
-            } else {
-                // Smoothly sliding across the screen
-                targetX = diff * stackBaseX; 
-            }
+            const float stackBaseZ = 35.0f;    // Depth when card first enters the edge stack
+            const float stackZSpacing = 12.0f; // Depth step between stacked cards to prevent Z-fighting
 
-            // --- Z-AXIS DEPTH ---
-            // Active blade pops to Z=50. Inactive blades fall back to Z=35, Z=20, etc.
-            // This guarantees they overlap correctly!
-            float targetZ = 50.0f - (absDiff * 15.0f);
+            float targetX = 0.0f;
+            float targetZ = 50.0f; // Active center depth
+
+            if (diff < -1.0f) {
+                // Stacked on the Left
+                float stackIndex = std::abs(diff) - 1.0f;
+                targetX = -stackBaseX - (stackIndex * stackSpacing);
+                targetZ = stackBaseZ - (stackIndex * stackZSpacing);
+            } else if (diff > 1.0f) {
+                // Stacked on the Right
+                float stackIndex = diff - 1.0f;
+                targetX = stackBaseX + (stackIndex * stackSpacing);
+                targetZ = stackBaseZ - (stackIndex * stackZSpacing);
+            } else {
+                // Smoothly sliding between center (diff=0) and edge (absDiff=1)
+                targetX = diff * stackBaseX;
+                targetZ = 50.0f - (absDiff * (50.0f - stackBaseZ));
+            }
 
             // Apply Transforms
             blade.position = glm::vec3(targetX, 0.0f, targetZ);
-            blade.scale = 1.0f;      // Kept at 1.0 because our Vertex shader handles the widescreen size
-            blade.rotationY = 0.0f;  // Perfectly flat facing the camera
+            blade.scale = 1.0f;      
+            blade.rotationY = 0.0f;  
             blade.colorTint = glm::vec4(1.0f); 
         }
     }
