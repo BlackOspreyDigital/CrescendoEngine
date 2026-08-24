@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <glm/glm.hpp>
 
-
 namespace Crescendo::Modules {
 
     // Aligned to std430/std140 (48 bytes total stride) & matched to Material.hpp conventions
@@ -25,16 +24,20 @@ namespace Crescendo::Modules {
         // Updates spring-damper physics and calculates 2.5D transforms
         void Update(float dt);
 
-        // Input hooks to trigger the spring motion
+        // Input hooks
         void MoveLeft();
         void MoveRight();
+        void ToggleVisibility();
 
-        // Returns a const reference to avoid deep copying the whole array every frame
         const std::vector<BladeRenderData>& GetFrameData() const;
-
         int GetActiveIndex() const { return activeIndex; }
+        bool IsVisible() const { return isVisible; }
 
     private:
+        bool isVisible = false;            // Start hidden
+        float currentOffsetY = -1000.0f;   // Start off-screen (below the camera)
+        float offsetVelocity = 0.0f;       // Physics velocity for the swoop animation
+
         int32_t activeIndex = 0;
         float scrollVelocity = 0.0f;
         float currentX = 0.0f;

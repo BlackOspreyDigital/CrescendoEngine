@@ -31,6 +31,8 @@
 #include "modules/atmosphere/VolumetricAtmosphereModule.hpp"
 #include "modules/blades_ui/BladesUI.hpp"
 #include "core/CrescendoOS.hpp"
+#include "servers/rendering/vulkan/VulkanResources.hpp"
+#include <memory>
 
 struct VmaAllocator_T;
 typedef struct VmaAllocator_T* VmaAllocator;
@@ -44,6 +46,7 @@ namespace Crescendo {
     class DisplayServer;
     class Scene;
     class CBaseEntity;
+    class CanvasRenderer;
 
     struct TextureResource {
         VulkanImage image;
@@ -165,6 +168,7 @@ namespace Crescendo {
 
         friend class AssetLoader;
         RenderingServer();
+        ~RenderingServer();
 
         std::mutex queueMutex;
         VkCommandPool asyncCommandPool = VK_NULL_HANDLE;
@@ -243,6 +247,9 @@ namespace Crescendo {
 
         // EMULATION / FULSCREEN HELPERS
         void renderFullscreenQuad(VkCommandBuffer cmdBuffer, VkImageView imageView);
+
+        // 2D Canvas Renderer
+        std::unique_ptr<CanvasRenderer> canvasRenderer;
 
     private:
         Core::CrescendoOS* os = nullptr;

@@ -24,6 +24,8 @@
 // [INJECTION 1] Swapped BladesUI for CrescendoOS
 #include "core/CrescendoOS.hpp"
 
+#include "servers/interface/CanvasRenderer.hpp"
+
 namespace Crescendo {
 
     Engine::Engine() : isRunning(false) {}
@@ -120,6 +122,15 @@ namespace Crescendo {
             // Pressing F1 instantly suspends active workspace/game and returns to 360 Dashboard
             if (Input::GetKeyDown(SDL_SCANCODE_F1)) {
                 this->crescendoOS->ExitToOS();
+
+                // Sync mouse capture to OS Dashboard visibility
+                if (this->crescendoOS->GetCurrentMode() == Core::MasterMode::OS_Dashboard) {
+                    Input::UnlockMouse();
+                } else {
+                    if (currentState == EngineState::Playing) {
+                        Input::LockMouse();
+                    }
+                }
             }
 
             // --- DASHBOARD NAVIGATION (When in OS Shell mode) ---
@@ -202,11 +213,11 @@ namespace Crescendo {
         
         if (currentState != previousState) {
             if (currentState == EngineState::Playing) {
-                SDL_SetRelativeMouseMode(SDL_TRUE); 
+                Input::LockMouse();
                 audioServer.PlayAmbientSound();
                 audioServer.PlaySpatialEmitters(); 
             } else {
-                SDL_SetRelativeMouseMode(SDL_FALSE); 
+                Input::UnlockMouse();
                 audioServer.StopAmbientSound();    
                 audioServer.StopSpatialEmitters(); 
             }
@@ -274,17 +285,18 @@ namespace Crescendo {
         
         std::cout << "[Engine] Commencing Shutdown..." << std::endl;
 
+        // Ensure mouse is freed so SDL doesn't hold locks during destruction
+        Input::UnlockMouse();
+
         if (activePlayer) { delete activePlayer; activePlayer = nullptr; }
         if (sceneManager) { sceneManager.reset(); }
-
         scene.Clear(); 
-        
-        physicsServer.Cleanup(); 
 
-        // [INJECTION 2] Cleanly reset the OS supervisor before tearing down Vulkan
         if (crescendoOS) {
             crescendoOS.reset();
         }
+        
+        physicsServer.Cleanup(); 
 
         if (renderer) { 
             renderer->shutdown(); 

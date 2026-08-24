@@ -36,6 +36,7 @@
 #include "IO/ConfigManager.hpp"
 #include "modules/blades_ui/BladesUI.hpp"
 #include "core/CrescendoOS.hpp"
+#include "servers/interface/CanvasRenderer.hpp"
 
 namespace Crescendo {
     
@@ -52,6 +53,11 @@ namespace Crescendo {
 
     RenderingServer::RenderingServer() {
         // Empty! 
+    }
+
+    RenderingServer::~RenderingServer() {
+        // Empty! The std::unique_ptr will automatically safely destroy the CanvasRenderer here 
+        // because this file has the full #include "CanvasRenderer.hpp"! 
     }
 
     bool RenderingServer::initialize(DisplayServer* display) {
@@ -3889,64 +3895,40 @@ namespace Crescendo {
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &swapChainPassInfo, VK_SUBPASS_CONTENTS_INLINE);
             
             // =========================================================
-            // THE CRESCENDO OS CONDITIONAL RENDER ROUTER
+            // ALWAYS RENDER THE MAIN WORKSPACE (ImGui Dockspace + Viewport)
             // =========================================================
-            
-            // 1. Query the Master OS Supervisor from EngineState
+            editorUI.Render(commandBuffers[currentFrame]);
+
+            // =========================================================
+            // OPTIONAL: CRESCENDO OS 2.5D OVERLAY
+            // =========================================================
             auto* os = this->os;
             auto activeMode = this->os ? this->os->GetCurrentMode() : Crescendo::Core::MasterMode::Editor_Workspace;
 
-            if (activeMode == Crescendo::Core::MasterMode::OS_Dashboard) {
-                // --- ROUTE A: BLADES DASHBOARD SHELL ---
-                
-                // 1. Set Viewport & Scissor for the full swapchain window
+            if (os && os->GetBladesUI().IsVisible()) {
+                // --- RENDER 2.5D BLADES OVERLAY ON TOP ---
                 VkViewport uiViewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
                 vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &uiViewport);
                 
                 VkRect2D uiScissor{{0, 0}, swapChainExtent};
                 vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &uiScissor);
 
-                // 2. Dynamic Background / TV Routing (COMMENTED OUT FOR NOW UNTIL WE BUILD THE DESCRIPTOR SWAPPER)
-                /*
-                if (this->os->GetBladesUI().GetActiveIndex() == 1 && 
-                    this->os->GetEmulator().GetState() == Crescendo::Modules::EmulatorState::Running) {
-                    updateBladeBackgroundDescriptor(currentFrame, this->os->GetEmulator().GetFramebufferView());
-                } else {
-                    updateBladeBackgroundDescriptor(currentFrame, defaultBladeBackground.view);
-                }
-                */
-
-                // 3. Grab the frame data calculated during Engine::Update()
-                const auto& frameData = this->os->GetBladesUI().GetFrameData();
+                const auto& frameData = os->GetBladesUI().GetFrameData();
                 size_t copySize = frameData.size() * sizeof(Crescendo::Modules::BladeRenderData);
                 memcpy(bladeInstanceSSBOsMapped[currentFrame], frameData.data(), copySize);
 
-                // 4. Bind Pipeline & Descriptors
                 vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bladeUIPipeline);
                 vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bladeUIPipelineLayout, 0, 1, &bladeInstanceDescriptorSets[currentFrame], 0, nullptr);
 
-                // 5. Push UI Camera Constants
                 glm::mat4 uiProj = glm::perspective(glm::radians(45.0f), (float)swapChainExtent.width / (float)swapChainExtent.height, 0.1f, 1000.0f);
-                uiProj[1][1] *= -1.0f; // Vulkan Y-flip
+                uiProj[1][1] *= -1.0f;
                 glm::mat4 uiView = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -300.0f));
                 glm::mat4 uiViewProj = uiProj * uiView;
                 vkCmdPushConstants(commandBuffers[currentFrame], bladeUIPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &uiViewProj);
 
-                // 6. Bind Quad Buffer & Fire Instanced Draw
                 VkDeviceSize offsets[] = {0};
                 vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, &quadVertexBuffer.handle, offsets);
                 vkCmdDraw(commandBuffers[currentFrame], 6, static_cast<uint32_t>(frameData.size()), 0, 0);
-            }
-
-            else if (activeMode == Crescendo::Core::MasterMode::Editor_Workspace) {
-                // --- ROUTE B: IMGUI EDITOR WORKSPACE ---
-                // Bypasses the 360 cards entirely; draws your ImGui Dockspace and Viewport
-                editorUI.Render(commandBuffers[currentFrame]);
-            } 
-                else if (activeMode == Crescendo::Core::MasterMode::Emulation_Runtime) {
-                // --- ROUTE C: FULL-SCREEN HARDWARE EMULATION ---
-                // Draws the lock-free triple buffer directly across the monitor
-                renderFullscreenQuad(commandBuffers[currentFrame], os->GetEmulator().GetFramebufferView());
             }
 
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
@@ -5163,7 +5145,7 @@ namespace Crescendo {
             skyImage.destroy(); 
             mtsdfAtlasImage.destroy(); // Automatically destroys mtsdfAtlasView for you!
             if (mtsdfAtlasSampler != VK_NULL_HANDLE) vkDestroySampler(device, mtsdfAtlasSampler, nullptr);
-            
+            bladeBackgroundImage.destroy();
             textureImage.destroy(); 
             positionBakeImage.destroy(); 
             normalBakeImage.destroy(); 

@@ -41,4 +41,12 @@ namespace Crescendo {
     bool Input::IsMouseButtonDown(int button) {
         return (mouseState & SDL_BUTTON(button));
     }
+
+    void Input::LockMouse() {
+        SDL_SetRelativeMouseMode(SDL_TRUE);
+    }
+    
+    void Input::UnlockMouse() {
+        SDL_SetRelativeMouseMode(SDL_FALSE);
+    }
 }
