@@ -22,12 +22,12 @@ if (EMSCRIPTEN)
     message(STATUS "Configuring for WebAssembly (Emscripten) + WebGPU")
     
     # Enable Pthreads for BOTH C and C++ (Crucial for ENet and Lua)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread -s USE_PTHREADS=1")
+    # Added -sDEFAULT_TO_CXX=1 to force C libraries to link via C++ for Dawn
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread -s USE_PTHREADS=1 -sDEFAULT_TO_CXX=1")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -s USE_PTHREADS=1 --use-port=emdawnwebgpu -s USE_SDL=2 -Wno-nontrivial-memcall")
     
     # Linker needs the same flags plus the thread pool size
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pthread -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=8 --use-port=emdawnwebgpu -s USE_SDL=2 -s ALLOW_MEMORY_GROWTH=1 -s ASYNCIFY")
-
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pthread -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=8 --use-port=emdawnwebgpu -s USE_SDL=2 -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=67108864 -s ASYNCIFY -sDEFAULT_TO_CXX=1")
     # 1. Disable Ozz OpenGL samples which fail on Web
     set(ozz_build_samples OFF CACHE BOOL "" FORCE)
     set(ozz_build_howtos OFF CACHE BOOL "" FORCE)
@@ -195,12 +195,29 @@ add_executable(crescendo_engine ${ENGINE_SOURCES} ${MODULE_SOURCES} ${IMGUI_SOUR
 
 # When building for the web, we want an .html file and a shell template
 if (EMSCRIPTEN)
-    set_target_properties(crescendo_engine PROPERTIES SUFFIX ".html")
+    message(STATUS "Configuring for WebAssembly (Emscripten) + WebGPU (Single-Threaded)")
     
+    # Single-threaded flags for WebGPU stability
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -sDEFAULT_TO_CXX=1")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --use-port=emdawnwebgpu -s USE_SDL=2 -Wno-nontrivial-memcall")
+    
+    # Clean target link options
+    set_target_properties(crescendo_engine PROPERTIES SUFFIX ".html")
     target_link_options(crescendo_engine PRIVATE 
         "--shell-file" "${CMAKE_SOURCE_DIR}/deps/imgui/examples/libs/emscripten/shell_minimal.html"
         "--preload-file" "${CMAKE_SOURCE_DIR}/assets@/assets"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sINITIAL_MEMORY=134217728"
+        "-sSTACK_SIZE=5242880"
+        "-sEXIT_RUNTIME=0"
+        "-sASYNCIFY"  # <-- ADD THIS FLAG HERE!
+        "-g3"
     )
+
+    # 1. Disable Ozz OpenGL samples which fail on Web
+    set(ozz_build_samples OFF CACHE BOOL "" FORCE)
+    set(ozz_build_howtos OFF CACHE BOOL "" FORCE)
+    # ... (keep the rest of your FetchContent blocks for glm, vulkan_headers, lua)
 endif()
 
 # --- 7. Include Directories ---

@@ -8,6 +8,7 @@ namespace Crescendo {
     class DisplayServer;
     class Scene;
     class SceneManager;
+    class Camera;
     
     class IRenderer {
     public:
@@ -15,8 +16,10 @@ namespace Crescendo {
 
         // Signatures must exactly match your Vulkan implementation!
         virtual bool initialize(DisplayServer* display) = 0;
+        virtual bool isInitialized() const = 0;
         virtual void shutdown() = 0;
         virtual void render(Scene* scene, SceneManager* sceneManager, EngineState& engineState) = 0;
         virtual ChunkBakeResult buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) = 0;
+        virtual Camera* GetMainCamera() = 0; // Unified camera getter 
     };
 }

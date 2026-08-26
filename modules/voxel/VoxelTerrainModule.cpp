@@ -76,7 +76,7 @@ namespace Crescendo {
                         result.collisionIndices.clear();
                     }
                     
-                    return std::move(result); 
+                    return result; 
                 });
                 
                 chunksLaunched++;
@@ -116,9 +116,19 @@ namespace Crescendo {
                 if (node->isLeaf || !childrenReady) {
                     if (node->meshID >= 0) { 
                         MeshResource& mesh = vkRenderer->meshes[node->meshID];
+                        
+#ifdef __EMSCRIPTEN__
+                        // WebGPU path: Buffer is an opaque object, evaluate directly
+                        if (mesh.vertexBuffer) {
+                            outPackets.push_back({ mesh.vertexBuffer, mesh.indexBuffer, mesh.indexCount, gpuIndex });
+                        }
+#else
+                        // Vulkan path: Check and pass the underlying handle
                         if (mesh.vertexBuffer.handle != VK_NULL_HANDLE) {
                             outPackets.push_back({ mesh.vertexBuffer.handle, mesh.indexBuffer.handle, mesh.indexCount, gpuIndex });
                         }
+#endif
+                        
                     } else if (!node->isLeaf) {
                         for (auto& child : node->children) self(self, child.get());
                     }
@@ -162,9 +172,19 @@ namespace Crescendo {
                 if (node->isLeaf || !childrenReady) {
                     if (node->meshID >= 0) { 
                         MeshResource& mesh = vkRenderer->meshes[node->meshID];
+                        
+#ifdef __EMSCRIPTEN__
+                        // WebGPU path: Buffer is an opaque object, evaluate directly
+                        if (mesh.vertexBuffer) {
+                            outPackets.push_back({ mesh.vertexBuffer, mesh.indexBuffer, mesh.indexCount, gpuIndex });
+                        }
+#else
+                        // Vulkan path: Check and pass the underlying handle
                         if (mesh.vertexBuffer.handle != VK_NULL_HANDLE) {
                             outPackets.push_back({ mesh.vertexBuffer.handle, mesh.indexBuffer.handle, mesh.indexCount, gpuIndex });
                         }
+#endif
+                        
                     }
                 }
                 

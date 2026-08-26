@@ -37,6 +37,7 @@
 #include "modules/blades_ui/BladesUI.hpp"
 #include "core/CrescendoOS.hpp"
 #include "servers/interface/CanvasRenderer.hpp"
+#include "servers/rendering/IRenderer.hpp"
 
 namespace Crescendo {
     
@@ -141,9 +142,6 @@ namespace Crescendo {
              return false;
         }
 
-        // ---------------------------------------------------------
-        // 3. NOW BUILD DESCRIPTORS (Because skyImage is ready to be bound)
-        // ---------------------------------------------------------
         if (!createViewportResources()) return false;
         if (!createDescriptorSets()) return false; 
         
@@ -647,7 +645,6 @@ namespace Crescendo {
             // 4. Shift the projection matrix by the exact offset to lock the texels
             lightProj[2][2] = -lightProj[2][2];
             lightProj[3][2] = 1.0f - lightProj[3][2];
-            // ---------------------------------------
 
             globalData.lightSpaceMatrices[i] = lightProj * lightView;
         }
@@ -755,7 +752,6 @@ namespace Crescendo {
             vkDeviceWaitIdle(device); 
         }
         
-        // Use the Compute GPU Baker!
         TextureResource newSky = generateCubemapFromHDR(path);
         
         if (newSky.image.handle != VK_NULL_HANDLE) {
@@ -1424,7 +1420,6 @@ namespace Crescendo {
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
         
-        
         // This ensures the model draws even if the winding order is inverted.
         rasterizer.cullMode = VK_CULL_MODE_NONE; 
         
@@ -1492,7 +1487,6 @@ namespace Crescendo {
         pipelineLayoutInfo.pushConstantRangeCount = 1;
         pipelineLayoutInfo.pPushConstantRanges = &pushConstant;
         
-        // --- ONLY CREATE IF IT DOESN'T EXIST YET ---
         if (pipelineLayout == VK_NULL_HANDLE) {
             if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) return false;
         }
@@ -2545,7 +2539,6 @@ namespace Crescendo {
         vmaAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-            // [CRITICAL FIX] Give RAII wrapper the allocator so it can destroy itself!
             bladeInstanceSSBOs[i].allocator = allocator; 
 
             if (vmaCreateBuffer(allocator, &bufferInfo, &vmaAllocInfo, &bladeInstanceSSBOs[i].handle, &bladeInstanceSSBOs[i].allocation, nullptr) != VK_SUCCESS) {
@@ -2576,10 +2569,8 @@ namespace Crescendo {
 
         VmaAllocationCreateInfo quadAllocInfo{};
         quadAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-        // [CRITICAL FIX] Removed MAPPED_BIT since we manually unmap this static buffer!
         quadAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT; 
 
-        // Ensure RAII wrapper has the allocator so it can destroy itself
         quadVertexBuffer.allocator = allocator; 
 
         if (vmaCreateBuffer(allocator, &quadInfo, &quadAllocInfo, &quadVertexBuffer.handle, &quadVertexBuffer.allocation, nullptr) != VK_SUCCESS) {
@@ -2607,14 +2598,11 @@ namespace Crescendo {
 
         vkCreateSampler(device, &samplerInfo, nullptr, &mtsdfAtlasSampler);
 
-        // [FIX 1] LOAD BOTH IMAGES!
-        // 1. Load the icons
         if (!createTextureImage("assets/ui/ui_icons.png", mtsdfAtlasImage)) {
             std::cerr << "[RenderingServer] Failed to load UI Icons Atlas!" << std::endl;
         }
         mtsdfAtlasView = mtsdfAtlasImage.view; 
 
-        // 2. Load the background
         if (!createTextureImage("assets/ui/Blade_Card.png", bladeBackgroundImage)) {
             std::cerr << "[RenderingServer] Failed to load blade background!" << std::endl;
         }
@@ -2635,7 +2623,6 @@ namespace Crescendo {
 
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
             
-            // WRITE 0: The SSBO
             VkDescriptorBufferInfo ssboInfo{};
             ssboInfo.buffer = bladeInstanceSSBOs[i].handle;
             ssboInfo.offset = 0;
@@ -2649,7 +2636,6 @@ namespace Crescendo {
             ssboWrite.descriptorCount = 1;
             ssboWrite.pBufferInfo = &ssboInfo;
 
-            // WRITE 1: The Texture Atlas (ui_icons.png)
             VkDescriptorImageInfo atlasInfo{};
             atlasInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             atlasInfo.imageView = mtsdfAtlasView;
@@ -2663,13 +2649,11 @@ namespace Crescendo {
             atlasWrite.descriptorCount = 1;
             atlasWrite.pImageInfo = &atlasInfo;
 
-            // WRITE 2: The Background Texture (Blade_Card.png)
             VkDescriptorImageInfo bgInfo{};
             bgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             bgInfo.imageView = bladeBackgroundImage.view;
             bgInfo.sampler = textureSampler; // Reusing global sampler
 
-            // [FIX 2] ACTUALLY CREATE THE WRITE STRUCT FOR THE BACKGROUND
             VkWriteDescriptorSet bgWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
             bgWrite.dstSet = bladeInstanceDescriptorSets[i];
             bgWrite.dstBinding = 2; // Binding 2!
@@ -2678,10 +2662,8 @@ namespace Crescendo {
             bgWrite.descriptorCount = 1;
             bgWrite.pImageInfo = &bgInfo;
 
-            // [FIX 3] PUT ALL 3 WRITES INTO THE ARRAY
             VkWriteDescriptorSet writes[] = { ssboWrite, atlasWrite, bgWrite };
             
-            // NOW we can safely tell Vulkan there are 3 updates!
             vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
         }
 
@@ -2689,7 +2671,6 @@ namespace Crescendo {
     }
 
     bool Crescendo::RenderingServer::createBladeUIPipeline() {
-        // 1. Setup Descriptor Set Layouts (Set 0: SSBO, Set 1: Atlas, Set 2: Background)
         VkDescriptorSetLayoutBinding ssboBinding{};
         ssboBinding.binding = 0;
         ssboBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -2702,26 +2683,23 @@ namespace Crescendo {
         atlasBinding.descriptorCount = 1;
         atlasBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT; 
 
-        // ADD THIS: The Background Texture Binding
         VkDescriptorSetLayoutBinding bgBinding{};
         bgBinding.binding = 2; 
         bgBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bgBinding.descriptorCount = 1;
         bgBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        // Add bgBinding to the array!
         VkDescriptorSetLayoutBinding bindings[] = {ssboBinding, atlasBinding, bgBinding}; 
         
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 3; // CHANGE THIS TO 3!
+        layoutInfo.bindingCount = 3;
         layoutInfo.pBindings = bindings; 
 
         if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &bladeDescriptorLayout) != VK_SUCCESS) {
             return false;
         }
 
-        // 2. Setup Pipeline Layout (Push constants for View/Proj Matrix)
         VkPushConstantRange pushConstant{};
         pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
         pushConstant.offset = 0;
@@ -2738,7 +2716,6 @@ namespace Crescendo {
             return false;
         }
 
-        // 3. COLOR BLENDING (CRITICAL FOR MTSDF DROP SHADOWS)
         VkPipelineColorBlendAttachmentState colorBlendAttachment{};
         colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
         colorBlendAttachment.blendEnable = VK_TRUE; 
@@ -2752,20 +2729,17 @@ namespace Crescendo {
         VkPipelineColorBlendStateCreateInfo colorBlending{};
         colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
         colorBlending.logicOpEnable = VK_FALSE;
-        colorBlending.attachmentCount = 1; // Swapchain only has 1 color attachment
+        colorBlending.attachmentCount = 1; 
         colorBlending.pAttachments = &colorBlendAttachment;
 
-        // 4. DEPTH STENCIL (CRITICAL FOR 2.5D SORTING)
         VkPipelineDepthStencilStateCreateInfo depthStencil{};
         depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depthStencil.depthTestEnable = VK_TRUE;      
-        depthStencil.depthWriteEnable = VK_FALSE;    // DO NOT write depth for transparent drop shadows
+        depthStencil.depthWriteEnable = VK_FALSE;    
         depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
         depthStencil.depthBoundsTestEnable = VK_FALSE;
         depthStencil.stencilTestEnable = VK_FALSE;
 
-        // 5. Load Shaders
-        // (Ensure you compile your procedural shaders to these paths!)
         auto vertShaderCode = readFile("assets/shaders/blade.vert.spv");
         auto fragShaderCode = readFile("assets/shaders/blade.frag.spv");
 
@@ -2786,7 +2760,6 @@ namespace Crescendo {
 
         VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
 
-        // 6. Define Vertex Input (Reuse your engine's existing Vertex struct!)
         auto bindingDescription = Vertex::getBindingDescription();
         auto attributeDescriptions = Vertex::getAttributeDescriptions();
 
@@ -2797,13 +2770,11 @@ namespace Crescendo {
         vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
         vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
-        // 7. Input Assembly
         VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
         inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
         inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         inputAssembly.primitiveRestartEnable = VK_FALSE;
 
-        // 8. Viewport & Scissor (Using Dynamic States)
         VkPipelineViewportStateCreateInfo viewportState{};
         viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
         viewportState.viewportCount = 1;
@@ -2819,23 +2790,20 @@ namespace Crescendo {
         dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
         dynamicState.pDynamicStates = dynamicStates.data();
 
-        // 9. Rasterization
         VkPipelineRasterizationStateCreateInfo rasterizer{};
         rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
         rasterizer.depthClampEnable = VK_FALSE;
         rasterizer.rasterizerDiscardEnable = VK_FALSE;
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_NONE; // Important: Don't cull so 2.5D rotations don't accidentally disappear
+        rasterizer.cullMode = VK_CULL_MODE_NONE; 
         rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
-        // 10. Multisampling (Swapchain is usually 1 Sample)
         VkPipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
         multisampling.sampleShadingEnable = VK_FALSE;
-        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT; // MSAA is done in your offscreen pass, not here
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT; 
 
-        // 11. Build the Final Graphics Pipeline
         VkGraphicsPipelineCreateInfo pipelineInfo{};
         pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
         pipelineInfo.stageCount = 2;
@@ -2850,7 +2818,6 @@ namespace Crescendo {
         pipelineInfo.pDynamicState = &dynamicState;
         pipelineInfo.layout = bladeUIPipelineLayout;
 
-        // CRITICAL FIX: Target the main Swapchain RenderPass, NOT the GBuffer viewportRenderPass
         pipelineInfo.renderPass = renderPass; 
         pipelineInfo.subpass = 0;
 
@@ -2859,7 +2826,6 @@ namespace Crescendo {
             return false;
         }
 
-        // 12. Cleanup Modules
         vkDestroyShaderModule(device, vertShaderModule, nullptr);
         vkDestroyShaderModule(device, fragShaderModule, nullptr);
 
@@ -2953,7 +2919,6 @@ namespace Crescendo {
     bool RenderingServer::createCommandPool() {
         QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
 
-        // 1. The Main Render Command Pool
         VkCommandPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         poolInfo.queueFamilyIndex = indices.graphicsFamily.value();
@@ -2963,7 +2928,6 @@ namespace Crescendo {
             return false;
         }
 
-        // 2. The Background Async Command Pool
         VkCommandPoolCreateInfo asyncPoolInfo{};
         asyncPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
         asyncPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -4783,7 +4747,6 @@ namespace Crescendo {
 
         viewportDepthImage = VulkanImage(allocator, device, width, height, VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
 
-        // --- 5. FRAMEBUFFERS ---
         std::vector<VkImageView> fbAttachments;
         if (useMSAA) {
             fbAttachments = { colorImageMSAA.view, normalImageMSAA.view, depthImageMSAA.view, viewportImage.view, viewportNormalImage.view, viewportDepthImage.view };
@@ -4826,7 +4789,6 @@ namespace Crescendo {
     }
 
     void RenderingServer::updateCompositeDescriptors() {
-       // Added ssrImage check!
        if (viewportImage.view == VK_NULL_HANDLE || bloomBrightImage.view == VK_NULL_HANDLE || ssrImage.view == VK_NULL_HANDLE) return;
 
        VkDescriptorImageInfo compositeInfos[3] = {}; 

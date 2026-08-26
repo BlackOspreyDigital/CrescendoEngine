@@ -2,10 +2,13 @@
 
 #include <vulkan/vulkan.h>
 #include <vector>
-#include <memory>
-#include <future>
+
 #include <map>
 #include <glm/glm.hpp>
+
+#ifdef __EMSCRIPTEN__
+    #include <webgpu/webgpu_cpp.h>
+#endif
 
 #include "servers/rendering/IRenderer.hpp"
 #include "servers/rendering/vulkan/VulkanResources.hpp" 
@@ -17,8 +20,13 @@ namespace Crescendo {
     class CBaseEntity;
 
     struct VoxelDrawPacket {
+#ifdef __EMSCRIPTEN__
+        wgpu::Buffer vertexBuffer;
+        wgpu::Buffer indexBuffer;
+#else
         VkBuffer vertexBuffer;
         VkBuffer indexBuffer;
+#endif
         uint32_t indexCount;
         uint32_t entityGPUIndex;
     };

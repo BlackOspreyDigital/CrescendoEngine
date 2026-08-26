@@ -26,7 +26,6 @@
 #include "IO/ConfigManager.hpp"
 #include "servers/rendering/vulkan/VulkanResources.hpp" 
 
-// Your new modules:
 #include "modules/voxel/VoxelTerrainModule.hpp"
 #include "modules/atmosphere/VolumetricAtmosphereModule.hpp"
 #include "modules/blades_ui/BladesUI.hpp"
@@ -176,9 +175,11 @@ namespace Crescendo {
         void endAsyncCommands(VkCommandBuffer commandBuffer, VkCommandPool localPool);
         
         bool initialize(DisplayServer* display) override;
+        bool isInitialized() const override { return true; }
         void shutdown() override;
 
         void render(Scene* scene, SceneManager* sceneManager, EngineState& engineState) override;
+        Camera* GetMainCamera() override { return &mainCamera; }
         void calculateCascades(Scene* scene, Camera& camera, float aspectRatio, GlobalUniforms& globalData);
         void SetMSAASamples(VkSampleCountFlagBits newSamples);
 
