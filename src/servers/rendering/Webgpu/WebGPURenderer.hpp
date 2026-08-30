@@ -36,9 +36,23 @@
         enum class BlendOperation : uint32_t { Add };
         enum class ColorWriteMask : uint32_t { All };
         enum class PrimitiveTopology : uint32_t { TriangleList };
-        enum class CullMode : uint32_t { Back };
+        enum class CullMode : uint32_t { 
+            None = 0, 
+            Front = 1, 
+            Back = 2 
+        };
         enum class FrontFace : uint32_t { CCW };
-        enum class CompareFunction : uint32_t { Less };
+        enum class CompareFunction : uint32_t { 
+            Undefined = 0, 
+            Never = 1, 
+            Less = 2, 
+            Equal = 3, 
+            LessEqual = 4, 
+            Greater = 5, 
+            NotEqual = 6, 
+            GreaterEqual = 7, 
+            Always = 8 
+        };
         enum class IndexFormat : uint32_t { Uint32 };
         
         enum class ShaderStage : uint32_t { Vertex = 1, Fragment = 2, Compute = 4 };
@@ -116,7 +130,7 @@
         struct RenderPassDescriptor { uint32_t colorAttachmentCount; const RenderPassColorAttachment* colorAttachments; const RenderPassDepthStencilAttachment* depthStencilAttachment; };
         struct SurfaceConfiguration { Device device; TextureFormat format; TextureUsage usage; uint32_t width; uint32_t height; PresentMode presentMode; CompositeAlphaMode alphaMode; };
 
-        static inline Instance CreateInstance(const void* = nullptr) { return Instance(); }
+        inline Instance CreateInstance(const void* = nullptr) { return Instance(); }
     }
 #endif
 
@@ -149,6 +163,13 @@ namespace Crescendo {
 
         std::vector<WebGPUMesh> meshes;
         std::unordered_map<std::string, size_t> meshMap;
+
+        // In WebGPURenderer.hpp inside public:
+        int acquireMesh(const std::string& path, const std::string& name, 
+                         const std::vector<Vertex>& vertices, 
+                         const std::vector<uint32_t>& indices) override;
+        
+        int acquireTexture(const std::string& texturePath) override;
 
     private:
         void BuildPipeline(); 

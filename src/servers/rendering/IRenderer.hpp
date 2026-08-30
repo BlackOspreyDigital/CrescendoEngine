@@ -1,10 +1,11 @@
 #pragma once
 #include "RenderTypes.hpp"
 #include "core/EngineState.hpp"
-#include <memory>
+#include "Vertex.hpp"
+#include <string>
 
 namespace Crescendo {
-    // Forward declare to keep compile times fast
+
     class DisplayServer;
     class Scene;
     class SceneManager;
@@ -21,5 +22,8 @@ namespace Crescendo {
         virtual void render(Scene* scene, SceneManager* sceneManager, EngineState& engineState) = 0;
         virtual ChunkBakeResult buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) = 0;
         virtual Camera* GetMainCamera() = 0; // Unified camera getter 
+
+        virtual int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices) = 0;
+        virtual int acquireTexture(const std::string& texturePath) = 0;
     };
 }

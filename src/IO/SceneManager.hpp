@@ -8,12 +8,12 @@
 
 namespace Crescendo {
 
-class RenderingServer;
+class IRenderer;
 
 class SceneManager {
 public:
 
-    SceneManager(RenderingServer* renderer);
+    SceneManager(IRenderer* renderer);
     
     ~SceneManager() = default;
     
@@ -35,11 +35,11 @@ public:
 
     void InstantiatePrefab(std::shared_ptr<Scene> prefabScene, const glm::vec3& position);
 
-    RenderingServer* GetRenderer() const { return rendererRef; }
+    IRenderer* GetRenderer() const { return rendererRef; }
     
 
 private:
-    RenderingServer* rendererRef = nullptr;
+    IRenderer* rendererRef = nullptr;
     std::vector<std::shared_ptr<Scene>> openScenes;
     std::shared_ptr<Scene> activeScene = nullptr;
 };

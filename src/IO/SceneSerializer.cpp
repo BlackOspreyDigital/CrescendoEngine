@@ -11,7 +11,7 @@ using json = nlohmann::json;
 
 namespace Crescendo {
 
-    SceneSerializer::SceneSerializer(Scene* scene, RenderingServer* renderer) 
+    SceneSerializer::SceneSerializer(Scene* scene, IRenderer* renderer) 
         : m_Scene(scene), m_Renderer(renderer) {
     }
 

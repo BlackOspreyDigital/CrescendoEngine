@@ -581,6 +581,46 @@ namespace Crescendo {
         bgPipeline = device.CreateRenderPipeline(&bgPipelineDesc);
 
     }
+    
+    int WebGPURenderer::acquireMesh(const std::string& path, const std::string& name, 
+                                    const std::vector<Vertex>& vertices, 
+                                    const std::vector<uint32_t>& indices) {
+        // 1. Create and upload the Vertex Buffer
+        wgpu::BufferDescriptor vertDesc{};
+        vertDesc.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
+        vertDesc.size = vertices.size() * sizeof(Vertex);
+        vertDesc.mappedAtCreation = false;
+                                    
+        wgpu::Buffer vBuffer = device.CreateBuffer(&vertDesc);
+        queue.WriteBuffer(vBuffer, 0, vertices.data(), vertDesc.size);
+                                    
+        // 2. Create and upload the Index Buffer
+        wgpu::BufferDescriptor indDesc{};
+        indDesc.usage = wgpu::BufferUsage::Index | wgpu::BufferUsage::CopyDst;
+        indDesc.size = indices.size() * sizeof(uint32_t);
+        indDesc.mappedAtCreation = false;
+                                    
+        wgpu::Buffer iBuffer = device.CreateBuffer(&indDesc);
+        queue.WriteBuffer(iBuffer, 0, indices.data(), indDesc.size);
+                                    
+        // 3. Package into WebGPUMesh
+        WebGPUMesh newMesh;
+        newMesh.name = name;
+        newMesh.vertexBuffer = vBuffer;
+        newMesh.indexBuffer = iBuffer;
+        newMesh.indexCount = static_cast<uint32_t>(indices.size());
+                                    
+        // 4. Store and return the ID
+        meshes.push_back(newMesh);
+        return static_cast<int>(meshes.size() - 1);
+    }
+
+    // We must also satisfy the acquireTexture interface to stop compiler errors!
+    int WebGPURenderer::acquireTexture(const std::string& texturePath) {
+        // We will implement this properly later when we handle the VFS texture extraction. 
+        // For now, return 0 (the default fallback texture ID).
+        return 0; 
+    }
 
     void WebGPURenderer::render(Scene* scene, SceneManager* sceneManager, EngineState& state) {
         if (!device || !surface || !queue || !pipeline) return;

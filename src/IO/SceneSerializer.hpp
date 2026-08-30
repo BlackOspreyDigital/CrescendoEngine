@@ -5,17 +5,17 @@
 namespace Crescendo {
 
     class Scene;
-    class RenderingServer;
+    class IRenderer; // Changed from RenderingServer
 
     class SceneSerializer {
     public:
-        SceneSerializer(Scene* scene, RenderingServer* renderer);
+        SceneSerializer(Scene* scene, IRenderer* renderer); // Updated
     
         bool Serialize(const std::string& filepath);
         bool Deserialize(const std::string& filepath);
 
     private:
         Scene* m_Scene;
-        RenderingServer* m_Renderer;
+        IRenderer* m_Renderer; // Updated
     };
 }
