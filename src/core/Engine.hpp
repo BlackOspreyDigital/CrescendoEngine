@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <memory>
 #include "controllers/FPSController.hpp"
 #include "servers/display/DisplayServer.hpp"
@@ -21,7 +22,9 @@ namespace Crescendo {
         Engine();
         ~Engine();
 
-        bool Initialize(const char* title, int width, int height);
+        bool Initialize(const char* title, int width, int height, const std::string& projectPath);
+        
+        std::string currentProjectRoot;
         void Run();
         void Shutdown();
 

@@ -570,10 +570,10 @@ namespace Crescendo {
         bgDepthStencil.depthCompare = wgpu::CompareFunction::LessEqual; // Crucial for 0.99999 depth
 
         wgpu::RenderPipelineDescriptor bgPipelineDesc{};
-        bgPipelineDesc.layout = layout; // Reuse existing layout
+        bgPipelineDesc.layout = layout; 
         bgPipelineDesc.vertex.module = bgShader;
         bgPipelineDesc.vertex.entryPoint = "vs_bg";
-        bgPipelineDesc.vertex.bufferCount = 0; // MAGIC: No vertex buffers needed!
+        bgPipelineDesc.vertex.bufferCount = 0; 
         bgPipelineDesc.fragment = &bgFragmentState;
         bgPipelineDesc.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
         bgPipelineDesc.depthStencil = &bgDepthStencil;
@@ -615,7 +615,6 @@ namespace Crescendo {
         return static_cast<int>(meshes.size() - 1);
     }
 
-    // We must also satisfy the acquireTexture interface to stop compiler errors!
     int WebGPURenderer::acquireTexture(const std::string& texturePath) {
         // We will implement this properly later when we handle the VFS texture extraction. 
         // For now, return 0 (the default fallback texture ID).

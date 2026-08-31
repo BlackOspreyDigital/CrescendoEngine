@@ -7,6 +7,9 @@
 #include "core/Input.hpp"
 #include "scene/BaseEntity.hpp"
 #include "servers/networking/NetworkingServer.hpp"
+#include "IO/SceneManager.hpp"
+#include "core/CrescendoOS.hpp"
+#include "IO/VirtualFileSystem.hpp"
 
 #ifndef __EMSCRIPTEN__
 #include "modules/gltf/AssetLoader.hpp"
@@ -20,11 +23,7 @@
     #include "servers/rendering/RenderingServer.hpp"
 #endif
 
-#include "IO/SceneManager.hpp"
-// [INJECTION 1] Swapped BladesUI for CrescendoOS
-#include "core/CrescendoOS.hpp"
 
-#include "servers/interface/CanvasRenderer.hpp"
 
 namespace Crescendo {
 
@@ -33,7 +32,14 @@ namespace Crescendo {
         Shutdown();
     }
 
-    bool Engine::Initialize(const char* title, int width, int height) {
+    bool Engine::Initialize(const char* title, int width, int height, const std::string& projectPath) {
+
+        this->currentProjectRoot = projectPath; // Store the project root
+
+        VirtualFileSystem::Get().SetProjectRoot(projectPath); // Set the project root in the VFS
+
+        // Optional: In a release build, you would mount "maps/data.pak" here.
+        // VirtualFileSystem::Get().Mount(projectPath + "/data.pak");
 
         JPH::RegisterDefaultAllocator();
         JPH::Factory::sInstance = new JPH::Factory();
@@ -41,7 +47,6 @@ namespace Crescendo {
         scriptSystem = std::make_unique<ScriptSystem>();
         scriptSystem->Initialize();
         
-        // --- BOOT CRESCENDO OS SUPERVISOR ---
         this->crescendoOS = std::make_unique<Core::CrescendoOS>();
         this->crescendoOS->Initialize();        
                 
@@ -49,16 +54,21 @@ namespace Crescendo {
 
         // --- PLATFORM RENDERER INJECTION ---
         #ifdef __EMSCRIPTEN__
-                renderer = std::make_unique<WebGPURenderer>(); 
-                if (!renderer->initialize(&displayServer)) return false;
-                sceneManager = std::make_unique<SceneManager>(nullptr);
+            renderer = std::make_unique<WebGPURenderer>(); 
         #else
-                renderer = std::make_unique<RenderingServer>();
-                if (!renderer->initialize(&displayServer)) return false;
-
-                static_cast<RenderingServer*>(renderer.get())->SetOS(this->crescendoOS.get());
-                sceneManager = std::make_unique<SceneManager>(static_cast<RenderingServer*>(renderer.get()));
+            renderer = std::make_unique<RenderingServer>();
+            static_cast<RenderingServer*>(renderer.get())->SetOS(this->crescendoOS.get());
         #endif
+
+        if (!renderer->initialize(&displayServer)) return false;
+
+        // SceneManager now takes IRenderer* universally
+        sceneManager = std::make_unique<SceneManager>(renderer.get());
+
+        // --- VFS BOOTSTRAP ---
+        // Instead of hardcoding "data.pak", we will tell the VFS where the project root is.
+        // We'll update the VFS implementation in the next step to handle this!
+        // VirtualFileSystem::Get().Mount("data.pak");
         
         // Start Physics 
         physicsServer.Initialize();
@@ -104,8 +114,6 @@ namespace Crescendo {
         #endif
     }
 
-    // =========================================================
-
     void Engine::ProcessEvents() {
         displayServer.poll_events(isRunning);
     }
@@ -114,57 +122,27 @@ namespace Crescendo {
         float dt = 1.0f / 60.0f; 
         Input::Update();
 
-        // ------------------------------------------------------------------
-        // 1. CRESCENDO OS SUPERVISOR & BLADES UI UPDATE
-        // ------------------------------------------------------------------
+        // 1. OS & Dashboard logic...
+        // moving this out of the sdk as its a pet project and not part of the engine core. -yan
         if (this->crescendoOS) {
-            // --- MASTER ESCAPE HATCH ---
-            // Pressing F1 instantly suspends active workspace/game and returns to 360 Dashboard
-            if (Input::GetKeyDown(SDL_SCANCODE_F1)) {
-                this->crescendoOS->ExitToOS();
-
-                // Sync mouse capture to OS Dashboard visibility
-                if (this->crescendoOS->GetCurrentMode() == Core::MasterMode::OS_Dashboard) {
-                    Input::UnlockMouse();
-                } else {
-                    if (currentState == EngineState::Playing) {
-                        Input::LockMouse();
-                    }
-                }
-            }
-
-            // --- DASHBOARD NAVIGATION (When in OS Shell mode) ---
-            if (this->crescendoOS->GetCurrentMode() == Core::MasterMode::OS_Dashboard) {
-                auto& blades = this->crescendoOS->GetBladesUI();
-                
-                if (Input::GetKeyDown(SDL_SCANCODE_LEFT)) {
-                    blades.MoveLeft();
-                }
-                if (Input::GetKeyDown(SDL_SCANCODE_RIGHT)) {
-                    blades.MoveRight();
-                }
-                if (Input::GetKeyDown(SDL_SCANCODE_RETURN)) {
-                    this->crescendoOS->OnTabSelected(blades.GetActiveIndex());
-                }
-            }
-
-            // Step the OS state machine and spring-damper physics
+            // ...
             this->crescendoOS->Update(dt);
         }
 
-        auto& cam = static_cast<RenderingServer*>(renderer.get())->mainCamera;
-        
+        // Use the unified Camera getter from IRenderer
+        Camera* cam = renderer ? renderer->GetMainCamera() : nullptr;
+        if (!cam) return;
+
         if (currentState == EngineState::Playing && previousState == EngineState::Editor) {
             std::cout << "[Engine] Play Mode: Saving initial state..." << std::endl;
             
             audioServer.ClearSpatialEmitters(); 
-
-            glm::vec3 spawnLocation = cam.GetPosition(); 
+            glm::vec3 spawnLocation = cam->GetPosition(); 
             
             for (auto* ent : scene.entities) {
                 if (ent) {
                     ent->savedOrigin = ent->origin;
-                    ent->savedAngles = ent->angles;
+                    ent->savedAngles = ent->savedAngles;
                     ent->savedScale = ent->scale; 
                     
                     if (ent->className == "env_sound") {
@@ -183,11 +161,8 @@ namespace Crescendo {
 
             size_t priorCount = scene.entities.size();
             
-            #ifndef __EMSCRIPTEN__
-            // Crescendo::AssetLoader::loadModel(static_cast<RenderingServer*>(renderer.get()), "assets/systemsymbols/defaultplayer.glb", &scene);
-            #else
-                printf("WebAssembly build: Skipping Vulkan AssetLoader.\n");
-            #endif
+            // Clean RHI-agnostic AssetLoader invocation
+            // Crescendo::AssetLoader::loadModel(renderer.get(), "assets/systemsymbols/defaultplayer.glb", &scene);
 
             if (scene.entities.size() > priorCount) {
                 localPlayerModel = scene.entities[priorCount];
@@ -196,6 +171,7 @@ namespace Crescendo {
                 localPlayerModel->networkID = 1;
             }
         }
+
         else if (currentState == EngineState::Editor && previousState != EngineState::Editor) {
             std::cout << "[Engine] Editor Mode: Restoring scene..." << std::endl;
             for (auto* ent : scene.entities) {
@@ -227,10 +203,10 @@ namespace Crescendo {
 
         if (currentState == EngineState::Playing) {
             if (activePlayer) {
-                glm::vec3 forward = glm::vec3(cam.Front.x, cam.Front.y, 0.0f);
+                glm::vec3 forward = glm::vec3(cam->Front.x, cam->Front.y, 0.0f);
                 if (glm::length(forward) > 0.001f) forward = glm::normalize(forward);
                 
-                glm::vec3 right = glm::vec3(cam.Right.x, cam.Right.y, 0.0f);
+                glm::vec3 right = glm::vec3(cam->Right.x, cam->Right.y, 0.0f);
                 if (glm::length(right) > 0.001f) right = glm::normalize(right);
 
                 glm::vec3 inputDir(0.0f);
@@ -242,15 +218,15 @@ namespace Crescendo {
                 bool jump = Input::IsKeyDown(SDL_SCANCODE_SPACE);
 
                 activePlayer->Update(dt, &physicsServer, &audioServer, inputDir, jump);
-                cam.SetPosition(activePlayer->GetPosition());
+                cam->SetPosition(activePlayer->GetPosition());
 
                 if (localPlayerModel) {
                     localPlayerModel->origin = activePlayer->GetPosition() - glm::vec3(0.0f, 0.0f, 1.0f);
-                    localPlayerModel->angles = glm::vec3(90.0f, 0.0f, cam.Yaw);
+                    localPlayerModel->angles = glm::vec3(90.0f, 0.0f, cam->Yaw);
                 }
             }
 
-            cam.Rotate((float)-Input::mouseRelX, (float)-Input::mouseRelY);
+            cam->Rotate((float)-Input::mouseRelX, (float)-Input::mouseRelY);
             physicsServer.Update(dt, scene.entities);
 
             NetworkingServer* activeServer = nullptr;
@@ -271,7 +247,7 @@ namespace Crescendo {
             }
         }
 
-        audioServer.UpdateListener(glm::vec3(cam.Position), cam.Front, cam.Up);
+        audioServer.UpdateListener(glm::vec3(cam->Position), cam->Front, cam->Up);
     }
 
     void Engine::Render() {

@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 #include "scene/Scene.hpp"
 #include "servers/rendering/Vertex.hpp" 
+#include "IO/VirtualFileSystem.hpp"
 
 namespace tinygltf { class Model; class Node; }
 

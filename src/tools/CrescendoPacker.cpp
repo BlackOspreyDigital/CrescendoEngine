@@ -6,7 +6,7 @@
 
 namespace fs = std::filesystem;
 
-void PackDirectory(const std::string& sourceDir, const std::string& outputFile) {
+void PackProject(const std::string& projectDir, const std::string& outputFile) {
     std::ofstream out(outputFile, std::ios::binary);
     if (!out.is_open()) {
         std::cerr << "Failed to open output file: " << outputFile << "\n";
@@ -19,24 +19,37 @@ void PackDirectory(const std::string& sourceDir, const std::string& outputFile) 
 
     std::vector<FatEntry> fat;
 
-    // 2. Iterate through all files in the asset directory
-    for (const auto& entry : fs::recursive_directory_iterator(sourceDir)) {
-        if (!entry.is_regular_file()) continue;
+    // The folders we want to pack
+    std::vector<std::string> targetDirs = { "data", "tags" };
 
-        std::string fullPath = entry.path().string();
-        // Create the virtual path (e.g., "models/player.mesh")
-        std::string virtualPath = fullPath.substr(sourceDir.length() + 1);
+    // 2. Iterate through specific project directories
+    for (const auto& dir : targetDirs) {
+        std::string fullDirPath = projectDir + "/" + dir;
+        
+        if (!fs::exists(fullDirPath) || !fs::is_directory(fullDirPath)) {
+            std::cout << "[Packer] Skipping missing directory: " << fullDirPath << "\n";
+            continue;
+        }
 
-        FatEntry fatEntry;
-        fatEntry.pathHash = HashPath(virtualPath);
-        fatEntry.offset = out.tellp(); // Current write position
-        fatEntry.size = fs::file_size(entry);
+        for (const auto& entry : fs::recursive_directory_iterator(fullDirPath)) {
+            if (!entry.is_regular_file()) continue;
 
-        // Read raw file and write immediately to the .pak
-        std::ifstream in(fullPath, std::ios::binary);
-        out << in.rdbuf(); 
+            // Generate a clean relative path (e.g., "data/models/player.glb")
+            std::string fullPath = entry.path().string();
+            std::string virtualPath = fs::relative(entry.path(), projectDir).generic_string();
 
-        fat.push_back(fatEntry);
+            FatEntry fatEntry;
+            fatEntry.pathHash = HashPath(virtualPath);
+            fatEntry.offset = out.tellp(); // Current write position
+            fatEntry.size = fs::file_size(entry);
+
+            // Read raw file and write immediately to the .pak
+            std::ifstream in(fullPath, std::ios::binary);
+            out << in.rdbuf(); 
+
+            fat.push_back(fatEntry);
+            std::cout << "Packed: " << virtualPath << "\n";
+        }
     }
 
     // 3. Write the File Allocation Table (FAT)
@@ -49,29 +62,44 @@ void PackDirectory(const std::string& sourceDir, const std::string& outputFile) 
     out.seekp(0);
     out.write(reinterpret_cast<const char*>(&header), sizeof(PakHeader));
     
-    std::cout << "Successfully packed " << header.numEntries << " files into " << outputFile << "\n";
+    std::cout << "========================================================\n";
+    std::cout << "SUCCESS: Packed " << header.numEntries << " files into " << outputFile << "\n";
 }
 
 int main(int argc, char** argv) {
-    if (argc != 3) {
-        std::cerr << "Usage: CrescendoPacker <source_directory> <output_file.pak>\n";
-        std::cerr << "Example: CrescendoPacker ./assets ./data.pak\n";
+    if (argc < 2) {
+        std::cerr << "Usage: CrescendoPacker <project_root>\n";
+        std::cerr << "Example: CrescendoPacker ./MyGame\n";
         return 1;
     }
 
-    std::string sourceDir = argv[1];
-    std::string outputFile = argv[2];
+    std::string projectDir = argv[1];
 
-    // Ensure the source directory doesn't have a trailing slash for clean string slicing
-    if (sourceDir.back() == '/' || sourceDir.back() == '\\') {
-        sourceDir.pop_back();
+    // Clean trailing slash
+    if (projectDir.back() == '/' || projectDir.back() == '\\') {
+        projectDir.pop_back();
     }
 
-    if (!fs::exists(sourceDir) || !fs::is_directory(sourceDir)) {
-        std::cerr << "Error: Source directory does not exist.\n";
+    if (!fs::exists(projectDir) || !fs::is_directory(projectDir)) {
+        std::cerr << "Error: Project directory does not exist: " << projectDir << "\n";
         return 1;
     }
 
-    PackDirectory(sourceDir, outputFile);
+    // Ensure the maps directory exists to receive the compiled pak
+    std::string mapsDir = projectDir + "/maps";
+    if (!fs::exists(mapsDir)) {
+        fs::create_directory(mapsDir);
+        std::cout << "[Packer] Created missing 'maps/' directory.\n";
+    }
+
+    std::string outputFile = mapsDir + "/data.pak";
+
+    std::cout << "========================================================\n";
+    std::cout << " CRESCENDO PACKER v2 \n";
+    std::cout << "========================================================\n";
+    std::cout << "Target Project: " << projectDir << "\n";
+    std::cout << "Output Payload: " << outputFile << "\n\n";
+
+    PackProject(projectDir, outputFile);
     return 0;
 }

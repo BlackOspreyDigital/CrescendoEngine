@@ -18,7 +18,7 @@ std::shared_ptr<Scene> SceneManager::CreateScene(const std::string& name) {
 }
 
 // Ensure your constructor stores the renderer pointer if it doesn't already
-SceneManager::SceneManager(RenderingServer* renderer) : rendererRef(renderer) {}
+SceneManager::SceneManager(IRenderer* renderer) : rendererRef(renderer) {}
 
 std::shared_ptr<Scene> SceneManager::LoadScene(const std::string& filepath) {
     auto newScene = std::make_shared<Scene>();
@@ -32,7 +32,6 @@ std::shared_ptr<Scene> SceneManager::LoadScene(const std::string& filepath) {
         newScene->name = "Loaded Scene";
     }
 
-    // FIX: SceneSerializer requires (Scene*, RenderingServer*)
     SceneSerializer serializer(newScene.get(), rendererRef); 
     if (serializer.Deserialize(filepath)) {
         openScenes.push_back(newScene);
@@ -43,7 +42,6 @@ std::shared_ptr<Scene> SceneManager::LoadScene(const std::string& filepath) {
 
 bool SceneManager::SaveScene(std::shared_ptr<Scene> scene, const std::string& filepath) {
     if (!scene) return false;
-    // FIX: Again, provide the renderer reference
     SceneSerializer serializer(scene.get(), rendererRef);
     return serializer.Serialize(filepath);
 }
@@ -80,7 +78,7 @@ void SceneManager::CloseScene(std::shared_ptr<Scene> scene) {
 void SceneManager::InstantiatePrefab(std::shared_ptr<Scene> prefabScene, const glm::vec3& position) {
     if (!activeScene || !prefabScene) return;
 
-    // A simple copy routine. You will iterate over the prefab's entities
+    // A simple copy routine. We will iterate over the prefab's entities
     // and duplicate them into the activeScene, applying the position offset.
     for (const auto& entity : prefabScene->entities) {
         CBaseEntity* newEnt = activeScene->CreateEntity(entity->targetName);
@@ -88,7 +86,7 @@ void SceneManager::InstantiatePrefab(std::shared_ptr<Scene> prefabScene, const g
         newEnt->angles = entity->angles;
         newEnt->scale = entity->scale;
         
-        // Note: You will need to write a deep copy function for components here 
+        // Note: We will need to write a deep copy function for components here 
         // depending on how the ECS stores component data.
     }
 }

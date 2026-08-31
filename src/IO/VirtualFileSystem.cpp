@@ -36,10 +36,15 @@ bool VirtualFileSystem::Mount(const std::string& pakPath) {
     return true;
 }
 
+void VirtualFileSystem::SetProjectRoot(const std::string& path) {
+    std::lock_guard<std::mutex> lock(vfsMutex);
+    projectRoot = path;
+}
+
 std::vector<char> VirtualFileSystem::ReadFile(const std::string& virtualPath) {
     std::lock_guard<std::mutex> lock(vfsMutex);
 
-    // 1. If we are running a packed release build, look in the archive first
+    // 1. If mounted (Packed Build), look in the archive
     if (isMounted) {
         uint64_t hash = HashPath(virtualPath);
         auto it = fileLookup.find(hash);
@@ -52,10 +57,14 @@ std::vector<char> VirtualFileSystem::ReadFile(const std::string& virtualPath) {
         }
     }
 
-    // 2. Fallback: We must be in Editor Mode, load directly from the OS hard drive!
-    std::ifstream file(virtualPath, std::ios::ate | std::ios::binary);
+    // 2. Fallback: Editor Mode / Spectra
+    // Route the virtual path (e.g., "models/prop.glb") to the physical project data folder
+    // Result: "/home/user/mygame/data/models/prop.glb"
+    std::string physicalPath = projectRoot + "/" + virtualPath;
+
+    std::ifstream file(physicalPath, std::ios::ate | std::ios::binary);
     if (!file.is_open()) {
-        std::cerr << "[VFS] Warning: File not found: " << virtualPath << "\n";
+        std::cerr << "[VFS] Warning: File not found in project data: " << physicalPath << "\n";
         return {};
     }
 

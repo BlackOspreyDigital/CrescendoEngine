@@ -164,6 +164,10 @@ namespace Crescendo {
         std::vector<WebGPUMesh> meshes;
         std::unordered_map<std::string, size_t> meshMap;
 
+        // asset loader
+        std::vector<wgpu::TextureView> textureViews;
+        std::unordered_map<std::string, int> textureMap;
+
         // In WebGPURenderer.hpp inside public:
         int acquireMesh(const std::string& path, const std::string& name, 
                          const std::vector<Vertex>& vertices, 
