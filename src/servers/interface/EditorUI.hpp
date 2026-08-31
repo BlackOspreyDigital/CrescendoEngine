@@ -124,7 +124,6 @@ namespace Crescendo {
         // Themes
         void SetCrescendoEditorStyle();
 
-        // --- ADD THESE TO PRIVATE ---
         bool isTagEditor = false;
         std::string projectRoot = "";
         std::string activeTagPath = "";

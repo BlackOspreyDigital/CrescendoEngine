@@ -131,9 +131,14 @@ target_link_libraries(CrescendoCore PUBLIC Threads::Threads Jolt enet_static ozz
 
 # --- 4. EXECUTABLE TARGETS (The SDK Suite) ---
 
+# Place all desktop binaries directly in the project root (H3EK Style)
+if (NOT EMSCRIPTEN)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}")
+endif()
+
 set(IMGUI_SOURCES 
     deps/imgui/imgui.cpp 
-    deps/imgui/imgui_draw.cpp
+    deps/imgui/imgui_draw.cpp 
     deps/imgui/imgui_tables.cpp 
     deps/imgui/imgui_widgets.cpp
     deps/imgui/ImGuizmo.cpp
@@ -146,7 +151,7 @@ else()
     list(APPEND IMGUI_SOURCES deps/imgui/backends/imgui_impl_vulkan.cpp)
 endif()
 
-# [ SPECTRA - 3D WORLD EDITOR ]
+# [ SPECTRA - 3D WORLD EDITOR ] (Runs the full game engine runtime)
 add_executable(Spectra src/main.cpp ${IMGUI_SOURCES})
 target_link_libraries(Spectra PRIVATE CrescendoCore)
 target_include_directories(Spectra PRIVATE ${CMAKE_SOURCE_DIR}/deps/imgui ${CMAKE_SOURCE_DIR}/deps/imgui/backends)
@@ -173,10 +178,26 @@ endif()
 
 # [ DESKTOP ONLY SDK TOOLS ]
 if (NOT EMSCRIPTEN)
-    # [ LEMUR - TAG EDITOR ]
-    add_executable(Lemur src/tools/lemur/main.cpp ${IMGUI_SOURCES})
-    target_link_libraries(Lemur PRIVATE CrescendoCore)
-    target_include_directories(Lemur PRIVATE ${CMAKE_SOURCE_DIR}/deps/imgui ${CMAKE_SOURCE_DIR}/deps/imgui/backends)
+    # [ LEMUR - STANDALONE TAG EDITOR ]
+    # Lemur uses SDL_Renderer for a lightweight Guerilla workflow (Zero Vulkan/Jolt overhead)
+    set(LEMUR_IMGUI_SOURCES
+        deps/imgui/imgui.cpp
+        deps/imgui/imgui_draw.cpp
+        deps/imgui/imgui_tables.cpp
+        deps/imgui/imgui_widgets.cpp
+        deps/imgui/backends/imgui_impl_sdl2.cpp
+        deps/imgui/backends/imgui_impl_sdlrenderer2.cpp
+    )
+
+    add_executable(Lemur src/tools/lemur/main.cpp ${LEMUR_IMGUI_SOURCES})
+    target_include_directories(Lemur PRIVATE 
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/deps/imgui 
+        ${CMAKE_SOURCE_DIR}/deps/imgui/backends
+        ${CMAKE_SOURCE_DIR}/deps/json
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_link_libraries(Lemur PRIVATE SDL2::SDL2)
 
     # [ CRESCENDO PACKER - VFS COMPILER ]
     add_executable(CrescendoPacker src/tools/CrescendoPacker.cpp)

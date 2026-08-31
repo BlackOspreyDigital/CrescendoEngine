@@ -340,16 +340,6 @@ namespace Crescendo {
 
         // --- LOAD ASSET BROWSER ICONS ---
         // Make sure these files are placed inside your assets/icons/ folder!
-        icons.folderIcon        = rendererRef->getImGuiTextureID("assets/icons/folder.png");
-        icons.projectFolderIcon = rendererRef->getImGuiTextureID("assets/icons/crescendoprojectfolder.png");
-        icons.scriptIcon        = rendererRef->getImGuiTextureID("assets/icons/script.png");
-        icons.shaderIcon        = rendererRef->getImGuiTextureID("assets/icons/shader.png");
-        icons.audioIcon         = rendererRef->getImGuiTextureID("assets/icons/audio.png");
-        icons.spatialAudioIcon  = rendererRef->getImGuiTextureID("assets/icons/spatialaudio.png");
-        
-        // Optional generic fallbacks
-        icons.fileIcon          = rendererRef->getImGuiTextureID("assets/icons/file.png");
-        icons.modelIcon         = rendererRef->getImGuiTextureID("assets/icons/model.png");
     
     }
 
@@ -387,7 +377,7 @@ namespace Crescendo {
         ImGuiIO& io = ImGui::GetIO();
 
         // =========================================================
-        // AUTHENTIC GUERILLA (LEMUR) MODE HIJACK
+        // AUTHENTIC (LEMUR) MODE
         // =========================================================
         if (this->isTagEditor) {
             ImGuiID dockSpaceId = ImGui::GetID("MainDockSpace");
@@ -491,7 +481,7 @@ namespace Crescendo {
                 auto planetComp = planet->GetComponent<ProceduralPlanetComponent>();
                 
                 // ==========================================
-                // JUPITER SCALE SURF SETTINGS
+                // JUPITER SCALE SURF SETTINGS [Legacy]
                 // ==========================================
                 planetComp->settings.radius = 50000.0f;     // Superstructure scale
                 planetComp->settings.amplitude = 122.0f;   // Massive rolling hills
@@ -520,7 +510,7 @@ namespace Crescendo {
                 planetComp->atmosphereMeshID = sceneManager->GetRenderer()->acquireMesh("PROCEDURAL", "Atmosphere", atmoVerts, atmoIndices);
                 
                 // ==========================================
-                // GENERATE THE OCEAN MESH
+                // GENERATE THE OCEAN MESH [Legacy]
                 // ==========================================
                 std::vector<Vertex> waterVerts;
                 std::vector<uint32_t> waterIndices;
