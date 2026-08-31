@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <filesystem>
 #include <vulkan/vulkan_core.h>
-
+#include "deps/json/json.hpp"
 
 namespace Crescendo {
     
@@ -54,6 +54,7 @@ namespace Crescendo {
     public:
         EditorUI();
         ~EditorUI();
+        
 
         void Initialize(RenderingServer* renderer, SDL_Window* window, VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device, VkQueue graphicsQueue, uint32_t queueFamilyIndex, VkRenderPass renderPass, uint32_t imageCount);
         void Shutdown(VkDevice device);
@@ -72,6 +73,11 @@ namespace Crescendo {
 
         // Managers
         SceneManager* sceneManager = nullptr;
+
+        // --- ADD THESE TO PUBLIC ---
+        void SetTagEditorMode(bool mode) { isTagEditor = mode; }
+        void SetProjectRoot(const std::string& root) { projectRoot = root; }
+        void DrawLemurLayout();
        
 
     private:
@@ -117,5 +123,11 @@ namespace Crescendo {
 
         // Themes
         void SetCrescendoEditorStyle();
+
+        // --- ADD THESE TO PRIVATE ---
+        bool isTagEditor = false;
+        std::string projectRoot = "";
+        std::string activeTagPath = "";
+        nlohmann::json activeTagData;
     };
 }

@@ -34,10 +34,8 @@
 #include "servers/rendering/RenderingServer.hpp"
 #include "Vertex.hpp"
 #include "IO/ConfigManager.hpp"
-#include "modules/blades_ui/BladesUI.hpp"
-#include "core/CrescendoOS.hpp"
-#include "servers/interface/CanvasRenderer.hpp"
 #include "servers/rendering/IRenderer.hpp"
+#include "servers/interface/CanvasRenderer.hpp"
 
 namespace Crescendo {
     
@@ -175,8 +173,6 @@ namespace Crescendo {
         if (!createOutlinePipeline()) return false;
         // if (!createBillboardPipeline()) return false;
 
-        if (!createBladeUIPipeline()) return false;
-        if (!createBladeUIResources()) return false;
         
        
         if (!createFramebuffers()) return false;
@@ -2519,318 +2515,6 @@ namespace Crescendo {
         return true;
     }
 
-    bool Crescendo::RenderingServer::createBladeUIResources() {
-        // =========================================================================
-        // 1. CREATE PER-FRAME INSTANCE DATA SSBOs
-        // =========================================================================
-        VkDeviceSize bufferSize = 10 * sizeof(Crescendo::Modules::BladeRenderData); // 480 bytes
-
-        bladeInstanceSSBOs.resize(MAX_FRAMES_IN_FLIGHT);
-        bladeInstanceSSBOsMapped.resize(MAX_FRAMES_IN_FLIGHT);
-        bladeInstanceDescriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
-
-        VkBufferCreateInfo bufferInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        bufferInfo.size = bufferSize;
-        bufferInfo.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        VmaAllocationCreateInfo vmaAllocInfo{};
-        vmaAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-        vmaAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-
-        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-            bladeInstanceSSBOs[i].allocator = allocator; 
-
-            if (vmaCreateBuffer(allocator, &bufferInfo, &vmaAllocInfo, &bladeInstanceSSBOs[i].handle, &bladeInstanceSSBOs[i].allocation, nullptr) != VK_SUCCESS) {
-                std::cerr << "[RenderingServer] Failed to create Blade UI SSBO for frame " << i << "!" << std::endl;
-                return false;
-            }
-            vmaMapMemory(allocator, bladeInstanceSSBOs[i].allocation, &bladeInstanceSSBOsMapped[i]);
-        }
-
-        // =========================================================================
-        // 2. CREATE THE 2D QUAD VERTEX BUFFER
-        // =========================================================================
-        const std::vector<Vertex> uiQuadVertices = {
-            {{-1.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}},
-            {{ 1.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f}},
-            {{ 1.0f,  1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-            {{ 1.0f,  1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-            {{-1.0f,  1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-            {{-1.0f, -1.0f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}}
-        };
-
-        size_t quadSize = uiQuadVertices.size() * sizeof(Vertex);
-
-        VkBufferCreateInfo quadInfo{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        quadInfo.size = quadSize;
-        quadInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-        quadInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        VmaAllocationCreateInfo quadAllocInfo{};
-        quadAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-        quadAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT; 
-
-        quadVertexBuffer.allocator = allocator; 
-
-        if (vmaCreateBuffer(allocator, &quadInfo, &quadAllocInfo, &quadVertexBuffer.handle, &quadVertexBuffer.allocation, nullptr) != VK_SUCCESS) {
-            std::cerr << "[RenderingServer] Failed to create Blade UI Quad Buffer!" << std::endl;
-            return false;
-        }
-
-        void* quadData;
-        vmaMapMemory(allocator, quadVertexBuffer.allocation, &quadData);
-        memcpy(quadData, uiQuadVertices.data(), quadSize);
-        vmaUnmapMemory(allocator, quadVertexBuffer.allocation);
-
-        // =========================================================================
-        // 3. SET UP THE SAMPLER & TEXTURE (Descriptor Set 1)
-        // =========================================================================
-        VkSamplerCreateInfo samplerInfo{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-        samplerInfo.magFilter = VK_FILTER_LINEAR; 
-        samplerInfo.minFilter = VK_FILTER_LINEAR; 
-        samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        samplerInfo.anisotropyEnable = VK_FALSE;
-        samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-        samplerInfo.unnormalizedCoordinates = VK_FALSE;
-
-        vkCreateSampler(device, &samplerInfo, nullptr, &mtsdfAtlasSampler);
-
-        if (!createTextureImage("assets/ui/ui_icons.png", mtsdfAtlasImage)) {
-            std::cerr << "[RenderingServer] Failed to load UI Icons Atlas!" << std::endl;
-        }
-        mtsdfAtlasView = mtsdfAtlasImage.view; 
-
-        if (!createTextureImage("assets/ui/Blade_Card.png", bladeBackgroundImage)) {
-            std::cerr << "[RenderingServer] Failed to load blade background!" << std::endl;
-        }
-
-        // =========================================================================
-        // 4. ALLOCATE & WRITE PER-FRAME DESCRIPTOR SETS
-        // =========================================================================
-        std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, bladeDescriptorLayout);
-        VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        allocInfo.descriptorPool = descriptorPool;
-        allocInfo.descriptorSetCount = static_cast<uint32_t>(MAX_FRAMES_IN_FLIGHT);
-        allocInfo.pSetLayouts = layouts.data();
-
-        if (vkAllocateDescriptorSets(device, &allocInfo, bladeInstanceDescriptorSets.data()) != VK_SUCCESS) {
-            std::cerr << "[RenderingServer] Failed to allocate Blade UI Descriptor Sets!" << std::endl;
-            return false;
-        }
-
-        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-            
-            VkDescriptorBufferInfo ssboInfo{};
-            ssboInfo.buffer = bladeInstanceSSBOs[i].handle;
-            ssboInfo.offset = 0;
-            ssboInfo.range = bufferSize;
-
-            VkWriteDescriptorSet ssboWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-            ssboWrite.dstSet = bladeInstanceDescriptorSets[i];
-            ssboWrite.dstBinding = 0;
-            ssboWrite.dstArrayElement = 0;
-            ssboWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            ssboWrite.descriptorCount = 1;
-            ssboWrite.pBufferInfo = &ssboInfo;
-
-            VkDescriptorImageInfo atlasInfo{};
-            atlasInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            atlasInfo.imageView = mtsdfAtlasView;
-            atlasInfo.sampler = mtsdfAtlasSampler;
-
-            VkWriteDescriptorSet atlasWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-            atlasWrite.dstSet = bladeInstanceDescriptorSets[i];
-            atlasWrite.dstBinding = 1;
-            atlasWrite.dstArrayElement = 0;
-            atlasWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            atlasWrite.descriptorCount = 1;
-            atlasWrite.pImageInfo = &atlasInfo;
-
-            VkDescriptorImageInfo bgInfo{};
-            bgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            bgInfo.imageView = bladeBackgroundImage.view;
-            bgInfo.sampler = textureSampler; // Reusing global sampler
-
-            VkWriteDescriptorSet bgWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-            bgWrite.dstSet = bladeInstanceDescriptorSets[i];
-            bgWrite.dstBinding = 2; // Binding 2!
-            bgWrite.dstArrayElement = 0;
-            bgWrite.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            bgWrite.descriptorCount = 1;
-            bgWrite.pImageInfo = &bgInfo;
-
-            VkWriteDescriptorSet writes[] = { ssboWrite, atlasWrite, bgWrite };
-            
-            vkUpdateDescriptorSets(device, 3, writes, 0, nullptr);
-        }
-
-        return true;
-    }
-
-    bool Crescendo::RenderingServer::createBladeUIPipeline() {
-        VkDescriptorSetLayoutBinding ssboBinding{};
-        ssboBinding.binding = 0;
-        ssboBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        ssboBinding.descriptorCount = 1;
-        ssboBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-
-        VkDescriptorSetLayoutBinding atlasBinding{};
-        atlasBinding.binding = 1; 
-        atlasBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        atlasBinding.descriptorCount = 1;
-        atlasBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT; 
-
-        VkDescriptorSetLayoutBinding bgBinding{};
-        bgBinding.binding = 2; 
-        bgBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        bgBinding.descriptorCount = 1;
-        bgBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-
-        VkDescriptorSetLayoutBinding bindings[] = {ssboBinding, atlasBinding, bgBinding}; 
-        
-        VkDescriptorSetLayoutCreateInfo layoutInfo{};
-        layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        layoutInfo.bindingCount = 3;
-        layoutInfo.pBindings = bindings; 
-
-        if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &bladeDescriptorLayout) != VK_SUCCESS) {
-            return false;
-        }
-
-        VkPushConstantRange pushConstant{};
-        pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
-        pushConstant.offset = 0;
-        pushConstant.size = sizeof(glm::mat4);
-
-        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
-        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipelineLayoutInfo.setLayoutCount = 1; 
-        pipelineLayoutInfo.pSetLayouts = &bladeDescriptorLayout;
-        pipelineLayoutInfo.pushConstantRangeCount = 1;
-        pipelineLayoutInfo.pPushConstantRanges = &pushConstant;
-
-        if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &bladeUIPipelineLayout) != VK_SUCCESS) {
-            return false;
-        }
-
-        VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-        colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        colorBlendAttachment.blendEnable = VK_TRUE; 
-        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-        colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-        colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
-
-        VkPipelineColorBlendStateCreateInfo colorBlending{};
-        colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        colorBlending.logicOpEnable = VK_FALSE;
-        colorBlending.attachmentCount = 1; 
-        colorBlending.pAttachments = &colorBlendAttachment;
-
-        VkPipelineDepthStencilStateCreateInfo depthStencil{};
-        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        depthStencil.depthTestEnable = VK_TRUE;      
-        depthStencil.depthWriteEnable = VK_FALSE;    
-        depthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
-        depthStencil.depthBoundsTestEnable = VK_FALSE;
-        depthStencil.stencilTestEnable = VK_FALSE;
-
-        auto vertShaderCode = readFile("assets/shaders/blade.vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/blade.frag.spv");
-
-        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
-        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
-
-        VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
-        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-        vertShaderStageInfo.module = vertShaderModule;
-        vertShaderStageInfo.pName = "main";
-
-        VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
-        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        fragShaderStageInfo.module = fragShaderModule;
-        fragShaderStageInfo.pName = "main";
-
-        VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
-
-        auto bindingDescription = Vertex::getBindingDescription();
-        auto attributeDescriptions = Vertex::getAttributeDescriptions();
-
-        VkPipelineVertexInputStateCreateInfo vertexInputInfo{};
-        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-        vertexInputInfo.vertexBindingDescriptionCount = 1;
-        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
-        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
-        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
-
-        VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
-        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        inputAssembly.primitiveRestartEnable = VK_FALSE;
-
-        VkPipelineViewportStateCreateInfo viewportState{};
-        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-        viewportState.viewportCount = 1;
-        viewportState.scissorCount = 1;
-
-        std::vector<VkDynamicState> dynamicStates = {
-            VK_DYNAMIC_STATE_VIEWPORT,
-            VK_DYNAMIC_STATE_SCISSOR
-        };
-
-        VkPipelineDynamicStateCreateInfo dynamicState{};
-        dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-        dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
-        dynamicState.pDynamicStates = dynamicStates.data();
-
-        VkPipelineRasterizationStateCreateInfo rasterizer{};
-        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-        rasterizer.depthClampEnable = VK_FALSE;
-        rasterizer.rasterizerDiscardEnable = VK_FALSE;
-        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
-        rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_NONE; 
-        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-
-        VkPipelineMultisampleStateCreateInfo multisampling{};
-        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-        multisampling.sampleShadingEnable = VK_FALSE;
-        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT; 
-
-        VkGraphicsPipelineCreateInfo pipelineInfo{};
-        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-        pipelineInfo.stageCount = 2;
-        pipelineInfo.pStages = shaderStages;
-        pipelineInfo.pVertexInputState = &vertexInputInfo;
-        pipelineInfo.pInputAssemblyState = &inputAssembly;
-        pipelineInfo.pViewportState = &viewportState;
-        pipelineInfo.pRasterizationState = &rasterizer;
-        pipelineInfo.pMultisampleState = &multisampling;
-        pipelineInfo.pDepthStencilState = &depthStencil;
-        pipelineInfo.pColorBlendState = &colorBlending;
-        pipelineInfo.pDynamicState = &dynamicState;
-        pipelineInfo.layout = bladeUIPipelineLayout;
-
-        pipelineInfo.renderPass = renderPass; 
-        pipelineInfo.subpass = 0;
-
-        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &bladeUIPipeline) != VK_SUCCESS) {
-            std::cerr << "[RenderingServer] Failed to create Blade UI Pipeline!" << std::endl;
-            return false;
-        }
-
-        vkDestroyShaderModule(device, vertShaderModule, nullptr);
-        vkDestroyShaderModule(device, fragShaderModule, nullptr);
-
-        return true;
-    }
     
     //===============================================
     // RENDER STAGING
@@ -3857,43 +3541,11 @@ namespace Crescendo {
         swapChainPassInfo.pClearValues = swapChainClears;
             
         vkCmdBeginRenderPass(commandBuffers[currentFrame], &swapChainPassInfo, VK_SUBPASS_CONTENTS_INLINE);
-            
-            // =========================================================
-            // ALWAYS RENDER THE MAIN WORKSPACE (ImGui Dockspace + Viewport)
-            // =========================================================
-            editorUI.Render(commandBuffers[currentFrame]);
 
-            // =========================================================
-            // OPTIONAL: CRESCENDO OS 2.5D OVERLAY
-            // =========================================================
-            auto* os = this->os;
-            auto activeMode = this->os ? this->os->GetCurrentMode() : Crescendo::Core::MasterMode::Editor_Workspace;
-
-            if (os && os->GetBladesUI().IsVisible()) {
-                // --- RENDER 2.5D BLADES OVERLAY ON TOP ---
-                VkViewport uiViewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
-                vkCmdSetViewport(commandBuffers[currentFrame], 0, 1, &uiViewport);
-                
-                VkRect2D uiScissor{{0, 0}, swapChainExtent};
-                vkCmdSetScissor(commandBuffers[currentFrame], 0, 1, &uiScissor);
-
-                const auto& frameData = os->GetBladesUI().GetFrameData();
-                size_t copySize = frameData.size() * sizeof(Crescendo::Modules::BladeRenderData);
-                memcpy(bladeInstanceSSBOsMapped[currentFrame], frameData.data(), copySize);
-
-                vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bladeUIPipeline);
-                vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, bladeUIPipelineLayout, 0, 1, &bladeInstanceDescriptorSets[currentFrame], 0, nullptr);
-
-                glm::mat4 uiProj = glm::perspective(glm::radians(45.0f), (float)swapChainExtent.width / (float)swapChainExtent.height, 0.1f, 1000.0f);
-                uiProj[1][1] *= -1.0f;
-                glm::mat4 uiView = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -300.0f));
-                glm::mat4 uiViewProj = uiProj * uiView;
-                vkCmdPushConstants(commandBuffers[currentFrame], bladeUIPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &uiViewProj);
-
-                VkDeviceSize offsets[] = {0};
-                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, &quadVertexBuffer.handle, offsets);
-                vkCmdDraw(commandBuffers[currentFrame], 6, static_cast<uint32_t>(frameData.size()), 0, 0);
-            }
+        // =========================================================
+        // ALWAYS RENDER THE MAIN WORKSPACE (ImGui Dockspace + Viewport)
+        // =========================================================
+        editorUI.Render(commandBuffers[currentFrame]); // ditching Imgui as soon as I can refactor the interface server.
 
         vkCmdEndRenderPass(commandBuffers[currentFrame]);
             
@@ -4898,6 +4550,11 @@ namespace Crescendo {
        return vkCreateFramebuffer(device, &fbInfo, nullptr, &bloomFramebuffer) == VK_SUCCESS;
     }
 
+    void RenderingServer::SetTagEditorConfig(bool isTagEditor, const std::string& projectRoot) {
+        editorUI.SetTagEditorMode(isTagEditor);
+        editorUI.SetProjectRoot(projectRoot);
+    }
+
     // --------------------------------------------------------------------
     // SERVER JANITOR LOOP
     // --------------------------------------------------------------------
@@ -5074,9 +4731,6 @@ namespace Crescendo {
             if (shadowPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, shadowPipeline, nullptr);
             if (ssrPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, ssrPipeline, nullptr);
             if (equirectToCubePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, equirectToCubePipeline, nullptr);
-            if (bladeUIPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bladeUIPipeline, nullptr);
-            if (bladeUIPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, bladeUIPipelineLayout, nullptr);
-            if (bladeDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, bladeDescriptorLayout, nullptr);
             if (outlinePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, outlinePipeline, nullptr);
             if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
             if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
@@ -5107,7 +4761,6 @@ namespace Crescendo {
             skyImage.destroy(); 
             mtsdfAtlasImage.destroy(); // Automatically destroys mtsdfAtlasView for you!
             if (mtsdfAtlasSampler != VK_NULL_HANDLE) vkDestroySampler(device, mtsdfAtlasSampler, nullptr);
-            bladeBackgroundImage.destroy();
             textureImage.destroy(); 
             positionBakeImage.destroy(); 
             normalBakeImage.destroy(); 
@@ -5141,10 +4794,6 @@ namespace Crescendo {
 
             for (auto& buf : globalUniformBuffers) buf.destroy();
             globalUniformBuffers.clear();
-
-            for (auto& buf : bladeInstanceSSBOs) buf.destroy();
-            bladeInstanceSSBOs.clear();
-            quadVertexBuffer.destroy();
         
             cleanupSwapChain();
             

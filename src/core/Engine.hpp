@@ -11,8 +11,6 @@
 
 #include "scene/Scene.hpp"
 #include "core/EngineState.hpp"
-// [INJECTION 1] Include Crescendo OS Supervisor
-#include "core/CrescendoOS.hpp"
 
 namespace Crescendo {
     class ScriptSystem;
@@ -22,8 +20,10 @@ namespace Crescendo {
         Engine();
         ~Engine();
 
-        bool Initialize(const char* title, int width, int height, const std::string& projectPath);
-        
+        bool Initialize(const char* title, int width, int height, const std::string& projectPath, bool isTagEditor = false);
+
+        bool isTagEditorMode = false;
+
         std::string currentProjectRoot;
         void Run();
         void Shutdown();
@@ -33,8 +33,6 @@ namespace Crescendo {
         void Update();
         void Render();
 
-        // [INJECTION 2] Public getter for servers/renderers to access OS routing
-        Core::CrescendoOS* GetOS() const { return crescendoOS.get(); }
 
         EngineState currentState = EngineState::Editor;
         EngineState previousState = EngineState::Editor;
@@ -52,8 +50,6 @@ namespace Crescendo {
 
         // DEV SYSTEMS
         std::unique_ptr<ScriptSystem> scriptSystem;
-        // [INJECTION 3] Upgraded from standalone BladesUI to Master OS Supervisor!
-        std::unique_ptr<Core::CrescendoOS> crescendoOS;
 
         Scene scene;
         

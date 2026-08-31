@@ -1,6 +1,5 @@
 #include "VirtualFileSystem.hpp"
 #include <iostream>
-#include <filesystem>
 
 bool VirtualFileSystem::Mount(const std::string& pakPath) {
     std::lock_guard<std::mutex> lock(vfsMutex);

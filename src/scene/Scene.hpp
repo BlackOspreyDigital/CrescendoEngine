@@ -79,7 +79,7 @@ namespace Crescendo {
         }
 
         void DeleteEntity(int index) {
-            if (index >= 0 && index < entities.size()) {
+            if (index >= 0 && static_cast<size_t>(index) < entities.size()) {
                 CBaseEntity* target = entities[index];
                 if (!target) return; 
 

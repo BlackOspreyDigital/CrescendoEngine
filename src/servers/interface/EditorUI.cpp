@@ -20,7 +20,7 @@
 #include "include/portable-file-dialogs.h" 
 #include "IO/SceneSerializer.hpp"
 
-
+#include <fstream>
 #include <streambuf>
 #include <filesystem>
 #include <glm/gtc/type_ptr.hpp>
@@ -148,6 +148,79 @@ namespace Crescendo {
     }
 
     EditorUI::~EditorUI() {}
+
+    // =========================================================
+    // AUTHENTIC GUERILLA (LEMUR) LAYOUT IMPLEMENTATION
+    // =========================================================
+    void EditorUI::DrawLemurLayout() {
+        std::string tagsPath = projectRoot.empty() ? "tags" : projectRoot + "/tags";
+
+        // 1. Tag Browser Pane
+        ImGui::Begin("Tag Directory");
+        if (std::filesystem::exists(tagsPath)) {
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(tagsPath)) {
+                if (entry.is_regular_file() && entry.path().extension() == ".json") {
+                    std::string relPath = std::filesystem::relative(entry.path(), tagsPath).string();
+                    bool isSelected = (activeTagPath == entry.path().string());
+                    
+                    if (ImGui::Selectable(relPath.c_str(), isSelected)) {
+                        activeTagPath = entry.path().string();
+                        std::ifstream f(activeTagPath);
+                        if (f.is_open()) {
+                            activeTagData.clear();
+                            f >> activeTagData;
+                        }
+                    }
+                }
+            }
+        } else {
+            ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Missing 'tags/' directory at: %s", tagsPath.c_str());
+        }
+        ImGui::End();
+
+        // 2. Tag Inspector Pane (Dynamic Reflection)
+        ImGui::Begin("Tag Inspector");
+        if (!activeTagPath.empty() && !activeTagData.is_null()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.0f, 1.0f), "Editing: %s", activeTagPath.c_str());
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            for (auto& [key, value] : activeTagData.items()) {
+                if (value.is_number_float()) {
+                    float v = value.get<float>();
+                    if (ImGui::DragFloat(key.c_str(), &v, 0.05f)) value = v;
+                } else if (value.is_number_integer()) {
+                    int v = value.get<int>();
+                    if (ImGui::InputInt(key.c_str(), &v)) value = v;
+                } else if (value.is_boolean()) {
+                    bool v = value.get<bool>();
+                    if (ImGui::Checkbox(key.c_str(), &v)) value = v;
+                } else if (value.is_string()) {
+                    std::string v = value.get<std::string>();
+                    char buffer[256];
+                    strncpy(buffer, v.c_str(), sizeof(buffer));
+                    buffer[sizeof(buffer) - 1] = '\0';
+                    if (ImGui::InputText(key.c_str(), buffer, sizeof(buffer))) value = std::string(buffer);
+                } else if (value.is_array() && value.size() == 3 && value[0].is_number()) {
+                    float vec[3] = { value[0].get<float>(), value[1].get<float>(), value[2].get<float>() };
+                    if (ImGui::ColorEdit3(key.c_str(), vec)) value = { vec[0], vec[1], vec[2] };
+                }
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            if (ImGui::Button("Save Tag (Ctrl+S)", ImVec2(-1, 30))) {
+                std::ofstream out(activeTagPath);
+                if (out.is_open()) {
+                    out << activeTagData.dump(4);
+                    std::cout << "[Lemur] Saved: " << activeTagPath << std::endl;
+                }
+            }
+        } else {
+            ImGui::TextDisabled("Select a .json tag to inspect properties.");
+        }
+        ImGui::End();
+    }
 
     
     // Move this to its own respected config file to unclutter editor ui.
@@ -298,12 +371,11 @@ namespace Crescendo {
             g_OriginalCount = nullptr;
         }
     }
-
+    
     void EditorUI::Prepare(Scene* scene, SceneManager* sceneManager, Camera& camera, VkDescriptorSet viewportDescriptor, EngineState& engineState) {
 
         // 1. Get the active scene from the manager
         if (!sceneManager) return;
-
         if (!scene) return;
         
         ImGui_ImplVulkan_NewFrame();
@@ -314,9 +386,20 @@ namespace Crescendo {
 
         ImGuiIO& io = ImGui::GetIO();
 
+        // =========================================================
+        // AUTHENTIC GUERILLA (LEMUR) MODE HIJACK
+        // =========================================================
+        if (this->isTagEditor) {
+            ImGuiID dockSpaceId = ImGui::GetID("MainDockSpace");
+            ImGui::DockSpaceOverViewport(dockSpaceId, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+
+            DrawLemurLayout(); // Draws Tag Directory & JSON Inspector
+            ImGui::Render();
+            return; // Stops Spectra 3D Viewport, Toolbar, and Hierarchy from drawing!
+        }
+        // =========================================================
+
         // --- LOCK IMGUI MOUSE WHEN PLAYING ---
-        // If we are actively playing, strip ImGui's ability to see the mouse 
-        // so you don't accidentally hover/click invisible UI elements!
         if (engineState == EngineState::Playing) {
             io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
         } else {
@@ -637,6 +720,13 @@ namespace Crescendo {
             ImGui::Text(isConnected ? "Online " : "Offline");
 
             ImGui::EndMainMenuBar();
+        }
+
+        // --- NEW: HIJACK UI FOR LEMUR MODE ---
+        if (this->isTagEditor) {
+            DrawLemurLayout();
+            ImGui::Render();
+            return; // Exit early so the 3D Viewport, Hierarchy, and Gizmos DO NOT DRAW
         }
 
         // STATE TOOL BAR

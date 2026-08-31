@@ -8,7 +8,6 @@
 #include "scene/BaseEntity.hpp"
 #include "servers/networking/NetworkingServer.hpp"
 #include "IO/SceneManager.hpp"
-#include "core/CrescendoOS.hpp"
 #include "IO/VirtualFileSystem.hpp"
 
 #ifndef __EMSCRIPTEN__
@@ -32,61 +31,54 @@ namespace Crescendo {
         Shutdown();
     }
 
-    bool Engine::Initialize(const char* title, int width, int height, const std::string& projectPath) {
+    bool Engine::Initialize(const char* title, int width, int height, const std::string& projectPath, bool isTagEditor) {
+        this->currentProjectRoot = projectPath;
+        this->isTagEditorMode = isTagEditor;
+        this->isRunning = true; 
 
-        this->currentProjectRoot = projectPath; // Store the project root
+        VirtualFileSystem::Get().SetProjectRoot(projectPath); 
 
-        VirtualFileSystem::Get().SetProjectRoot(projectPath); // Set the project root in the VFS
-
-        // Optional: In a release build, you would mount "maps/data.pak" here.
-        // VirtualFileSystem::Get().Mount(projectPath + "/data.pak");
-
+        // [CRITICAL] Jolt Physics allocators MUST be registered before anything else!
         JPH::RegisterDefaultAllocator();
         JPH::Factory::sInstance = new JPH::Factory();
 
         scriptSystem = std::make_unique<ScriptSystem>();
         scriptSystem->Initialize();
         
-        this->crescendoOS = std::make_unique<Core::CrescendoOS>();
-        this->crescendoOS->Initialize();        
-                
         if (!displayServer.initialize(title, width, height)) return false;
 
-        // --- PLATFORM RENDERER INJECTION ---
         #ifdef __EMSCRIPTEN__
             renderer = std::make_unique<WebGPURenderer>(); 
         #else
             renderer = std::make_unique<RenderingServer>();
-            static_cast<RenderingServer*>(renderer.get())->SetOS(this->crescendoOS.get());
         #endif
 
         if (!renderer->initialize(&displayServer)) return false;
 
-        // SceneManager now takes IRenderer* universally
+        // In Engine::Initialize...
         sceneManager = std::make_unique<SceneManager>(renderer.get());
 
-        // --- VFS BOOTSTRAP ---
-        // Instead of hardcoding "data.pak", we will tell the VFS where the project root is.
-        // We'll update the VFS implementation in the next step to handle this!
-        // VirtualFileSystem::Get().Mount("data.pak");
-        
-        // Start Physics 
+        // Pass the tag editor configuration polymorphically through the renderer
+        renderer->SetTagEditorConfig(this->isTagEditorMode, projectPath);
+
+        // ALWAYS initialize the core servers so memory is safely allocated!
         physicsServer.Initialize();
         scene.physics = &physicsServer;
+        audioServer.Initialize();
 
-        // Start Audio
-        if (audioServer.Initialize()) {
+        // BYPASS THE HEAVY SCENE BOOTSTRAP FOR LEMUR
+        if (!isTagEditorMode) {
             audioServer.LoadAmbientSound("assets/audio/wind.mp3", 0.5f);
-        }
 
-        // SCENE BOOTSTRAP
-        CBaseEntity* skyEnt = scene.CreateEntity("env_sky");
-        skyEnt->targetName = "Procedural Sky";
-        skyEnt->angles = glm::vec3(45.0f, -30.0f, 0.0f);
-        skyEnt->albedoColor = glm::vec3(0.5f, 0.7f, 1.0f);      
-        skyEnt->attenuationColor = glm::vec3(0.0f, 0.0f, 0.0f); 
-                
-        isRunning = true;
+            CBaseEntity* skyEnt = scene.CreateEntity("env_sky");
+            skyEnt->targetName = "Procedural Sky";
+            skyEnt->angles = glm::vec3(45.0f, -30.0f, 0.0f);
+            skyEnt->albedoColor = glm::vec3(0.5f, 0.7f, 1.0f);      
+            skyEnt->attenuationColor = glm::vec3(0.0f, 0.0f, 0.0f); 
+        } else {
+            std::cout << "[Engine] Tag Editor Mode Active. Scene bypassed." << std::endl;
+        }
+    
         return true;
     }
 
@@ -122,12 +114,8 @@ namespace Crescendo {
         float dt = 1.0f / 60.0f; 
         Input::Update();
 
-        // 1. OS & Dashboard logic...
-        // moving this out of the sdk as its a pet project and not part of the engine core. -yan
-        if (this->crescendoOS) {
-            // ...
-            this->crescendoOS->Update(dt);
-        }
+        // [CRITICAL FIX] Stop the 3D update loop immediately if we are Lemur!
+        if (isTagEditorMode) return; 
 
         // Use the unified Camera getter from IRenderer
         Camera* cam = renderer ? renderer->GetMainCamera() : nullptr;
@@ -260,18 +248,13 @@ namespace Crescendo {
         hasShutdown = true;
         
         std::cout << "[Engine] Commencing Shutdown..." << std::endl;
-
-        // Ensure mouse is freed so SDL doesn't hold locks during destruction
         Input::UnlockMouse();
 
         if (activePlayer) { delete activePlayer; activePlayer = nullptr; }
         if (sceneManager) { sceneManager.reset(); }
         scene.Clear(); 
 
-        if (crescendoOS) {
-            crescendoOS.reset();
-        }
-        
+        // ALWAYS CLEANUP PHYSICS TO PREVENT MEMORY LEAKS
         physicsServer.Cleanup(); 
 
         if (renderer) { 

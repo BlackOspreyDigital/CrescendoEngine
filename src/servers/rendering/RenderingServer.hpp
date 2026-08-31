@@ -28,8 +28,6 @@
 
 #include "modules/voxel/VoxelTerrainModule.hpp"
 #include "modules/atmosphere/VolumetricAtmosphereModule.hpp"
-#include "modules/blades_ui/BladesUI.hpp"
-#include "core/CrescendoOS.hpp"
 #include "servers/rendering/vulkan/VulkanResources.hpp"
 #include <memory>
 
@@ -188,8 +186,8 @@ namespace Crescendo {
 
         // Asset Management
 
-        int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
-        int acquireTexture(const std::string& path);
+        int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices)override;
+        int acquireTexture(const std::string& path)override;
         VkDescriptorSet getImGuiTextureID(const std::string& path);
        
         void loadSkybox(const std::string& path, Scene * scene);
@@ -243,8 +241,6 @@ namespace Crescendo {
         // Inside RenderingServer class in RenderingServer.hpp
         ChunkBakeResult buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) override;
 
-        void SetOS(Core::CrescendoOS* osPtr) { this->os = osPtr; }
-        Core::CrescendoOS* GetOS() const { return this->os; }
 
         // EMULATION / FULSCREEN HELPERS
         void renderFullscreenQuad(VkCommandBuffer cmdBuffer, VkImageView imageView);
@@ -253,7 +249,6 @@ namespace Crescendo {
         std::unique_ptr<CanvasRenderer> canvasRenderer;
 
     private:
-        Core::CrescendoOS* os = nullptr;
         VkInstance instance = VK_NULL_HANDLE;
         VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
         VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -419,33 +414,15 @@ namespace Crescendo {
         VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);
         uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
         VkShaderModule createShaderModule(const std::vector<char>& code);
-
-        // --- BLADES UI RESOURCES ---
-        
-        // 1. Pipeline & Layouts
-        Crescendo::Modules::BladesUI bladesUI;
-        VkPipeline bladeUIPipeline = VK_NULL_HANDLE;
-        VkPipelineLayout bladeUIPipelineLayout = VK_NULL_HANDLE;
-        VulkanBuffer quadVertexBuffer;
-        
-        VkDescriptorSetLayout bladeDescriptorLayout = VK_NULL_HANDLE; 
-        
-        // 2. Per-Frame SSBOs & Descriptors (Prevents CPU/GPU Race Conditions!)
-        std::vector<VulkanBuffer> bladeInstanceSSBOs; 
-        std::vector<void*> bladeInstanceSSBOsMapped;
-        std::vector<VkDescriptorSet> bladeInstanceDescriptorSets;
-
+ 
         // 3. The MTSDF Atlas Image
         VulkanImage mtsdfAtlasImage;
         VkImageView mtsdfAtlasView = VK_NULL_HANDLE;
         VkSampler mtsdfAtlasSampler = VK_NULL_HANDLE;
         VkDescriptorSet mtsdfAtlasDescriptorSet = VK_NULL_HANDLE;
 
-        VulkanImage bladeBackgroundImage;
 
         // 4. Setup Methods
-        bool createBladeUIPipeline();
-        bool createBladeUIResources();
         
         bool createInstance();
         bool setupDebugMessenger();
@@ -487,7 +464,7 @@ namespace Crescendo {
         void copyBufferAsync(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
         void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
         void renderShadows(Scene* scene, const glm::vec3& lightDir, GlobalUniforms& globalUBO);
-        
+        void SetTagEditorConfig(bool isTagEditor, const std::string& projectRoot) override;
         // Frustum helper (Declaration only)
         std::vector<glm::vec4> getFrustumCornersWorldSpace(const glm::mat4& proj, const glm::mat4& view);
         

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(Crescendo SDK)
+project("Crescendo SDK")
 
 # --- 1. Global Settings & Policies ---
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -62,6 +62,7 @@ file(GLOB_RECURSE CORE_SOURCES
     "src/servers/*.cpp" 
     "src/controllers/*.cpp"
     "modules/gltf/*.cpp" 
+    "modules/image/*.cpp"
     "modules/terrain/*.cpp" 
     "modules/voxel/*.cpp"    
     "modules/atmosphere/*.cpp"
@@ -99,9 +100,12 @@ target_include_directories(CrescendoCore PUBLIC
     ${CMAKE_SOURCE_DIR}/deps/json
     ${CMAKE_SOURCE_DIR}/deps/stb
     ${CMAKE_SOURCE_DIR}/modules/gltf 
+    ${CMAKE_SOURCE_DIR}/modules/image
     ${enet_SOURCE_DIR}/include
     ${joltphysics_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/deps/ozz-animation/include
+    ${CMAKE_SOURCE_DIR}/deps/imgui 
+    ${CMAKE_SOURCE_DIR}/deps/imgui/backends
 )
 
 target_compile_definitions(CrescendoCore PUBLIC 
