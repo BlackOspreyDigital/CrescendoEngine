@@ -16,7 +16,7 @@ crescendo_engine
 *.dll
 
 # --- Compiled Shaders ---
-assets/shaders/*.spv
+shaders/*.spv
 
 # --- System Symbos ---
 assets/systemsymbols

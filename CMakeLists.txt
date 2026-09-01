@@ -166,16 +166,20 @@ if (EMSCRIPTEN)
         "-sSTACK_SIZE=5242880" "-sEXIT_RUNTIME=0" "-sASYNCIFY" "-g3"
     )
 else()
-    # Shader Compilation (Desktop Only)
+# Shader Compilation (Desktop Only)
     find_program(GLSLC_EXECUTABLE glslc REQUIRED)
-    file(GLOB SHADER_FILES "assets/shaders/*.vert" "assets/shaders/*.frag" "assets/shaders/*.comp")
+    file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/shaders")
+    file(GLOB SHADER_FILES "src/shaders/*.vert" "src/shaders/*.frag" "src/shaders/*.comp")
     foreach(SHADER ${SHADER_FILES})
         get_filename_component(SHADER_NAME ${SHADER} NAME)
-        set(SPV_FILE "${CMAKE_SOURCE_DIR}/assets/shaders/${SHADER_NAME}.spv")
-        add_custom_command(TARGET Spectra PRE_BUILD COMMAND ${GLSLC_EXECUTABLE} ${SHADER} -o ${SPV_FILE} DEPENDS ${SHADER})
+        set(SPV_FILE "${CMAKE_SOURCE_DIR}/shaders/${SHADER_NAME}.spv")
+        add_custom_command(
+            TARGET Spectra PRE_BUILD 
+            COMMAND ${GLSLC_EXECUTABLE} ${SHADER} -o ${SPV_FILE} 
+            DEPENDS ${SHADER}
+        )
     endforeach()
 endif()
-
 # [ DESKTOP ONLY SDK TOOLS ]
 if (NOT EMSCRIPTEN)
     # [ LEMUR - STANDALONE TAG EDITOR ]

@@ -124,6 +124,9 @@ namespace Crescendo {
         // 1. MOVING TO MODULES ( VOXELS & TERRAIN )
         // ---------------------------------------------------------
 
+        // Voxels are sitting in a gray area at the moment, with the SDK refactor going on ( Aug / Sep ) we are putting a pin in the voxel systems to fix up the system architecture.
+        // More will be available on the feat/voxel-systems
+
         // ---------------------------------------------------------
         // 2. FIRE THE LASER (Bake the Cubemap so skyImage exists!)
         // ---------------------------------------------------------
@@ -1357,8 +1360,8 @@ namespace Crescendo {
     //===============================================
 
     bool RenderingServer::createGraphicsPipeline() {
-        auto vertShaderCode = readFile("assets/shaders/shader.vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/shader.frag.spv");
+        auto vertShaderCode = readFile("shaders/shader.vert.spv");
+        auto fragShaderCode = readFile("shaders/shader.frag.spv");
 
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -1505,8 +1508,8 @@ namespace Crescendo {
 
         if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS) return false;
 
-        auto skyVertCode = readFile("assets/shaders/sky.vert.spv");
-        auto skyFragCode = readFile("assets/shaders/sky.frag.spv");
+        auto skyVertCode = readFile("shaders/sky.vert.spv");
+        auto skyFragCode = readFile("shaders/sky.frag.spv");
         VkShaderModule skyVertShaderModule = createShaderModule(skyVertCode);
         VkShaderModule skyFragShaderModule = createShaderModule(skyFragCode);
         
@@ -1550,8 +1553,8 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createTransparentPipeline() {
-        auto vertShaderCode = readFile("assets/shaders/shader.vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/transparent.frag.spv");
+        auto vertShaderCode = readFile("shaders/shader.vert.spv");
+        auto fragShaderCode = readFile("shaders/transparent.frag.spv");
 
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -1671,8 +1674,8 @@ namespace Crescendo {
 
     bool RenderingServer::createOpaquePipeline() {
         // --- 1. SHADER MODULES ---
-        auto vertShaderCode = readFile("assets/shaders/shader.vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/opaque.frag.spv"); 
+        auto vertShaderCode = readFile("shaders/shader.vert.spv");
+        auto fragShaderCode = readFile("shaders/opaque.frag.spv"); 
         
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -1777,8 +1780,8 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createWaterPipeline() {
-        auto vertShaderCode = readFile("assets/shaders/water.vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/water.frag.spv");
+        auto vertShaderCode = readFile("shaders/water.vert.spv");
+        auto fragShaderCode = readFile("shaders/water.frag.spv");
 
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -1894,8 +1897,8 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createCompositePipeline() {
-        auto vertShaderCode = readFile("assets/shaders/fullscreen_vert.vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/bloom_composite.frag.spv");
+        auto vertShaderCode = readFile("shaders/fullscreen_vert.vert.spv");
+        auto fragShaderCode = readFile("shaders/bloom_composite.frag.spv");
         
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -1967,7 +1970,7 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createShadowPipeline() {
-        auto vertShaderCode = readFile("assets/shaders/shadow.vert.spv");
+        auto vertShaderCode = readFile("shaders/shadow.vert.spv");
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         
         VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
@@ -2074,8 +2077,8 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createSSRPipeline() {
-        auto vertShaderCode = readFile("assets/shaders/fullscreen_vert.vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/ssr.frag.spv");
+        auto vertShaderCode = readFile("shaders/fullscreen_vert.vert.spv");
+        auto fragShaderCode = readFile("shaders/ssr.frag.spv");
 
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -2145,8 +2148,8 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createBloomPipeline() {
-        auto vertShaderCode = readFile("assets/shaders/fullscreen_vert.vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/bloom_bright.frag.spv");
+        auto vertShaderCode = readFile("shaders/fullscreen_vert.vert.spv");
+        auto fragShaderCode = readFile("shaders/bloom_bright.frag.spv");
 
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -2227,8 +2230,8 @@ namespace Crescendo {
 
     bool RenderingServer::createBakePipeline() {
         //1. Load the compiled SPIR-V shaders
-        auto vertShaderCode = readFile("assets/shaders/bake.vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/bake.frag.spv");
+        auto vertShaderCode = readFile("shaders/bake.vert.spv");
+        auto fragShaderCode = readFile("shaders/bake.frag.spv");
 
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -2398,7 +2401,7 @@ namespace Crescendo {
         if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &computePipelineLayout) != VK_SUCCESS) return false;
 
         // 3. Load the Shader & Build the Pipeline
-        auto compShaderCode = readFile("assets/shaders/equirect2cube.comp.spv");
+        auto compShaderCode = readFile("shaders/equirect2cube.comp.spv");
         VkShaderModule compShaderModule = createShaderModule(compShaderCode);
 
         VkComputePipelineCreateInfo pipelineInfo{};
@@ -2419,8 +2422,8 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createOutlinePipeline() {
-        auto vertShaderCode = readFile("assets/shaders/shader.vert.spv"); 
-        auto fragShaderCode = readFile("assets/shaders/outline.frag.spv"); 
+        auto vertShaderCode = readFile("shaders/shader.vert.spv"); 
+        auto fragShaderCode = readFile("shaders/outline.frag.spv"); 
         
         VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
         VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
@@ -2506,8 +2509,8 @@ namespace Crescendo {
     }
 
     bool RenderingServer::createSkyPipeline() {
-        auto vertShaderCode = readFile("assets/shaders/sky.vert.spv");
-        auto fragShaderCode = readFile("assets/shaders/sky.frag.spv");
+        auto vertShaderCode = readFile("shaders/sky.vert.spv");
+        auto fragShaderCode = readFile("shaders/sky.frag.spv");
             
         // The Skybox MUST have an empty vertex input!
         VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
