@@ -11,6 +11,12 @@ if(POLICY CMP0177)
   cmake_policy(SET CMP0177 NEW)
 endif()
 
+# --- GLOBAL COMPILER FLAGS ---
+# Suppress strict memory copy errors and enable global threading (Fixes Jolt under Emscripten/Clang)
+if (EMSCRIPTEN)
+    add_compile_options(-pthread -Wno-nontrivial-memcall -Wno-error=nontrivial-memcall)
+endif()
+
 # --- 2. Dependencies ---
 find_package(Threads REQUIRED)
 
@@ -117,7 +123,15 @@ target_compile_definitions(CrescendoCore PUBLIC
 )
 
 if (EMSCRIPTEN)
-    target_compile_options(CrescendoCore PRIVATE -pthread -sUSE_PTHREADS=1 -sDEFAULT_TO_CXX=1 -Wno-nontrivial-memcall)
+    # Replaced -sUSE_WEBGPU=1 with --use-port=emdawnwebgpu
+    # Removed -sDEFAULT_TO_CXX=1 to fix linker warning spam
+    # Added -Wno-deprecated-pragma to silence miniaudio macro warnings
+    target_compile_options(CrescendoCore PRIVATE 
+        -pthread 
+        --use-port=emdawnwebgpu 
+        -Wno-nontrivial-memcall 
+        -Wno-deprecated-pragma
+    )
     target_compile_definitions(CrescendoCore PUBLIC SOL_USING_CXX_LUA=1)
     target_include_directories(CrescendoCore PUBLIC ${glm_SOURCE_DIR} ${vulkan_headers_SOURCE_DIR}/include ${lua_SOURCE_DIR})
 else()
@@ -158,9 +172,18 @@ target_include_directories(Spectra PRIVATE ${CMAKE_SOURCE_DIR}/deps/imgui ${CMAK
 
 if (EMSCRIPTEN)
     set_target_properties(Spectra PROPERTIES SUFFIX ".html")
+    
+    # 1. ADDED THIS: Expose the WebGPU and SDL2 ports during Spectra's COMPILATION phase
+    target_compile_options(Spectra PRIVATE 
+        "-pthread" 
+        "--use-port=emdawnwebgpu" 
+        "-sUSE_SDL=2"
+    )
+
+    # 2. Existing LINK options (with the legacy -sDEFAULT_TO_CXX=1 removed to prevent warnings)
     target_link_options(Spectra PRIVATE 
-        "-pthread" "-sUSE_PTHREADS=1" "-sPTHREAD_POOL_SIZE=8"
-        "--use-port=emdawnwebgpu" "-sUSE_SDL=2" "-sDEFAULT_TO_CXX=1"
+        "-pthread" "-sPTHREAD_POOL_SIZE=8"
+        "--use-port=emdawnwebgpu" "-sUSE_SDL=2"
         "--shell-file" "${CMAKE_SOURCE_DIR}/deps/imgui/examples/libs/emscripten/shell_minimal.html"
         "-sALLOW_MEMORY_GROWTH=1" "-sINITIAL_MEMORY=134217728"
         "-sSTACK_SIZE=5242880" "-sEXIT_RUNTIME=0" "-sASYNCIFY" "-g3"

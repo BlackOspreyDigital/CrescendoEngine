@@ -58,8 +58,8 @@ namespace Crescendo {
         vkCreatePipelineLayout(device, &layoutInfo, nullptr, &pipelineLayout);
 
         // 3. Pipeline Setup 
-        auto vertCode = readFile("assets/shaders/canvas.vert.spv");
-        auto fragCode = readFile("assets/shaders/canvas.frag.spv");
+        auto vertCode = readFile("shaders/canvas.vert.spv");
+        auto fragCode = readFile("shaders/canvas.frag.spv");
 
         VkShaderModule vertModule = createShaderModule(vertCode);
         VkShaderModule fragModule = createShaderModule(fragCode);

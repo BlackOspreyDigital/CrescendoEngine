@@ -15,9 +15,10 @@ make -j$(nproc)
 
 # 3. Run if successful
 if [ $? -eq 0 ]; then
-    echo "--- LAUNCHING ENGINE ---"
+    echo "--- LAUNCHING SPECTRA ---"
     cd ..
-    ./build/crescendo_engine 
+    # Execute from the root directory using the new target name
+    ./Spectra 
 else
     echo "--- BUILD FAILED ---"
 fi
