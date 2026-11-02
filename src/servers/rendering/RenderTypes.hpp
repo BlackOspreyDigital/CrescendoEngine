@@ -59,4 +59,5 @@ namespace Crescendo {
         alignas(4)  int   resolution;
         alignas(4)  int   lod;
     };
+
 }

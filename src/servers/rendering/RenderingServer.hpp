@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "servers/rendering/IRenderer.hpp"
+#include "servers/rendering/RenderTypes.hpp"
 #include "servers/rendering/Vertex.hpp"
 #include "Material.hpp"
 #include "tiny_obj_loader.h"
@@ -12,7 +13,7 @@
 #include <glm/glm.hpp>
 #include <mutex>
 
-#include "vulkan/VulkanResources.hpp"
+#include "servers/rendering/vulkan/VulkanResources.hpp" 
 #include <vector>
 #include <optional>
 #include <glm/glm.hpp>
@@ -24,6 +25,10 @@
 #include "servers/interface/SymbolServer.hpp"
 #include "core/EngineState.hpp"
 #include "IO/ConfigManager.hpp"
+#include "servers/rendering/vulkan/VulkanResources.hpp" 
+#include "modules/atmosphere/VolumetricAtmosphereModule.hpp"
+#include "servers/rendering/vulkan/VulkanResources.hpp"
+#include <memory>
 
 struct VmaAllocator_T;
 typedef struct VmaAllocator_T* VmaAllocator;
@@ -36,6 +41,9 @@ namespace tinygltf { class Model; class Node; }
 namespace Crescendo {
     class DisplayServer;
     class Scene;
+    class CBaseEntity;
+    class CanvasRenderer;
+
 
     struct TextureResource {
         VulkanImage image;
@@ -132,13 +140,6 @@ namespace Crescendo {
         glm::mat4 invViewProj;  
     };
 
-    struct AtmospherePush {
-        glm::mat4 vp;                              // 64 bytes
-        glm::vec4 sunDirection_planetRadius;       // 16 bytes
-        glm::vec4 planetCenter_atmosphereRadius;   // 16 bytes
-        glm::vec4 cameraPos_sunIntensity;          // 16 bytes
-        glm::vec4 rayleigh_mie;                    // 16 bytes
-    }; 
 
     struct PostProcessPushConstants {
        float exposure;
@@ -156,38 +157,56 @@ namespace Crescendo {
         bool enableSSR = true;
         bool halfResSSR = false;
     };
+
+    
     
     class RenderingServer : public IRenderer {   
     friend class KtxLoader;
-    
+    friend class VoxelTerrainModule;
+    friend class VoxelNode;
+    friend class AssetLoader;
+
     public:
-
-        friend class AssetLoader;
         RenderingServer();
+        ~RenderingServer();
 
+        int addMesh(MeshResource&& res) {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            int id = static_cast<int>(meshes.size());
+            meshes.push_back(std::move(res));
+            return id;
+        }
+        VulkanBuffer uploadVertexBuffer(const std::vector<Vertex>& vertices) {
+            return createVertexBuffer(vertices);
+        }
+        VulkanBuffer uploadIndexBuffer(const std::vector<uint32_t>& indices) {
+            return createIndexBuffer(indices);
+        }
         std::mutex queueMutex;
         VkCommandPool asyncCommandPool = VK_NULL_HANDLE;
         VkCommandBuffer beginAsyncCommands(VkCommandPool& outLocalPool);
         void endAsyncCommands(VkCommandBuffer commandBuffer, VkCommandPool localPool);
         
         bool initialize(DisplayServer* display) override;
+        bool isInitialized() const override { return true; }
         void shutdown() override;
 
         void render(Scene* scene, SceneManager* sceneManager, EngineState& engineState) override;
-        ChunkBakeResult buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) override;
+        Camera* GetMainCamera() override { return &mainCamera; }
         void calculateCascades(Scene* scene, Camera& camera, float aspectRatio, GlobalUniforms& globalData);
         void SetMSAASamples(VkSampleCountFlagBits newSamples);
-
+        
         VkSampleCountFlagBits pendingMsaaSamples = VK_SAMPLE_COUNT_4_BIT;
         bool msaaNeedsRebuild = false;
 
         // Asset Management
+        
 
-        int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices);
-        int acquireTexture(const std::string& path);
+        int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices)override;
+        int acquireTexture(const std::string& path)override;
         VkDescriptorSet getImGuiTextureID(const std::string& path);
        
-        void loadSkybox(const std::string& path, Scene * scene);
+        void loadSkybox(const std::string& path, Scene * scene) override;
         TextureResource UploadCubemap(void* pixels, size_t totalSize, uint32_t width, uint32_t height, uint32_t mipLevels);
         TextureResource loadKTXCubemap(const std::string& filePath);
         TextureResource generateCubemapFromHDR(const std::string& hdrPath);
@@ -206,6 +225,7 @@ namespace Crescendo {
             1.0f,   // bloomStrength
             1.0f   // bloomThreshold
         };
+        SymbolServer* GetSymbolServer() override { return &symbolServer; }
 
         // --- SYMBOL SERVER ---
         SymbolServer symbolServer;
@@ -227,30 +247,25 @@ namespace Crescendo {
         Camera mainCamera;
         std::vector<MeshResource> meshes;
         int waterTextureID = 0;
-
-        // --- TERRAIN COMPUTE GPU WORKSPACE ---
-        VkDescriptorSetLayout terrainComputeDescriptorLayout = VK_NULL_HANDLE;
-        VkPipelineLayout terrainComputePipelineLayout = VK_NULL_HANDLE;
-        VkPipeline densityComputePipeline = VK_NULL_HANDLE;
-        VkPipeline marchingCubesComputePipeline = VK_NULL_HANDLE;
-
-        VulkanBuffer densityBuffer;
-        VulkanBuffer computeVertexBuffer;
-        VulkanBuffer computeIndexBuffer;
         
-        VkDescriptorSet terrainComputeDescriptorSet = VK_NULL_HANDLE;
+        Crescendo::VolumetricAtmosphereModule m_atmosphereModule;
 
-        // Voxel Gen
-        bool createTerrainComputePipelines();
-        void generateChunkGPU(VkCommandBuffer cmd, const TerrainComputePush& pushData);
-        int buildChunkMesh(const TerrainComputePush& pushData);
-        
+
         // Constants
         const uint32_t SHADOW_DIM = 2048; 
         const uint32_t SHADOW_CASCADES = 4;
 
+        // Inside RenderingServer class in RenderingServer.hpp
+
+
+        // EMULATION / FULSCREEN HELPERS
+        void renderFullscreenQuad(VkCommandBuffer cmdBuffer, VkImageView imageView);
+
+        // 2D Canvas Renderer
+        std::unique_ptr<CanvasRenderer> canvasRenderer;
+
+
     private:
-    
         VkInstance instance = VK_NULL_HANDLE;
         VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
         VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -262,7 +277,7 @@ namespace Crescendo {
 
         VmaAllocator allocator = nullptr;
         
-        // --- [SSBO & UBO] RAII ---
+        //  [SSBO & UBO] RAII 
         static constexpr size_t MAX_ENTITIES = 10000;
         std::vector<VulkanBuffer> entityStorageBuffers; 
         std::vector<void*> entityStorageBuffersMapped;
@@ -306,7 +321,6 @@ namespace Crescendo {
         VkPipeline opaquePipeline = VK_NULL_HANDLE;
         VkPipeline skyPipeline = VK_NULL_HANDLE;
         VkPipeline waterPipeline = VK_NULL_HANDLE;
-        VkPipeline atmospherePipeline = VK_NULL_HANDLE;
 
         // Wireframe
         VkPipeline outlinePipeline = VK_NULL_HANDLE;
@@ -417,6 +431,15 @@ namespace Crescendo {
         VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities);
         uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
         VkShaderModule createShaderModule(const std::vector<char>& code);
+ 
+        // 3. The MTSDF Atlas Image
+        VulkanImage mtsdfAtlasImage;
+        VkImageView mtsdfAtlasView = VK_NULL_HANDLE;
+        VkSampler mtsdfAtlasSampler = VK_NULL_HANDLE;
+        VkDescriptorSet mtsdfAtlasDescriptorSet = VK_NULL_HANDLE;
+
+
+        // 4. Setup Methods
         
         bool createInstance();
         bool setupDebugMessenger();
@@ -441,7 +464,6 @@ namespace Crescendo {
         bool createTransparentPipeline();
         bool createOpaquePipeline();
         bool createWaterPipeline();
-        bool createAtmospherePipeline();
         bool createTextureImage();        
         bool createTextureImage(const std::string& path, VulkanImage& outImage);
         bool createTextureSampler();          
@@ -459,13 +481,13 @@ namespace Crescendo {
         void copyBufferAsync(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size);
         void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width, uint32_t height);
         void renderShadows(Scene* scene, const glm::vec3& lightDir, GlobalUniforms& globalUBO);
-        
+        void SetTagEditorConfig(bool isTagEditor, const std::string& projectRoot) override;
         // Frustum helper (Declaration only)
         std::vector<glm::vec4> getFrustumCornersWorldSpace(const glm::mat4& proj, const glm::mat4& view);
         
         void updateUniformBuffer(uint32_t currentImage, Scene* scene);
 
-        // --- SHADOW RESOURCES ---
+        // Shadow Resources
         VulkanImage shadowImage; 
         VkImageView shadowImageView = VK_NULL_HANDLE; // Array View (for sampling)
         std::vector<VkImageView> shadowCascadeViews;  // Individual Layer Views (for rendering)

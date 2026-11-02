@@ -16,7 +16,7 @@ crescendo_engine
 *.dll
 
 # --- Compiled Shaders ---
-assets/shaders/*.spv
+shaders/*.spv
 
 # --- System Symbos ---
 assets/systemsymbols
@@ -25,7 +25,17 @@ assets/hdr
 assets/audio
 assets/scripts
 assets/textures
-assets/icons
+assets/alphalogo.png
+assets/HoloTestCard.png
+assets/newospreylogo.jpg
+assets/testcard.glb
+assets/favicon.png
+
+assets/icons/*
+
+!assets/icons/voxelthumbnail.png
+!assets/icons/voxelthumbnail2.png
+
 
 # --- Dependencies (The Clutter Killers) ---
 # This stops Git from ever looking inside these folders
@@ -47,3 +57,8 @@ CMakeFiles/
 Makefile
 cmake_install.cmake
 install_manifest.txt
+
+# --- Emulator & Personal Data ---
+data/bios/
+data/roms/
+*.bin

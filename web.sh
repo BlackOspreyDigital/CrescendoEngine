@@ -12,8 +12,8 @@ emcmake cmake ..
 emmake make -j$(nproc)
 
 echo "Build Complete"
-echo "Starting Local server on https://localhost:8000/crescendo_engine.html"
+echo "Starting Local server on https://localhost:8000/Spectra.html"
 echo "(Press Ctrl+C to stop)"
 
 # emrun automatically handles the COOP and COEP security headers
-emrun --port 8000 crescendo_engine.html
+emrun --port 8000 Spectra.html

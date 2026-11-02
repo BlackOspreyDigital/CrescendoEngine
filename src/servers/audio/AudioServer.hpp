@@ -17,6 +17,9 @@ namespace Crescendo {
         void Shutdown();
 
         void UpdateListener(const glm::vec3& position, const glm::vec3& forward, const glm::vec3& up);
+        void SetMasterVolume(float volume);
+        float GetMasterVolume() const { return m_masterVolume; }
+
 
         // --- AMBIENT SOUND CONTROLS ---
         bool LoadAmbientSound(const std::string& filepath, float volume = 1.0f);
@@ -39,5 +42,6 @@ namespace Crescendo {
         
         // --- THE UPGRADE ---
         std::vector<ma_sound*> m_spatialEmitters; 
+        float m_masterVolume = 0.65f;
     };
 }

@@ -3,8 +3,6 @@
 
 #include "scene/BaseEntity.hpp"
 #include "scene/Scene.hpp"
-#include "scene/components/ProceduralPlanetComponent.hpp"
-#include "modules/terrain/VoxelGenerator.hpp"
 #include "servers/camera/Camera.hpp"
 
 
@@ -359,77 +357,9 @@ public:
         }
     }
 
-    // ---------------------------------------------------------
-    // PLANETARY GRAVITY & GROUND SNAPPING
-    // ---------------------------------------------------------
-    void ApplyPlanetaryGravityToCamera(Crescendo::Camera& cam, Crescendo::CBaseEntity* planet) {
-        if (!planet || !planet->HasComponent<Crescendo::ProceduralPlanetComponent>()) return;
-        
-        auto planetComp = planet->GetComponent<Crescendo::ProceduralPlanetComponent>();
-
-        // 1. Calculate the vector from the Planet's Core to the Camera
-        glm::vec3 toCam = cam.Position - planet->origin;
-        float distanceToCore = glm::length(toCam);
-        if (distanceToCore == 0.0f) return;
-
-        // 2. Determine "Up" (Away from the core)
-        glm::vec3 upDir = toCam / distanceToCore;
-
-        // 3. Align the Camera so you can walk completely around the sphere!
-        cam.WorldUp = upDir;
-
-        // 4. Sample the Voxel Density at the camera's exact coordinates
-        // We check 2.0 units below the camera to act as the player's "legs"
-        glm::vec3 feetPos = toCam - (upDir * 2.0f); 
-        float density = Crescendo::Terrain::VoxelGenerator::EvaluateDensity(feetPos, planetComp->settings);
-
-        // 5. Ground Snapping
-        if (density > 0.0f) {
-            // We are UNDERGROUND! Push the camera up out of the dirt.
-            cam.Position += upDir * (density + 0.1f);
-        } 
-        else if (density > -1.5f) {
-            // We are IN THE AIR but very close to the ground. Apply gravity!
-            cam.Position -= upDir * 0.15f; 
-        }
-    }
-
-    // ---------------------------------------------------------
-    // DYNAMIC CAMERA CONTROLLER
-    // ---------------------------------------------------------
     void UpdateCameraPhysics(Crescendo::Camera& cam, Crescendo::Scene* scene) {
-        // ... (This is your existing function, it stays exactly the same!)
-        if (!scene) return;
-
-        Crescendo::CBaseEntity* closestPlanet = nullptr;
-        float minDistance = std::numeric_limits<float>::max();
-
-        // 1. Scan the scene dynamically for planets
-        for (auto* ent : scene->entities) {
-            if (ent && ent->HasComponent<Crescendo::ProceduralPlanetComponent>()) {
-                float dist = glm::length(cam.Position - ent->origin);
-                if (dist < minDistance) {
-                    minDistance = dist;
-                    closestPlanet = ent;
-                }
-            }
-        }
-
-        // 2. If a planet exists, let its gravity take over!
-        if (closestPlanet) {
-            ApplyPlanetaryGravityToCamera(cam, closestPlanet);
-            
-            // Dynamically scale speed based on this specific planet's radius!
-            auto planetComp = closestPlanet->GetComponent<Crescendo::ProceduralPlanetComponent>();
-            float alt = glm::length(cam.Position - closestPlanet->origin) - planetComp->settings.radius;
-            
-            // Slower near the dirt, screaming fast in orbit
-            cam.MovementSpeed = glm::clamp(alt * 0.1f, 10.0f, 1000.0f);
-        } else {
-            // 3. No planets in the scene? Default to standard free-cam flight.
-            cam.MovementSpeed = 50.0f;
-            cam.WorldUp = glm::vec3(0.0f, 0.0f, 1.0f); // Default Z-Up
-        }
+        cam.MovementSpeed = 50.0f;
+        cam.WorldUp = glm::vec3(0.0f, 0.0f, 1.0f); // Default Z-Up
     }
 
     static inline JPH::Vec3 ToJolt(glm::vec3 v) { return JPH::Vec3(v.x, v.y, v.z); }

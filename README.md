@@ -6,13 +6,19 @@ Crescendo is built on a strict "from-scratch" philosophy. It rejects the modern 
 
 -----------------------------------------------------------------------------------------------------
 
+<p align="center">
+  <img src="assets/icons/voxelthumbnail.png" alt="Voxel Showcase 1" width="75%" />
+</p>
+
+-----------------------------------------------------------------------------------------------------
+
 ## Current State: Renderer Proof-of-Concept
 
 **Status: Highly Experimental**
 
 Crescendo is currently in an active, heavy development phase. 
 * **The Core Renderer:** Functions as a stable proof-of-concept demonstrating our custom Vulkan pipeline.
-* **Modules & Subsystems:** All other features (such as Jolt physics integration, voxel terrain handling, and advanced memory allocators) are treated as highly experimental, modular plugins. Expect frequent breaking changes as these systems are rapidly prototyped and refactored.
+* **Modules & Subsystems:** All other features (such as Jolt physics integration, voxel terrain handling, RTS simulation templates, and advanced memory allocators) are treated as highly experimental, modular plugins. Expect frequent breaking changes as these systems are rapidly prototyped and refactored.
 
 -----------------------------------------------------------------------------------------------------
 
@@ -65,6 +71,16 @@ make -j$(nproc)
 ```
 -----------------------------------------------------------------------------------------------------
 
+## Voxel Plugin & Modular Systems
+* **Voxel Decoupling:** Decoupled domain-specific voxel volume logic from the core renderer, consuming generic data-driven draw packets.
+* **Voxel Atmosphere Systems:** Rayleigh atmospheric scattering and volume density calculations with layerable fog.
+
+<p align="center">
+  <img src="assets/icons/voxelthumbnail2.png" alt="Voxel Showcase 2" width="75%" />
+</p>
+
+-----------------------------------------------------------------------------------------------------
+
 ### Prerequisites (Windows)
 *Direct X support coming soon!*
 
@@ -73,4 +89,4 @@ make -j$(nproc)
 
 -----------------------------------------------------------------------------------------------------
 
-Thanks for checking out the repo, if you would like to get involved please check out our website at htttps://www.theospreylibrary.com 
+Thanks for checking out the repo, if you would like to get involved please check out our website at https://www.theospreylibrary.com

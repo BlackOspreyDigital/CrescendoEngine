@@ -1,69 +1,37 @@
-cmake_minimum_required(VERSION 3.10)
-project(CrescendoEngine)
+cmake_minimum_required(VERSION 3.24)
+project("Crescendo SDK")
 
-# --- 1. Global Settings ---
+# --- 1. Global Settings & Policies ---
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Silence Jolt Warnings
 if(POLICY CMP0177)
   cmake_policy(SET CMP0177 NEW)
 endif()
 
-if (NOT EMSCRIPTEN)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
-endif()
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall")
-
-# --- 2. WEBGPU / EMSCRIPTEN TARGETS ---
+# --- GLOBAL COMPILER FLAGS ---
+# Suppress strict memory copy errors and enable global threading (Fixes Jolt under Emscripten/Clang)
 if (EMSCRIPTEN)
-    message(STATUS "Configuring for WebAssembly (Emscripten) + WebGPU")
-    
-    # Enable Pthreads for BOTH C and C++ (Crucial for ENet and Lua)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread -s USE_PTHREADS=1")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread -s USE_PTHREADS=1 --use-port=emdawnwebgpu -s USE_SDL=2 -Wno-nontrivial-memcall")
-    
-    # Linker needs the same flags plus the thread pool size
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pthread -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=8 --use-port=emdawnwebgpu -s USE_SDL=2 -s ALLOW_MEMORY_GROWTH=1 -s ASYNCIFY")
-
-    # 1. Disable Ozz OpenGL samples which fail on Web
-    set(ozz_build_samples OFF CACHE BOOL "" FORCE)
-    set(ozz_build_howtos OFF CACHE BOOL "" FORCE)
-
-    # 2. Fetch missing System Headers safely (GLM & Vulkan)
-    include(FetchContent)
-    
-    # --- GLM (Git Clone + SOURCE_SUBDIR trick to skip old CMakeLists.txt but expose paths) ---
-    FetchContent_Declare(glm 
-        GIT_REPOSITORY https://github.com/g-truc/glm.git
-        GIT_TAG 0.9.9.8
-        SOURCE_SUBDIR "disable_build_trick"
-    )
-    FetchContent_MakeAvailable(glm)
-    
-    # --- Vulkan Headers ---
-    FetchContent_Declare(vulkan_headers 
-        GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
-        GIT_TAG v1.3.280
-        SOURCE_SUBDIR "disable_build_trick"
-    )
-    FetchContent_MakeAvailable(vulkan_headers)
-
-    # --- Lua (WebAssembly needs its own copy) ---
-    FetchContent_Declare(lua 
-        GIT_REPOSITORY https://github.com/lua/lua.git
-        GIT_TAG v5.4.6
-        SOURCE_SUBDIR "disable_build_trick"
-    )
-    FetchContent_MakeAvailable(lua)
+    add_compile_options(-pthread -Wno-nontrivial-memcall -Wno-error=nontrivial-memcall)
 endif()
 
-# --- 3. External Dependencies ---
+# --- 2. Dependencies ---
 find_package(Threads REQUIRED)
 
-if (NOT EMSCRIPTEN)
+if (EMSCRIPTEN)
+    message(STATUS "Configuring WebAssembly (Emscripten) + WebGPU")
+    include(FetchContent)
+    
+    # Fetch Web-Specific System Headers
+    FetchContent_Declare(glm GIT_REPOSITORY https://github.com/g-truc/glm.git GIT_TAG 0.9.9.8 SOURCE_SUBDIR "disable_build_trick")
+    FetchContent_Declare(vulkan_headers GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git GIT_TAG v1.3.280 SOURCE_SUBDIR "disable_build_trick")
+    FetchContent_Declare(lua GIT_REPOSITORY https://github.com/lua/lua.git GIT_TAG v5.4.6 SOURCE_SUBDIR "disable_build_trick")
+    
+    FetchContent_MakeAvailable(glm vulkan_headers lua)
+else()
+    # Rely on native system packages (e.g., via pacman) for fast desktop builds
     find_package(SDL2 REQUIRED)
     find_package(Vulkan REQUIRED)
     find_package(PkgConfig REQUIRED)
@@ -71,87 +39,121 @@ if (NOT EMSCRIPTEN)
     find_package(Ktx REQUIRED)
 endif()
 
-# Jolt Physics via FetchContent (Using Archive to bypass Git errors)
+# Core Physics & Networking
 include(FetchContent)
-FetchContent_Declare(
-  JoltPhysics
-  URL https://github.com/jrouwe/JoltPhysics/archive/refs/tags/v5.0.0.tar.gz
-  SOURCE_SUBDIR  Build 
-)
-set(TARGET_UNIT_TESTS OFF CACHE BOOL "Disable Jolt unit tests" FORCE)
-set(TARGET_HELLO_WORLD OFF CACHE BOOL "Disable Jolt hello world" FORCE)
-set(TARGET_PERFORMANCE_TEST OFF CACHE BOOL "Disable Jolt performance test" FORCE)
-set(TARGET_SAMPLES OFF CACHE BOOL "Disable Jolt samples" FORCE)
-set(TARGET_VIEWER OFF CACHE BOOL "Disable Jolt viewer" FORCE)
+FetchContent_Declare(JoltPhysics URL https://github.com/jrouwe/JoltPhysics/archive/refs/tags/v5.0.0.tar.gz SOURCE_SUBDIR Build)
+set(TARGET_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+set(TARGET_HELLO_WORLD OFF CACHE BOOL "" FORCE)
+set(TARGET_PERFORMANCE_TEST OFF CACHE BOOL "" FORCE)
+set(TARGET_SAMPLES OFF CACHE BOOL "" FORCE)
+set(TARGET_VIEWER OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(JoltPhysics)
 
-# ENet via FetchContent (Using the active zpl-c archive)
-FetchContent_Declare(
-  enet
-  URL https://github.com/zpl-c/enet/archive/refs/heads/master.tar.gz
-)
+FetchContent_Declare(enet URL https://github.com/zpl-c/enet/archive/refs/heads/master.tar.gz)
 set(ENET_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(enet)
 
-# Local Subdirectories
 if (EXISTS "${CMAKE_SOURCE_DIR}/deps/ozz-animation/CMakeLists.txt")
+    set(ozz_build_samples OFF CACHE BOOL "" FORCE)
+    set(ozz_build_howtos OFF CACHE BOOL "" FORCE)
     add_subdirectory(deps/ozz-animation)
 endif()
 
-# --- 4. Source Files ---
-file(GLOB_RECURSE ENGINE_SOURCES "src/*.cpp" "src/*.c")
-
-# --- ADD THIS LINE ---
-# Filter out the standalone tools so they don't get compiled into the engine!
-list(FILTER ENGINE_SOURCES EXCLUDE REGEX "src/tools/.*")
-
-file(GLOB_RECURSE MODULE_SOURCES "modules/gltf/*.cpp" "modules/image/*.cpp" "modules/terrain/*.cpp")
-
-# SEPARATE VULKAN AND WEBGPU BACKENDS
-if (EMSCRIPTEN)
-    # Remove Vulkan backend from Web build
-    file(GLOB_RECURSE VULKAN_FILES "src/servers/rendering/RenderingServer.cpp")
-    list(REMOVE_ITEM ENGINE_SOURCES ${VULKAN_FILES})
-
-    # Remove Vulkan-coupled modules from Web build (AssetLoader is now WebGPU safe!)
-    file(GLOB_RECURSE VULKAN_MODULES "modules/image/*.cpp")
-    list(REMOVE_ITEM MODULE_SOURCES ${VULKAN_MODULES})
-    
-    # Compile Lua directly into the WebAssembly binary
-    file(GLOB LUA_SOURCES "${CMAKE_BINARY_DIR}/_deps/lua-src/*.c")
-    list(REMOVE_ITEM LUA_SOURCES 
-        "${CMAKE_BINARY_DIR}/_deps/lua-src/lua.c" 
-        "${CMAKE_BINARY_DIR}/_deps/lua-src/luac.c" 
-        "${CMAKE_BINARY_DIR}/_deps/lua-src/onelua.c"
-    )
-    # Force Lua to compile as C++ to match Engine linkage
-    set_source_files_properties(${LUA_SOURCES} PROPERTIES LANGUAGE CXX)
-    list(APPEND ENGINE_SOURCES ${LUA_SOURCES})
-else()
-    # Add KTX module only for Desktop
-    file(GLOB_RECURSE KTX_SOURCES "modules/ktx/*.cpp")
-    list(APPEND MODULE_SOURCES ${KTX_SOURCES})
-
-    # Remove WebGPU backend from Desktop build
-    file(GLOB_RECURSE WEBGPU_FILES "src/servers/rendering/Webgpu/*.cpp")
-    list(REMOVE_ITEM ENGINE_SOURCES ${WEBGPU_FILES})
-endif()
-
-list(APPEND ENGINE_SOURCES 
-    "src/controllers/VehicleController.cpp"
-    "src/IO/ConfigManager.cpp"
-    "src/IO/SceneManager.cpp"
-    "src/servers/audio/AudioServer.cpp"
-    "src/servers/interface/SymbolServer.cpp"
+# --- 3. CRESCENDO CORE LIBRARY ---
+# We compile the engine as a library so multiple tools can link it without recompiling.
+file(GLOB_RECURSE CORE_SOURCES 
+    "src/core/*.cpp" 
+    "src/scene/*.cpp" 
+    "src/IO/*.cpp" 
+    "src/servers/*.cpp" 
+    "src/controllers/*.cpp"
+    "modules/gltf/*.cpp" 
+    "modules/image/*.cpp"
+    "modules/voxel/*.cpp"
+    "modules/atmosphere/*.cpp"
     "deps/xatlas.cpp"
 )
 
+# Remove the dead OS/UI weight and standalone tool entry points
+list(FILTER CORE_SOURCES EXCLUDE REGEX "src/tools/.*")
+list(FILTER CORE_SOURCES EXCLUDE REGEX "src/core/CrescendoOS.*")
+list(FILTER CORE_SOURCES EXCLUDE REGEX "src/main.cpp")
+
+if (EMSCRIPTEN)
+    list(FILTER CORE_SOURCES EXCLUDE REGEX "src/servers/rendering/RenderingServer.cpp")
+    
+    # Lua WebAssembly compilation
+    file(GLOB LUA_SOURCES "${lua_SOURCE_DIR}/*.c")
+    list(FILTER LUA_SOURCES EXCLUDE REGEX "lua.c|luac.c|onelua.c")
+    set_source_files_properties(${LUA_SOURCES} PROPERTIES LANGUAGE CXX)
+    list(APPEND CORE_SOURCES ${LUA_SOURCES})
+else()
+    file(GLOB_RECURSE KTX_SOURCES "modules/ktx/*.cpp")
+    list(APPEND CORE_SOURCES ${KTX_SOURCES})
+    list(FILTER CORE_SOURCES EXCLUDE REGEX "src/servers/rendering/Webgpu/.*")
+endif()
+
+add_library(CrescendoCore STATIC ${CORE_SOURCES})
+
+# Target-specific includes (No more global includes leaking)
+target_include_directories(CrescendoCore PUBLIC 
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/src 
+    ${CMAKE_SOURCE_DIR}/include
+    SYSTEM ${CMAKE_SOURCE_DIR}/deps/sol/include
+    ${CMAKE_SOURCE_DIR}/deps/tinygltf
+    ${CMAKE_SOURCE_DIR}/deps/json
+    ${CMAKE_SOURCE_DIR}/deps/stb
+    ${CMAKE_SOURCE_DIR}/modules/gltf 
+    ${CMAKE_SOURCE_DIR}/modules/image
+    ${enet_SOURCE_DIR}/include
+    ${joltphysics_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/deps/ozz-animation/include
+    ${CMAKE_SOURCE_DIR}/deps/imgui 
+    ${CMAKE_SOURCE_DIR}/deps/imgui/backends
+)
+
+target_compile_definitions(CrescendoCore PUBLIC 
+    GLM_FORCE_RADIANS
+    GLM_FORCE_DEPTH_ZERO_TO_ONE
+    SOL_ALL_SAFETIES_ON=1
+    SOL_COMPILER_CLANG=1
+    SOL_LUA_VERSION=504
+)
+
+if (EMSCRIPTEN)
+    # Replaced -sUSE_WEBGPU=1 with --use-port=emdawnwebgpu
+    # Removed -sDEFAULT_TO_CXX=1 to fix linker warning spam
+    # Added -Wno-deprecated-pragma to silence miniaudio macro warnings
+    target_compile_options(CrescendoCore PRIVATE 
+        -pthread 
+        --use-port=emdawnwebgpu 
+        -Wno-nontrivial-memcall 
+        -Wno-deprecated-pragma
+    )
+    target_compile_definitions(CrescendoCore PUBLIC SOL_USING_CXX_LUA=1)
+    target_include_directories(CrescendoCore PUBLIC ${glm_SOURCE_DIR} ${vulkan_headers_SOURCE_DIR}/include ${lua_SOURCE_DIR})
+else()
+    target_compile_options(CrescendoCore PRIVATE -march=native -Wall)
+    target_include_directories(CrescendoCore PUBLIC ${SDL2_INCLUDE_DIRS} ${Vulkan_INCLUDE_DIRS} ${LUA_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/modules/ktx)
+    target_link_libraries(CrescendoCore PUBLIC ${LUA_LIBRARIES} SDL2::SDL2 SDL2_image Vulkan::Vulkan dl ktx)
+endif()
+
+target_link_libraries(CrescendoCore PUBLIC Threads::Threads Jolt enet_static ozz_animation ozz_base)
+
+
+# --- 4. EXECUTABLE TARGETS (The SDK Suite) ---
+
+# Place all desktop binaries directly in the project root (H3EK Style)
+if (NOT EMSCRIPTEN)
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}")
+endif()
+
 set(IMGUI_SOURCES 
     deps/imgui/imgui.cpp 
-    deps/imgui/imgui_draw.cpp
+    deps/imgui/imgui_draw.cpp 
     deps/imgui/imgui_tables.cpp 
     deps/imgui/imgui_widgets.cpp
-    deps/imgui/imgui_demo.cpp
     deps/imgui/ImGuizmo.cpp
     deps/imgui/backends/imgui_impl_sdl2.cpp
 )
@@ -162,98 +164,68 @@ else()
     list(APPEND IMGUI_SOURCES deps/imgui/backends/imgui_impl_vulkan.cpp)
 endif()
 
-# --- 5. Shader Compilation ---
-if (NOT EMSCRIPTEN)
+# [ SPECTRA - 3D WORLD EDITOR ] (Runs the full game engine runtime)
+add_executable(Spectra src/main.cpp ${IMGUI_SOURCES})
+target_link_libraries(Spectra PRIVATE CrescendoCore)
+target_include_directories(Spectra PRIVATE ${CMAKE_SOURCE_DIR}/deps/imgui ${CMAKE_SOURCE_DIR}/deps/imgui/backends)
+
+if (EMSCRIPTEN)
+    set_target_properties(Spectra PROPERTIES SUFFIX ".html")
+    
+    # 1. ADDED THIS: Expose the WebGPU and SDL2 ports during Spectra's COMPILATION phase
+    target_compile_options(Spectra PRIVATE 
+        "-pthread" 
+        "--use-port=emdawnwebgpu" 
+        "-sUSE_SDL=2"
+    )
+
+    # 2. Existing LINK options (with the legacy -sDEFAULT_TO_CXX=1 removed to prevent warnings)
+    target_link_options(Spectra PRIVATE 
+        "-pthread" "-sPTHREAD_POOL_SIZE=8"
+        "--use-port=emdawnwebgpu" "-sUSE_SDL=2"
+        "--shell-file" "${CMAKE_SOURCE_DIR}/deps/imgui/examples/libs/emscripten/shell_minimal.html"
+        "-sALLOW_MEMORY_GROWTH=1" "-sINITIAL_MEMORY=134217728"
+        "-sSTACK_SIZE=5242880" "-sEXIT_RUNTIME=0" "-sASYNCIFY" "-g3"
+    )
+else()
+# Shader Compilation (Desktop Only)
     find_program(GLSLC_EXECUTABLE glslc REQUIRED)
-    file(GLOB SHADER_FILES "assets/shaders/*.vert" "assets/shaders/*.frag" "assets/shaders/*.comp")
-    set(SHADER_SPV_FILES "")
+    file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/shaders")
+    file(GLOB SHADER_FILES "src/shaders/*.vert" "src/shaders/*.frag" "src/shaders/*.comp")
     foreach(SHADER ${SHADER_FILES})
         get_filename_component(SHADER_NAME ${SHADER} NAME)
-        set(SPV_FILE "${CMAKE_SOURCE_DIR}/assets/shaders/${SHADER_NAME}.spv")
+        set(SPV_FILE "${CMAKE_SOURCE_DIR}/shaders/${SHADER_NAME}.spv")
         add_custom_command(
-            OUTPUT ${SPV_FILE}
-            COMMAND ${GLSLC_EXECUTABLE} ${SHADER} -o ${SPV_FILE}
+            TARGET Spectra PRE_BUILD 
+            COMMAND ${GLSLC_EXECUTABLE} ${SHADER} -o ${SPV_FILE} 
             DEPENDS ${SHADER}
-            COMMENT "Compiling shader ${SHADER_NAME}"
         )
-        list(APPEND SHADER_SPV_FILES ${SPV_FILE})
     endforeach()
 endif()
-
-# --- 6. Executable Target ---
-add_executable(crescendo_engine ${ENGINE_SOURCES} ${MODULE_SOURCES} ${IMGUI_SOURCES} ${SHADER_SPV_FILES})
-
-# When building for the web, we want an .html file and a shell template
-if (EMSCRIPTEN)
-    set_target_properties(crescendo_engine PROPERTIES SUFFIX ".html")
-    
-    target_link_options(crescendo_engine PRIVATE 
-        "--shell-file" "${CMAKE_SOURCE_DIR}/deps/imgui/examples/libs/emscripten/shell_minimal.html"
-        "--preload-file" "${CMAKE_SOURCE_DIR}/assets@/assets"
-    )
-endif()
-
-# --- 7. Include Directories ---
-target_include_directories(crescendo_engine PRIVATE 
-    ${CMAKE_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/src 
-    ${CMAKE_SOURCE_DIR}/include
-    SYSTEM ${CMAKE_SOURCE_DIR}/deps/sol/include
-    ${CMAKE_SOURCE_DIR}/deps/tinygltf
-    ${CMAKE_SOURCE_DIR}/deps/json
-    ${CMAKE_SOURCE_DIR}/deps/stb
-    ${CMAKE_SOURCE_DIR}/deps/imgui
-    ${CMAKE_SOURCE_DIR}/deps/imgui/backends
-    ${CMAKE_SOURCE_DIR}/modules/gltf 
-    ${CMAKE_SOURCE_DIR}/modules/image
-    ${CMAKE_SOURCE_DIR}/deps/gli 
-    ${enet_SOURCE_DIR}/include
-    ${joltphysics_SOURCE_DIR}
-    ${CMAKE_SOURCE_DIR}/deps/ozz-animation/include
-)
-
-if (EMSCRIPTEN)
-    # Use hardcoded paths to guarantee the Emscripten compiler finds them
-    target_include_directories(crescendo_engine PUBLIC 
-        ${CMAKE_BINARY_DIR}/_deps/glm-src
-        ${CMAKE_BINARY_DIR}/_deps/vulkan_headers-src/include
-        ${CMAKE_BINARY_DIR}/_deps/lua-src
-    )
-else()
-    target_include_directories(crescendo_engine PRIVATE 
-        ${CMAKE_SOURCE_DIR}/modules/ktx
-        ${SDL2_INCLUDE_DIRS}
-        ${Vulkan_INCLUDE_DIRS}
-        ${LUA_INCLUDE_DIRS}
-    )
-endif()
-
-# --- 8. Link Libraries & Definitions ---
-target_compile_definitions(crescendo_engine PRIVATE 
-    GLM_FORCE_RADIANS
-    GLM_FORCE_DEPTH_ZERO_TO_ONE
-    SOL_ALL_SAFETIES_ON=1
-    SOL_COMPILER_CLANG=1
-    SOL_LUA_VERSION=504
-)
-
-# Desktop uses standard C linkage for Lua; Emscripten uses C++ linkage
-if (EMSCRIPTEN)
-    target_compile_definitions(crescendo_engine PRIVATE SOL_USING_CXX_LUA=1)
-else()
-    target_link_libraries(crescendo_engine PRIVATE ${LUA_LIBRARIES} SDL2::SDL2 SDL2_image Vulkan::Vulkan dl ktx)
-endif()
-
-target_link_libraries(crescendo_engine PRIVATE Threads::Threads Jolt enet_static ozz_animation ozz_base)
-
-# --- Crescendo Asset Packer Tool ---
-# We ONLY build the packer as a native desktop executable, never for WebAssembly.
+# [ DESKTOP ONLY SDK TOOLS ]
 if (NOT EMSCRIPTEN)
+    # [ LEMUR - STANDALONE TAG EDITOR ]
+    # Lemur uses SDL_Renderer for a lightweight Guerilla workflow (Zero Vulkan/Jolt overhead)
+    set(LEMUR_IMGUI_SOURCES
+        deps/imgui/imgui.cpp
+        deps/imgui/imgui_draw.cpp
+        deps/imgui/imgui_tables.cpp
+        deps/imgui/imgui_widgets.cpp
+        deps/imgui/backends/imgui_impl_sdl2.cpp
+        deps/imgui/backends/imgui_impl_sdlrenderer2.cpp
+    )
+
+    add_executable(Lemur src/tools/lemur/main.cpp ${LEMUR_IMGUI_SOURCES})
+    target_include_directories(Lemur PRIVATE 
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/deps/imgui 
+        ${CMAKE_SOURCE_DIR}/deps/imgui/backends
+        ${CMAKE_SOURCE_DIR}/deps/json
+        ${SDL2_INCLUDE_DIRS}
+    )
+    target_link_libraries(Lemur PRIVATE SDL2::SDL2)
+
+    # [ CRESCENDO PACKER - VFS COMPILER ]
     add_executable(CrescendoPacker src/tools/CrescendoPacker.cpp)
-    
-    # Allow the packer to find VFSFormat.hpp
-    target_include_directories(CrescendoPacker PRIVATE ${CMAKE_SOURCE_DIR}/src/IO)
-    
-    # std::filesystem requires C++17
-    target_compile_features(CrescendoPacker PRIVATE cxx_std_17)
+    target_link_libraries(CrescendoPacker PRIVATE CrescendoCore)
 endif()

@@ -28,8 +28,8 @@ namespace Crescendo {
         }
 
         // 3. SHADERS (Make sure these paths match!)
-        VkShaderModule vertShaderModule = CreateShaderModule(device, "assets/shaders/billboard.vert.spv");
-        VkShaderModule fragShaderModule = CreateShaderModule(device, "assets/shaders/billboard.frag.spv");
+        VkShaderModule vertShaderModule = CreateShaderModule(device, "shaders/billboard.vert.spv");
+        VkShaderModule fragShaderModule = CreateShaderModule(device, "shaders/billboard.frag.spv");
 
         VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
         vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;

@@ -13,8 +13,8 @@ private:
     std::mutex vfsMutex; // Prevents thread collisions when seeking/reading the file
 
     bool isMounted = false;
+    std::string projectRoot = "./"; // Default to current directory
 
-    // Private constructor for Singleton pattern
     VirtualFileSystem() = default; 
     ~VirtualFileSystem() { if (pakStream.is_open()) pakStream.close(); }
 
@@ -29,8 +29,10 @@ public:
     VirtualFileSystem(const VirtualFileSystem&) = delete;
     VirtualFileSystem& operator=(const VirtualFileSystem&) = delete;
 
+    void SetProjectRoot(const std::string& path);
+    std::string GetProjectRoot() const { return projectRoot; }
+
     bool Mount(const std::string& pakPath);
     std::vector<char> ReadFile(const std::string& virtualPath);
-    
     bool IsMounted() const { return isMounted; }
 };

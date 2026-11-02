@@ -93,12 +93,7 @@ namespace Crescendo {
     }
 
     void AssetLoader::loadModel(IRenderer* renderer, const std::string& filePath, Scene* scene) {
-        std::ifstream f(filePath.c_str());
-        if (!f.good()) {
-            std::cerr << "[Error] File not found: " << filePath << std::endl;
-            return;
-        }
-
+        // Let the VFS handle existence checks natively inside loadGLTF
         if (filePath.find(".glb") != std::string::npos || filePath.find(".gltf") != std::string::npos) {
             loadGLTF(renderer, filePath, scene); 
         } else if (filePath.find(".obj") != std::string::npos) {
@@ -113,6 +108,33 @@ namespace Crescendo {
         tinygltf::TinyGLTF loader;
         std::string err, warn;
 
+        // --- OVERRIDE TINYGLTF FILESYSTEM TO ROUTE THROUGH VFS ---
+        tinygltf::FsCallbacks fsCallbacks;
+        
+        fsCallbacks.ReadWholeFile = [](std::vector<unsigned char>* out, std::string* err, const std::string& filepath, void*) -> bool {
+            std::vector<char> data = VirtualFileSystem::Get().ReadFile(filepath);
+            if (data.empty()) {
+                if (err) *err = "File not found in VFS: " + filepath;
+                return false;
+            }
+            out->assign(data.begin(), data.end());
+            return true;
+        };
+        
+        fsCallbacks.FileExists = [](const std::string& filepath, void*) -> bool {
+            std::vector<char> data = VirtualFileSystem::Get().ReadFile(filepath);
+            return !data.empty();
+        };
+
+        // Pass-through for paths, disable writing for runtime engine
+        fsCallbacks.ExpandFilePath = [](const std::string& path, void*) -> std::string { return path; };
+        fsCallbacks.WriteWholeFile = [](std::string*, const std::string&, const std::vector<unsigned char>&, void*) -> bool { return false; };
+        
+        loader.SetFsCallbacks(fsCallbacks);
+        // ---------------------------------------------------------
+
+        // Because of our callback override, LoadBinaryFromFile will seamlessly 
+        // pull the bytes from Emscripten MEMFS or your desktop .pak!
         bool ret = (filePath.find(".glb") != std::string::npos) ? 
                    loader.LoadBinaryFromFile(&model, &err, &warn, filePath) : 
                    loader.LoadASCIIFromFile(&model, &err, &warn, filePath);
@@ -395,7 +417,48 @@ namespace Crescendo {
 #else
                         // --- WEBGPU TEXTURE BINDING ---
                         auto* backend = static_cast<WebGPURenderer*>(renderer);
-                        // TODO: Next step is wiring up WebGPU Texture uploads!
+                                            
+                        if (backend->textureMap.find(texKey) != backend->textureMap.end()) {
+                            targetEnt->textureID = backend->textureMap[texKey];
+                        } else {
+                            // 0 is typically the fallback texture, so we start at 1 or use the array size
+                            int newID = static_cast<int>(backend->textureViews.size()); 
+                            
+                            // 1. Describe the texture format and size
+                            wgpu::TextureDescriptor texDesc{};
+                            texDesc.dimension = wgpu::TextureDimension::e2D;
+                            texDesc.size = { static_cast<uint32_t>(img.width), static_cast<uint32_t>(img.height), 1 };
+                            texDesc.format = wgpu::TextureFormat::RGBA8Unorm; 
+                            texDesc.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+                            texDesc.mipLevelCount = 1;
+                            texDesc.sampleCount = 1;
+                            
+                            wgpu::Texture tex = backend->device.CreateTexture(&texDesc);
+                            
+                            // 2. Set up the copy operation payloads
+                            wgpu::TexelCopyTextureInfo destination{};
+                            destination.texture = tex;
+                            destination.mipLevel = 0;
+                            destination.origin = { 0, 0, 0 };
+                            destination.aspect = wgpu::TextureAspect::All;
+                        
+                            wgpu::TexelCopyBufferLayout sourceLayout{};
+                            sourceLayout.offset = 0;
+                            sourceLayout.bytesPerRow = 4 * img.width; // tinygltf forces 4 channels (RGBA) by default
+                            sourceLayout.rowsPerImage = img.height;
+                        
+                            wgpu::Extent3D writeSize = { static_cast<uint32_t>(img.width), static_cast<uint32_t>(img.height), 1 };
+                            
+                            // 3. Write the raw bytes directly to the GPU
+                            backend->queue.WriteTexture(&destination, img.image.data(), img.image.size(), &sourceLayout, &writeSize);
+                            
+                            // 4. Create the view and store it in the backend registry
+                            wgpu::TextureView view = tex.CreateView();
+                            
+                            backend->textureViews.push_back(view);
+                            backend->textureMap[texKey] = newID;
+                            targetEnt->textureID = newID;
+                        }
 #endif
                     }
                 } else { targetEnt->textureID = 0; }

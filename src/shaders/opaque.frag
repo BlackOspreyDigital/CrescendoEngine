@@ -254,13 +254,17 @@ void main() {
     vec4 albedoSample;
 
     // --- ALBEDO SAMPLING ---
-    if (isTriplanar) {
-        vec4 texX = texture(texSampler[texID], fragPos.zy * texScale);
-        vec4 texY = texture(texSampler[texID], fragPos.xz * texScale);
-        vec4 texZ = texture(texSampler[texID], fragPos.xy * texScale);
-        albedoSample = texX * blendWeights.x + texY * blendWeights.y + texZ * blendWeights.z;
+    if (texID > 0) {
+        if (isTriplanar) {
+            vec4 texX = texture(texSampler[texID], fragPos.zy * texScale);
+            vec4 texY = texture(texSampler[texID], fragPos.xz * texScale);
+            vec4 texZ = texture(texSampler[texID], fragPos.xy * texScale);
+            albedoSample = texX * blendWeights.x + texY * blendWeights.y + texZ * blendWeights.z;
+        } else {
+            albedoSample = texture(texSampler[texID], fragTexCoord);
+        }
     } else {
-        albedoSample = texture(texSampler[texID], fragTexCoord);
+        albedoSample = vec4(1.0);
     }
 
     if (albedoSample.a < 0.5) {
@@ -452,20 +456,28 @@ void main() {
         skyRefl = texture(skyTexture, normalize(R)).rgb;
     }
     
-    skyRefl *= (1.0 - roughness);
-    
     // --- AMBIENT REFLECTION (GGX) ---
     // Calculate Fresnel specifically for the environment map using our F0 base
     vec3 F_ambient = fresnelSchlick(max(dot(N, V), 0.0), F0);
     
-    // We don't need kS or metallic multipliers here anymore, F_ambient handles it mathematically!
+    // Attenuate specular reflection by surface roughness (roughness=1.0 removes all mirror shine)
+    skyRefl *= clamp(1.0 - roughness, 0.0, 1.0);
     vec3 finalReflection = skyRefl * F_ambient;
-    
     vec3 finalOutput = finalColor + finalReflection;
    
     // Fog Integration
     float dist = length(global.cameraPos.xyz - fragPos);
     finalOutput = ApplyFog(finalOutput, dist, fragPos.z);
+
+    // --- SUN-DRIVEN ATMOSPHERIC RIM SCATTERING ---
+    if (ent.sphereBounds.w > 0.0) {
+        vec3 sunDir = normalize(global.sunDirection.xyz);
+        float NdotV = max(dot(N, V), 0.0);
+        float rim = pow(1.0 - NdotV, 3.0);
+        float sunScatter = max(dot(N, sunDir), 0.0) * 0.5 + 0.5;
+        vec3 atmoGlow = ent.volumeColor.rgb * rim * sunScatter;
+        finalOutput += atmoGlow;
+    }
 
     outColor = vec4(finalOutput, 1.0);
 }

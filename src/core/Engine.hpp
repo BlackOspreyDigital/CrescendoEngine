@@ -1,25 +1,32 @@
 #pragma once
-
+#include <string>
 #include <memory>
 #include "controllers/FPSController.hpp"
+#include "controllers/RTSController.hpp"
 #include "servers/display/DisplayServer.hpp"
 #include "servers/audio/AudioServer.hpp"
 #include "servers/physics/PhysicsServer.hpp" 
 
 #include "servers/rendering/IRenderer.hpp" 
-
 #include "scene/Scene.hpp"
 #include "core/EngineState.hpp"
 
 namespace Crescendo {
     class ScriptSystem;
 
+    extern RTSController* activeRTSControllerGlobal;
+    extern bool rtsModeGlobal;
+
     class Engine {
     public:
         Engine();
         ~Engine();
 
-        bool Initialize(const char* title, int width, int height);
+        bool Initialize(const char* title, int width, int height, const std::string& projectPath, bool isTagEditor = false);
+
+        bool isTagEditorMode = false;
+
+        std::string currentProjectRoot;
         void Run();
         void Shutdown();
 
@@ -27,7 +34,7 @@ namespace Crescendo {
         void ProcessEvents();
         void Update();
         void Render();
-        // ------------------------------------------------
+
 
         EngineState currentState = EngineState::Editor;
         EngineState previousState = EngineState::Editor;
@@ -38,14 +45,12 @@ namespace Crescendo {
         
         DisplayServer displayServer;
         
-        // --- 3. THE SWAP ---
         std::unique_ptr<IRenderer> renderer;
-        // -------------------
         
         PhysicsServer physicsServer;
         AudioServer audioServer;
 
-        // SYSTEMS
+        // DEV SYSTEMS
         std::unique_ptr<ScriptSystem> scriptSystem;
 
         Scene scene;
