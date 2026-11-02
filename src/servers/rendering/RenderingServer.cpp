@@ -2947,7 +2947,6 @@ namespace Crescendo {
     void RenderingServer::render(Scene* scene, SceneManager* sceneManager, EngineState& engineState) {
         if (!scene) return;
 
-        framePSXBatches.clear();
 
         // --- SAFELY REBUILD PIPELINES BEFORE THE FRAME STARTS ---
         if (msaaNeedsRebuild) {

@@ -44,12 +44,6 @@ namespace Crescendo {
     class CBaseEntity;
     class CanvasRenderer;
 
-    struct PSXRenderBatch {
-        VulkanBuffer vertexBuffer;
-        VulkanBuffer indexBuffer;
-        uint32_t indexCount;
-    };
-    
 
     struct TextureResource {
         VulkanImage image;
@@ -272,7 +266,6 @@ namespace Crescendo {
 
 
     private:
-        std::vector<PSXRenderBatch> framePSXBatches;
         VkInstance instance = VK_NULL_HANDLE;
         VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
         VkSurfaceKHR surface = VK_NULL_HANDLE;
