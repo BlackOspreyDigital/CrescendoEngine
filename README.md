@@ -1,39 +1,92 @@
-# Crescendo Engine — Voxel Systems Plugin (Feature Branch)
+# Crescendo Engine
 
-> **⚠️ Note on Installation & Usage:** > This is an active development branch focused on engine architecture refactoring. For stable builds, installation instructions, and general engine setup, please refer to the **[main branch](BlackOspreyDigital/CrescendoEngine/tree/main)**.
+A custom-built, low-level Vulkan graphics engine designed for developers who want absolute authority over their rendering pipeline. 
 
----
+Crescendo is built on a strict "from-scratch" philosophy. It rejects the modern industry trend of relying on temporal upscaling, DLSS, and "half-measures" to salvage noisy, brute-forced rendering. Instead, the focus is on clever optimization, clean rasterization, and delivering crisp, native-resolution performance reminiscent of the golden era of graphics programming.
+
+-----------------------------------------------------------------------------------------------------
+
 <p align="center">
   <img src="assets/icons/voxelthumbnail.png" alt="Voxel Showcase 1" width="75%" />
 </p>
 
----
+-----------------------------------------------------------------------------------------------------
 
-## Branch Objective: Voxel Decoupling & Plugin Architecture
+## Current State: Renderer Proof-of-Concept
 
-In earlier iterations, voxel rendering and spatial volume logic were hardcoded directly into the Vulkan rendering stack (`renderingserver.cpp`). The goal of this branch is to **decouple domain-specific voxel systems from the core renderer** and transition them into a standalone plugin architecture.
+**Status: Highly Experimental**
 
-### Key Architectural Goals:
-* **Zero Voxel Awareness in Core Renderer:** Strip out all direct dependencies on octrees, quadtrees, and chunk-generation loops from `renderingserver.cpp`.
-* **Data-Driven Draw Contracts:** The core renderer will act as a stateless execution engine, consuming generic draw packets (e.g., indirect draw buffers and resource spans) rather than traversing spatial trees directly.
-* **Modular Voxel Plugin:** Move 64-bit quadtree/octree volume calculations, chunk culling, and LOD determination into an independent plugin layer that feeds cleanly into the render bridge.
+Crescendo is currently in an active, heavy development phase. 
+* **The Core Renderer:** Functions as a stable proof-of-concept demonstrating our custom Vulkan pipeline.
+* **Modules & Subsystems:** All other features (such as Jolt physics integration, voxel terrain handling, RTS simulation templates, and advanced memory allocators) are treated as highly experimental, modular plugins. Expect frequent breaking changes as these systems are rapidly prototyped and refactored.
 
----
+-----------------------------------------------------------------------------------------------------
+
+## Architecture
+
+* **Graphics API:** Vulkan 
+* **Language:** C++, Lua
+* **Design Philosophy:** Modular, code-first, and natively performant. 
+
+### Dependencies
+* Vulkan SDK
+* CMake
+* Sol2
+* Ktx
+* SDL2
+
+### Compiling from Source
+
+*(Note to users: Crescendo is not a monolithic drag-and-drop editor. Utilizing this engine requires an understanding of source compilation and low-level system architecture.)*
+
+### Prerequisites (Arch Linux)
+
+Crescendo targets C++17 and relies on system-level libraries for windowing, rendering, and scripting. Jolt Physics and ENet are fetched automatically during the build process.
+
+Install the required core dependencies, including Clang and the Vulkan toolchain:
+
+```bash
+sudo pacman -S base-devel cmake clang pkgconf sdl2 sdl2_image vulkan-headers vulkan-icd-loader shaderc lua ktx
+```
+
+-----------------------------------------------------------------------------------------------------
+
+### Build Instructions
+
+Crescendo utilizes a standard CMake build pipeline. 
+
+**Option A: The Dev Script (Recommended)**
+For rapid iteration and standard compilation, a shell script is provided to automate the build directory generation, compilation, and execution (Always check before running)
+```bash
+chmod +x dev.sh
+./dev.sh 
+```
+
+**Option B: Manual Compilation (Standard)**
+If you need to pass specific compiler flags or debug parameters, you can compile the RHI and modules manually:
+```bash
+mkdir build && cd build
+CC=clang CXX=clang++ cmake ..
+make -j$(nproc)
+```
+-----------------------------------------------------------------------------------------------------
+
+## Voxel Plugin & Modular Systems
+* **Voxel Decoupling:** Decoupled domain-specific voxel volume logic from the core renderer, consuming generic data-driven draw packets.
+* **Voxel Atmosphere Systems:** Rayleigh atmospheric scattering and volume density calculations with layerable fog.
 
 <p align="center">
   <img src="assets/icons/voxelthumbnail2.png" alt="Voxel Showcase 2" width="75%" />
 </p>
 
----
+-----------------------------------------------------------------------------------------------------
 
-## Voxel Atmosphere Systems
-* **Rayleigh Scattering:** Physically-guided atmospheric scattering for realistic volumetric depth.
-* **Light-Driven Atmosphere Math:** Dynamic lighting calculation tightly integrated with volume densities.
-* **Fully Customizable:** Complete control over atmospheric parameters including color gradients, density, and layer thickness.
-* **Layerable Fog Architecture:** Centralized volumetric fog managed directly within the voxel plugin, distinct from Crescendo's global fog rendering method.
+### Prerequisites (Windows)
+*Direct X support coming soon!*
 
-## Current Status
-* [x] Reset workspace to stable base (`bravo`).
-* [ ] Define generic intermediate C++ draw contracts (`SurfaceDrawPacket`).
-* [ ] Gut hardcoded voxel loops and includes from `renderingserver.cpp`.
-* [ ] Wire up the intermediary extraction stage to feed indirect draw commands.
+### Prerequisites (MacOs)
+*Metal support coming soon!*
+
+-----------------------------------------------------------------------------------------------------
+
+Thanks for checking out the repo, if you would like to get involved please check out our website at https://www.theospreylibrary.com
