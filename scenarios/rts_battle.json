@@ -1,0 +1,95 @@
+{
+  "scenario_name": "Rude RTS Battlefront",
+  "environment": {
+    "sun_direction": [0.5, -1.0, -0.5],
+    "ambient_intensity": 1.2,
+    "sky_type": 2,
+    "sky_hdr": "assets/skies/rts_sky.hdr"
+  },
+  "entities": [
+    {
+      "class_name": "prop_dynamic",
+      "target_name": "BaseFloor",
+      "origin": [0.0, 0.0, -1.0],
+      "angles": [0.0, 0.0, 0.0],
+      "scale": [300.0, 300.0, 1.0],
+      "albedo_color": [0.15, 0.35, 0.15],
+      "roughness": 1.0,
+      "metallic": 0.0
+    },
+    {
+      "class_name": "prop_dynamic",
+      "target_name": "PlayerBase",
+      "origin": [-80.0, 0.0, 2.0],
+      "angles": [0.0, 0.0, 0.0],
+      "scale": [8.0, 8.0, 4.0],
+      "albedo_color": [0.2, 0.7, 0.3],
+      "unit_type": "factory",
+      "team": "player"
+    },
+    {
+      "class_name": "prop_dynamic",
+      "target_name": "PlayerMassGen",
+      "origin": [-95.0, 18.0, 1.5],
+      "angles": [0.0, 0.0, 0.0],
+      "scale": [4.0, 4.0, 3.0],
+      "albedo_color": [0.7, 0.2, 0.9],
+      "emission": 2.5,
+      "unit_type": "mass_gen",
+      "team": "player"
+    },
+    {
+      "class_name": "prop_dynamic",
+      "target_name": "PlayerEnergyGen",
+      "origin": [-80.0, -18.0, 2.0],
+      "angles": [0.0, 0.0, 0.0],
+      "scale": [4.0, 4.0, 4.0],
+      "albedo_color": [0.9, 0.9, 0.1],
+      "emission": 2.5,
+      "unit_type": "energy_gen",
+      "team": "player"
+    },
+    {
+      "class_name": "prop_dynamic",
+      "target_name": "EnemyBase",
+      "origin": [80.0, 0.0, 2.0],
+      "angles": [0.0, 0.0, 0.0],
+      "scale": [8.0, 8.0, 4.0],
+      "albedo_color": [0.25, 0.6, 0.3],
+      "unit_type": "factory",
+      "team": "enemy"
+    },
+    {
+      "class_name": "prop_dynamic",
+      "target_name": "EnemyMassGen",
+      "origin": [95.0, 18.0, 1.5],
+      "angles": [0.0, 0.0, 0.0],
+      "scale": [4.0, 4.0, 3.0],
+      "albedo_color": [0.7, 0.2, 0.9],
+      "emission": 2.5,
+      "unit_type": "mass_gen",
+      "team": "enemy"
+    },
+    {
+      "class_name": "prop_dynamic",
+      "target_name": "EnemyEnergyGen",
+      "origin": [80.0, -18.0, 2.0],
+      "angles": [0.0, 0.0, 0.0],
+      "scale": [4.0, 4.0, 4.0],
+      "albedo_color": [0.9, 0.9, 0.1],
+      "emission": 2.5,
+      "unit_type": "energy_gen",
+      "team": "enemy"
+    }
+  ],
+  "initial_units": [
+    { "type": "commander", "team": "player", "position": [-55.0, 0.0, 2.6] },
+    { "type": "commander", "team": "enemy", "position": [55.0, 0.0, 2.6] },
+    { "type": "tank", "team": "player", "position": [-65.0, -6.0, 0.0] },
+    { "type": "tank", "team": "player", "position": [-65.0, 6.0, 0.0] },
+    { "type": "plane", "team": "player", "position": [-70.0, 0.0, 12.0] },
+    { "type": "tank", "team": "enemy", "position": [65.0, -6.0, 0.0] },
+    { "type": "tank", "team": "enemy", "position": [65.0, 6.0, 0.0] },
+    { "type": "plane", "team": "enemy", "position": [70.0, 0.0, 12.0] }
+  ]
+}

@@ -1,15 +1,16 @@
 #include "IO/SceneSerializer.hpp"
 
 #include "modules/gltf/AssetLoader.hpp"
-#include "EditorUI.hpp"
+#include "controllers/RTSController.hpp"
+#include "core/Engine.hpp"
+
 #include "imgui.h"
 #include "scene/BaseEntity.hpp"
 #include "scene/components/PointLightComponent.hpp"
 #include "scene/components/TransformComponent.hpp"    
 #include "scene/components/MeshRendererComponent.hpp" 
-#include "scene/components/ProceduralPlanetComponent.hpp"
-#include "modules/terrain/TerrainManager.hpp"
-#include "modules/terrain/OctreeNode.hpp"
+#include "modules/voxel/VoxelPlanetComponent.hpp"
+#include "modules/voxel/VoxelGenerator.hpp"
 #include "servers/rendering/RenderingServer.hpp"
 #include "servers/networking/NetworkingServer.hpp"
 #include "scene/Scene.hpp"
@@ -297,11 +298,12 @@ namespace Crescendo {
 
 
         // --- LOCK IMGUI MOUSE WHEN PLAYING ---
-        if (engineState == EngineState::Playing) {
+        if (engineState == EngineState::Playing && !Crescendo::rtsModeGlobal) {
             io.ConfigFlags |= ImGuiConfigFlags_NoMouse;
         } else {
             io.ConfigFlags &= ~ImGuiConfigFlags_NoMouse;
         }
+
         
         // --- HOTKEYS & STATE MANAGEMENT ---
         
@@ -331,21 +333,19 @@ namespace Crescendo {
         // ONLY allow camera movement if we are actually in Editor Mode!
         if (engineState == EngineState::Editor) {
             if (!io.WantCaptureKeyboard || ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-                if (io.MouseWheel != 0.0f) {
-                    camera.Zoom -= io.MouseWheel; 
-                    if (camera.Zoom < 1.0f) camera.Zoom = 1.0f;
-                    if (camera.Zoom > 120.0f) camera.Zoom = 120.0f;
-                    camera.fov = camera.Zoom; 
-                }
-                
                 if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+                    if (io.MouseWheel != 0.0f) {
+                        camera.MovementSpeed *= std::pow(1.25f, io.MouseWheel);
+                        camera.MovementSpeed = glm::clamp(camera.MovementSpeed, 1.0f, 10000000.0f);
+                    }
+
                     camera.Rotate(-io.MouseDelta.x, -io.MouseDelta.y); 
                     
                     // CLAMP THE DELTA TIME: Never allow a frame step larger than 50ms
                     float safeDelta = io.DeltaTime;
                     if (safeDelta > 0.05f) safeDelta = 0.05f;
-                    float moveSpeed = 15.0f * safeDelta; 
-                    if (ImGui::IsKeyDown(ImGuiKey_LeftShift)) moveSpeed *= 33.0f; 
+                    float moveSpeed = camera.MovementSpeed * safeDelta; 
+                    if (ImGui::IsKeyDown(ImGuiKey_LeftShift)) moveSpeed *= 3.0f; 
                     if (ImGui::IsKeyDown(ImGuiKey_W)) camera.Position += camera.Front * moveSpeed;
                     if (ImGui::IsKeyDown(ImGuiKey_S)) camera.Position -= camera.Front * moveSpeed;
                     if (ImGui::IsKeyDown(ImGuiKey_D)) camera.Position += camera.Right * moveSpeed;
@@ -373,83 +373,36 @@ namespace Crescendo {
                 // Auto-attach core components
                 ent->AddComponent<TransformComponent>();
                 ent->AddComponent<MeshRendererComponent>();
-                
                 selectedObjectIndex = scene->entities.size() - 1; 
             }
 
-            if (ImGui::MenuItem("Procedural Planet")) {
+            if (ImGui::MenuItem("Voxel Planet")) {
                 CBaseEntity* planet = scene->CreateEntity("prop_dynamic");
-                planet->targetName = "Jupiter Surf Map";
+                planet->targetName = "Voxel Planet";
 
                 planet->AddComponent<TransformComponent>();
                 planet->AddComponent<MeshRendererComponent>();
-                planet->AddComponent<ProceduralPlanetComponent>();
+                planet->AddComponent<Crescendo::Voxel::VoxelPlanetComponent>();
 
-                auto planetComp = planet->GetComponent<ProceduralPlanetComponent>();
-                
-                // ==========================================
-                // JUPITER SCALE SURF SETTINGS [Legacy]
-                // ==========================================
-                planetComp->settings.radius = 50000.0f;     // Superstructure scale
-                planetComp->settings.amplitude = 122.0f;   // Massive rolling hills
-                planetComp->settings.frequency = 0.0005f;   // Stretched out for buttery slopes
-                planetComp->lodSplitThreshold = 1.25f;      
-                
-                float safeDistance = planetComp->settings.radius + planetComp->settings.amplitude + 15000.0f;
+                auto planetComp = planet->GetComponent<Crescendo::Voxel::VoxelPlanetComponent>();
+                planetComp->settings.radius = 25000.0f;
+                planetComp->settings.amplitude = 1500.0f;
+                planetComp->settings.frequency = 0.00005f;
+
+                Crescendo::Voxel::ChunkMesh planetMesh = Crescendo::Voxel::VoxelGenerator::GeneratePlanetMesh(planetComp->settings, 64);
+                int modelIdx = sceneManager->GetRenderer()->acquireMesh("PROCEDURAL", "VoxelPlanet", planetMesh.vertices, planetMesh.indices);
+                planet->modelIndex = modelIdx;
+
+                float safeDistance = planetComp->settings.radius + 5000.0f;
                 planet->origin = camera.Position + glm::dvec3(camera.Front * safeDistance);
-
-                // Start the root node at a massive size and LOD 6
-                float planetSize = planetComp->settings.radius * 2.2f;
-                planetComp->rootNode = std::make_unique<Crescendo::Terrain::OctreeNode>(
-                    glm::vec3(0.0f), planetSize, 6 
-                );
-
-                // Initialize the Manager!
-                planetComp->chunkManager = std::make_unique<Crescendo::Terrain::TerrainManager>();
-
-                // GENERATE THE ATMOSPHERE MESH ---
-                std::vector<Vertex> atmoVerts;
-                std::vector<uint32_t> atmoIndices;
-                
-                float atmoRadius = planetComp->settings.radius * planetComp->atmosphereCeiling;
-                Crescendo::Terrain::VoxelGenerator::GenerateWaterSphere(atmoRadius, 64, 64, atmoVerts, atmoIndices);
-
-                planetComp->atmosphereMeshID = sceneManager->GetRenderer()->acquireMesh("PROCEDURAL", "Atmosphere", atmoVerts, atmoIndices);
-                
-                // ==========================================
-                // GENERATE THE OCEAN MESH [Legacy]
-                // ==========================================
-                std::vector<Vertex> waterVerts;
-                std::vector<uint32_t> waterIndices;
-                
-                Crescendo::Terrain::VoxelGenerator::GenerateWaterSphere(1.0f, 64, 64, waterVerts, waterIndices);
-
-                int waterMeshID = sceneManager->GetRenderer()->acquireMesh("PROCEDURAL", "Ocean", waterVerts, waterIndices);
-
-                CBaseEntity* ocean = scene->CreateEntity("prop_water"); 
-                ocean->targetName = "Procedural Ocean";
-                ocean->origin = planet->origin;
-                ocean->modelIndex = waterMeshID;
-                
-                planet->modelIndex = -1; 
-                planet->albedoColor = glm::vec3(0.2f, 0.6f, 0.3f); 
-                planet->roughness = 0.9f;
-                planet->metallic = 0.0f;
-
-                // Scale the ocean to match the new massive planet radius
-                ocean->scale = glm::vec3(planetComp->settings.radius + 15.0f);     
-                ocean->albedoColor = glm::vec3(0.0f, 0.2f, 0.6f); 
-                ocean->roughness = 0.1f; 
-                ocean->transmission = 1.0f; 
-                
-                planet->children.push_back(ocean);
-                selectedObjectIndex = scene->entities.size() - 2; 
+                planet->albedoColor = glm::vec3(0.3f, 0.85f, 0.4f);
+                planet->emission = 0.2f;
+                selectedObjectIndex = scene->entities.size() - 1;
             }
-            
+
             if (ImGui::MenuItem("Point Light")) {
                 CBaseEntity* point = scene->CreateEntity("light_point");
                 point->targetName = "Point Light";
-                point->origin = camera.Position + glm::dvec3(camera.Front * 5.0f);
                 point->albedoColor = glm::vec3(1.0f, 0.4f, 0.1f);               // Warm fire orange
                 point->emission = 25.0f;  // Intensity
                 point->scale.x = 15.0f;   // RADIUS: How far the light reaches!
@@ -640,7 +593,8 @@ namespace Crescendo {
             engineState = EngineState::Editor;
             // Next step: Reset car transforms here
         }
-        
+
+        // (PlayStation Blue button removed)
         ImGui::End();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
@@ -813,6 +767,9 @@ namespace Crescendo {
         ImGui::End(); // Closes "Viewport"
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
+        if ((engineState == EngineState::Playing || engineState == EngineState::Paused) && Crescendo::activeRTSControllerGlobal) {
+            Crescendo::activeRTSControllerGlobal->DrawHUD(viewportPos, viewportSize);
+        }
 
         // --- 4. HIERARCHY & INSPECTOR ---
         
@@ -1028,7 +985,30 @@ namespace Crescendo {
                     }
                     ImGui::PopStyleColor();
                 }
+                // --- Voxel Planet Settings ---
+                if (ent->HasComponent<Crescendo::Voxel::VoxelPlanetComponent>()) {
+                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
+                    if (ImGui::CollapsingHeader("Voxel Planet & Atmosphere", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed)) {
+                        auto planet = ent->GetComponent<Crescendo::Voxel::VoxelPlanetComponent>();
+                        ImGui::DragFloat("Radius", &planet->settings.radius, 100.0f, 100.0f, 1000000.0f);
+                        ImGui::DragFloat("Amplitude", &planet->settings.amplitude, 10.0f, 0.0f, 10000.0f);
+                        ImGui::SliderInt("Octaves", &planet->settings.octaves, 1, 8);
 
+                        ImGui::Spacing();
+                        ImGui::Separator();
+                        ImGui::Spacing();
+
+                        ImGui::TextColored(ImVec4(0.5f, 0.7f, 1.0f, 1.0f), "Atmosphere Shading");
+                        ImGui::DragFloat("Atmo Ceiling", &planet->atmosphereCeiling, 0.001f, 1.001f, 2.0f, "%.3f");
+                        ImGui::DragFloat("Atmo Floor", &planet->atmosphereFloor, 10.0f, -5000.0f, 5000.0f);
+                        ImGui::SliderFloat("Atmo Intensity", &planet->atmosphereIntensity, 1.0f, 50.0f, "%.1f");
+                        ImGui::ColorEdit3("Rayleigh (RGB)", glm::value_ptr(planet->rayleigh), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
+                        ImGui::DragFloat("Mie (Haze)", &planet->mie, 0.00001f, 0.0f, 0.02f, "%.6f");
+                    }
+                    ImGui::PopStyleColor();
+                }
+
+                // --- 4. LEGACY COMPONENTS (To be refactored) ---
                 // --- 4. LEGACY COMPONENTS (To be refactored) ---
                 if (ent->className == "env_sound") {
                     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
@@ -1050,72 +1030,6 @@ namespace Crescendo {
                 ImGui::Spacing();
                 ImGui::Separator();
                 ImGui::Spacing();
-
-                // --- PROCEDURAL PLANET SETTINGS ---
-                if (ent->HasComponent<ProceduralPlanetComponent>()) {
-                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
-                    if (ImGui::CollapsingHeader("Procedural Planet", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed)) {
-
-                        auto planet = ent->GetComponent<ProceduralPlanetComponent>();
-                        bool needsRebuild = false;
-                    
-                        // Upgraded to DragFloat for massive planetary scales
-                        ImGui::DragFloat("Radius", &planet->settings.radius, 50.0f, 1.0f, 200000.0f);
-                        if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
-                    
-                        ImGui::SliderInt("Octaves", &planet->settings.octaves, 1, 8);
-                        if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
-                    
-                        ImGui::DragFloat("Amplitude", &planet->settings.amplitude, 10.0f, 0.0f, 10000.0f);
-                        if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
-                    
-                        // Use a very slow drag speed (0.0001f) for frequency since it's super sensitive
-                        ImGui::DragFloat("Frequency", &planet->settings.frequency, 0.0001f, 0.0001f, 0.1f, "%.5f");
-                        if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
-                    
-                        ImGui::SliderInt("Resolution", &planet->resolution, 8, 64);
-                        if (ImGui::IsItemDeactivatedAfterEdit()) needsRebuild = true;
-                    
-                        if (ImGui::Button("Regenerate Mesh", ImVec2(-1, 0))) {
-                            needsRebuild = true;
-                        }
-                    
-                        if (needsRebuild) {
-                            planet->chunkSize = (planet->settings.radius + planet->settings.amplitude) * 2.2f;
-                            glm::vec3 genOrigin = glm::vec3(-planet->chunkSize / 2.0f);
-                                
-                            auto chunk = Crescendo::Terrain::VoxelGenerator::GenerateChunk(
-                                genOrigin, planet->resolution, planet->chunkSize, planet->settings
-                            );
-                        
-                            if (!chunk.vertices.empty() && !chunk.indices.empty()) {
-                                ent->modelIndex = rendererRef->acquireMesh("PROCEDURAL", "PlanetChunk", chunk.vertices, chunk.indices);
-                            } else {
-                                ent->modelIndex = -1; 
-                            }
-                        }
-
-                        ImGui::Spacing();
-                        ImGui::Separator();
-                        ImGui::Spacing();
-
-                        // --- ATMOSPHERE SETTINGS ---
-                        ImGui::TextColored(ImVec4(0.5f, 0.7f, 1.0f, 1.0f), "Atmosphere Shading");
-                        
-                        // Ceiling bound to 1.01 minimum so it can hug the massive planet tightly
-                        ImGui::DragFloat("Atmo Ceiling", &planet->atmosphereCeiling, 0.001f, 1.001f, 2.0f, "%.3f");
-                        ImGui::DragFloat("Atmo Floor", &planet->atmosphereFloor, 10.0f, -5000.0f, 5000.0f);
-                        ImGui::SliderFloat("Atmo Intensity", &planet->atmosphereIntensity, 1.0f, 50.0f, "%.1f");
-
-                        // Swapped back to ColorEdit3 with HDR flags for the visual swatch!
-                        ImGui::ColorEdit3("Rayleigh (RGB)", glm::value_ptr(planet->rayleigh), ImGuiColorEditFlags_Float | ImGuiColorEditFlags_HDR);
-
-                        ImGui::DragFloat("Mie (Haze)", &planet->mie, 0.00001f, 0.0f, 0.02f, "%.6f");
-
-                        ImGui::Spacing();
-                    }
-                    ImGui::PopStyleColor();
-                }
 
                 // --- 5. ADD COMPONENT MENU ---
                 if (ImGui::Button("Add Component", ImVec2(-1, 30))) {

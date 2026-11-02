@@ -3,7 +3,6 @@
 #include <iostream>
 
 #include <Jolt/Core/IssueReporting.h>
-#include "Jolt/Core/Memory.h"
 #include "core/Input.hpp"
 #include "scene/BaseEntity.hpp"
 #include "servers/networking/NetworkingServer.hpp"
@@ -17,14 +16,15 @@
 // --- THE RHI SWITCH ---
 #ifdef __EMSCRIPTEN__
     #include "servers/rendering/Webgpu/WebGPURenderer.hpp" 
-    #include <emscripten.h> // NEW: Required for the Web Main Loop
+    #include <emscripten.h>
 #else
     #include "servers/rendering/RenderingServer.hpp"
 #endif
 
-
-
 namespace Crescendo {
+
+    RTSController* activeRTSControllerGlobal = nullptr;
+    bool rtsModeGlobal = true; // Default to Rude RTS gamemode!
 
     Engine::Engine() : isRunning(false) {}
     Engine::~Engine() {
@@ -55,18 +55,13 @@ namespace Crescendo {
 
         if (!renderer->initialize(&displayServer)) return false;
 
-        // In Engine::Initialize...
         sceneManager = std::make_unique<SceneManager>(renderer.get());
-
-        // Pass the tag editor configuration polymorphically through the renderer
         renderer->SetTagEditorConfig(this->isTagEditorMode, projectPath);
 
-        // ALWAYS initialize the core servers so memory is safely allocated!
         physicsServer.Initialize();
         scene.physics = &physicsServer;
         audioServer.Initialize();
 
-        // BYPASS THE HEAVY SCENE BOOTSTRAP FOR LEMUR
         if (!isTagEditorMode) {
             audioServer.LoadAmbientSound("assets/audio/wind.mp3", 0.5f);
 
@@ -82,9 +77,6 @@ namespace Crescendo {
         return true;
     }
 
-    // =========================================================
-    // THE MAIN LOOP 
-    // =========================================================
     #ifdef __EMSCRIPTEN__
     void WebMainLoopStep(void* arg) {
         Engine* engine = static_cast<Engine*>(arg);
@@ -114,15 +106,13 @@ namespace Crescendo {
         float dt = 1.0f / 60.0f; 
         Input::Update();
 
-        // [CRITICAL FIX] Stop the 3D update loop immediately if we are Lemur!
         if (isTagEditorMode) return; 
 
-        // Use the unified Camera getter from IRenderer
         Camera* cam = renderer ? renderer->GetMainCamera() : nullptr;
         if (!cam) return;
 
         if (currentState == EngineState::Playing && previousState == EngineState::Editor) {
-            std::cout << "[Engine] Play Mode: Saving initial state..." << std::endl;
+            std::cout << "[Engine] Play Mode: Initializing gamemode..." << std::endl;
             
             audioServer.ClearSpatialEmitters(); 
             glm::vec3 spawnLocation = cam->GetPosition(); 
@@ -144,14 +134,15 @@ namespace Crescendo {
                 }
             }
             
-            activePlayer = new FPSController();
-            activePlayer->Initialize(&physicsServer, spawnLocation);
+            if (rtsModeGlobal) {
+                activeRTSControllerGlobal = new RTSController();
+                activeRTSControllerGlobal->Initialize(&scene, &physicsServer, renderer.get(), spawnLocation);
+            } else {
+                activePlayer = new FPSController();
+                activePlayer->Initialize(&physicsServer, spawnLocation);
+            }
 
             size_t priorCount = scene.entities.size();
-            
-            // Clean RHI-agnostic AssetLoader invocation
-            // Crescendo::AssetLoader::loadModel(renderer.get(), "assets/systemsymbols/defaultplayer.glb", &scene);
-
             if (scene.entities.size() > priorCount) {
                 localPlayerModel = scene.entities[priorCount];
                 localPlayerModel->targetName = "LocalPlayer";
@@ -171,13 +162,15 @@ namespace Crescendo {
                 }
             }
 
+            if (activeRTSControllerGlobal) { delete activeRTSControllerGlobal; activeRTSControllerGlobal = nullptr; }
             if (activePlayer) { delete activePlayer; activePlayer = nullptr; }
             if (localPlayerModel) { scene.DeleteEntity(localPlayerModel->index); localPlayerModel = nullptr; }
         }
         
         if (currentState != previousState) {
             if (currentState == EngineState::Playing) {
-                Input::LockMouse();
+                if (!rtsModeGlobal) Input::LockMouse();
+                else Input::UnlockMouse();
                 audioServer.PlayAmbientSound();
                 audioServer.PlaySpatialEmitters(); 
             } else {
@@ -190,7 +183,9 @@ namespace Crescendo {
         previousState = currentState;
 
         if (currentState == EngineState::Playing) {
-            if (activePlayer) {
+            if (activeRTSControllerGlobal) {
+                activeRTSControllerGlobal->Update(dt, &scene, &physicsServer, &audioServer, cam, renderer.get());
+            } else if (activePlayer) {
                 glm::vec3 forward = glm::vec3(cam->Front.x, cam->Front.y, 0.0f);
                 if (glm::length(forward) > 0.001f) forward = glm::normalize(forward);
                 
@@ -214,7 +209,9 @@ namespace Crescendo {
                 }
             }
 
-            cam->Rotate((float)-Input::mouseRelX, (float)-Input::mouseRelY);
+            if (!activeRTSControllerGlobal) {
+                cam->Rotate((float)-Input::mouseRelX, (float)-Input::mouseRelY);
+            }
             physicsServer.Update(dt, scene.entities);
 
             NetworkingServer* activeServer = nullptr;
@@ -250,11 +247,11 @@ namespace Crescendo {
         std::cout << "[Engine] Commencing Shutdown..." << std::endl;
         Input::UnlockMouse();
 
+        if (activeRTSControllerGlobal) { delete activeRTSControllerGlobal; activeRTSControllerGlobal = nullptr; }
         if (activePlayer) { delete activePlayer; activePlayer = nullptr; }
         if (sceneManager) { sceneManager.reset(); }
         scene.Clear(); 
 
-        // ALWAYS CLEANUP PHYSICS TO PREVENT MEMORY LEAKS
         physicsServer.Cleanup(); 
 
         if (renderer) { 

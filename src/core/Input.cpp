@@ -1,6 +1,6 @@
 #include "core/Input.hpp"
 #include <cstring> // Required for memcpy
-
+#include <imgui.h>
 namespace Crescendo {
 
     // Allocate memory for static variables
@@ -24,10 +24,13 @@ namespace Crescendo {
         // 2. Grab the latest keyboard state from SDL
         keyboardState = SDL_GetKeyboardState(NULL);
         
-        // 3. Retrieve relative mouse motion since the last check
+        // 3. Retrieve mouse position and relative motion
+        SDL_GetMouseState(&mouseX, &mouseY);
         mouseState = SDL_GetRelativeMouseState(&mouseRelX, &mouseRelY);
+        if (ImGui::GetCurrentContext() != nullptr) {
+            scrollY = (int)ImGui::GetIO().MouseWheel;
+        }
     }
-
     bool Input::IsKeyDown(SDL_Scancode key) {
         return keyboardState && keyboardState[key];
     }

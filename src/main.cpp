@@ -3,6 +3,7 @@
 #include <filesystem>
 #include "core/Engine.hpp"
 #include "servers/camera/Camera.hpp"
+#include "core/EnginePaths.hpp"
 
 namespace fs = std::filesystem;
 

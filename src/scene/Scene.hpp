@@ -3,7 +3,6 @@
 #include <string>
 #include <algorithm>
 #include "BaseEntity.hpp"
-#include "scene/components/ProceduralPlanetComponent.hpp"
 
 namespace Crescendo {
 
@@ -64,12 +63,8 @@ namespace Crescendo {
                 if (ent->className == "light_directional") activeSun = ent;
                 else if (ent->className == "env_sky") activeSky = ent;
                 else if (ent->className == "light_point") pointLights.push_back(ent);
-                
-                // If it has the planet component, add it to the solar system list!
-                if (ent->HasComponent<ProceduralPlanetComponent>()) planets.push_back(ent);
             }
         }
-
         CBaseEntity* CreateEntity(const std::string& className = "prop_dynamic") {
             CBaseEntity* ent = new CBaseEntity();
             ent->index = (int)entities.size();

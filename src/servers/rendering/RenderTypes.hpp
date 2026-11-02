@@ -59,4 +59,18 @@ namespace Crescendo {
         alignas(4)  int   resolution;
         alignas(4)  int   lod;
     };
+
+    // emulator shi
+    struct PSXVertex2D {
+        float x, y;         // Screen or clip-space coordinates
+        uint32_t color;     // Packed RGBA color
+        float u, v;         // Texture coordinates
+    };
+
+    struct PSXDrawPacket {
+        std::vector<PSXVertex2D> vertices;
+        std::vector<uint32_t> indices;
+        uint32_t textureID; // 0 = no texture, otherwise index into emulator's texture array
+        bool textured;
+    };
 }

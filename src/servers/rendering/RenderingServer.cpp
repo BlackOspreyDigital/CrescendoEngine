@@ -32,12 +32,14 @@
 #include <vulkan/vulkan_core.h>  
 #include "servers/display/DisplayServer.hpp"
 #include "servers/rendering/RenderingServer.hpp"
-#include "Vertex.hpp"
+#include "modules/voxel/VoxelPlanetComponent.hpp"
 #include "IO/ConfigManager.hpp"
 #include "servers/rendering/IRenderer.hpp"
 #include "servers/interface/CanvasRenderer.hpp"
+#include "core/EnginePaths.hpp"
 
 namespace Crescendo {
+
     
     static std::vector<char> readFile(const std::string& filename) {
         std::ifstream file(filename, std::ios::ate | std::ios::binary);
@@ -152,7 +154,6 @@ namespace Crescendo {
 
         if (!createBloomResources()) return false;
         if (!createSSRResources()) return false;
-
         viewportDescriptorSet = ImGui_ImplVulkan_AddTexture(viewportSampler, finalImage.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
         // --- Graphics Pipelines ---
@@ -166,6 +167,7 @@ namespace Crescendo {
         if (!createCompositePipeline()) return false;
         if (!createShadowPipeline()) return false;
         if (!createSSRPipeline()) return false;
+        if (!createComputePipelines()) return false;
 
         // --- Bakerline ---
         if (!createBakeRenderPass()) return false;
@@ -176,8 +178,6 @@ namespace Crescendo {
         if (!createOutlinePipeline()) return false;
         // if (!createBillboardPipeline()) return false;
 
-        
-       
         if (!createFramebuffers()) return false;
 
         // --- Assets ---
@@ -195,6 +195,7 @@ namespace Crescendo {
 
         std::cout << ">>> ENGINE READY! <<<" << std::endl;
         return true;
+
     }
 
     bool RenderingServer::createInstance() {
@@ -676,7 +677,7 @@ namespace Crescendo {
     }
     
     bool RenderingServer::createTextureImage() {
-        RawImageData imgData = ImageLoader::loadStandardTexture("assets/textures/vikingemerald_default.png");
+        RawImageData imgData = ImageLoader::loadStandardTexture("assets/textures/default.png");
         
         // Fallback if file missing
         unsigned char fallback[4] = { 255, 0, 255, 255 }; // Magenta
@@ -1350,10 +1351,6 @@ namespace Crescendo {
         return VK_NULL_HANDLE;
     }
 
-    Crescendo::ChunkBakeResult RenderingServer::buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) {
-        // This method is now effectively deprecated as we moved logic to VoxelTerrainModule
-        return Crescendo::ChunkBakeResult{}; 
-    }
 
     //===============================================
     // PIPELINE LOGIC
@@ -2950,6 +2947,8 @@ namespace Crescendo {
     void RenderingServer::render(Scene* scene, SceneManager* sceneManager, EngineState& engineState) {
         if (!scene) return;
 
+        framePSXBatches.clear();
+
         // --- SAFELY REBUILD PIPELINES BEFORE THE FRAME STARTS ---
         if (msaaNeedsRebuild) {
             SetMSAASamples(pendingMsaaSamples);
@@ -2962,8 +2961,6 @@ namespace Crescendo {
         VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
 
         if (result == VK_ERROR_OUT_OF_DATE_KHR) { recreateSwapChain(window); return; }
-
-        // Pass the state reference to the UI!
         editorUI.Prepare(scene, sceneManager, mainCamera, viewportDescriptorSet, engineState);
 
         vkResetFences(device, 1, &inFlightFences[currentFrame]);
@@ -2972,10 +2969,6 @@ namespace Crescendo {
         // =========================================================================
         // PHASE 0: MODULAR SYSTEM UPDATES & SSBO UPLOAD
         // =========================================================================
-
-        // 1. Let the Voxel Module handle 64-bit octree streaming & async Jolt threads BEFORE recording!
-        m_voxelModule.Update(scene, this, mainCamera);
-
         EntityData* gpuData = (EntityData*)entityStorageBuffersMapped[currentFrame];
         int entityCount = 0;
         std::map<CBaseEntity*, uint32_t> entityGPUIndices;
@@ -3000,18 +2993,18 @@ namespace Crescendo {
             }
         
             data.albedoTint = glm::vec4(ent->albedoColor, (float)texID);
-
-            // NOTE: To make SSBO 100% voxel-agnostic later, move this to ent->boundingRadius!
             float pRadius = 0.0f;
-            if (ent->HasComponent<ProceduralPlanetComponent>()) {
-                pRadius = ent->GetComponent<ProceduralPlanetComponent>()->settings.radius;
+            glm::vec3 atmoTint = glm::vec3(0.5f, 0.7f, 1.0f);
+            if (ent->HasComponent<Crescendo::Voxel::VoxelPlanetComponent>()) {
+                auto planetComp = ent->GetComponent<Crescendo::Voxel::VoxelPlanetComponent>();
+                pRadius = planetComp->settings.radius;
+                atmoTint = planetComp->rayleigh * planetComp->atmosphereIntensity;
             }
             data.sphereBounds = glm::vec4(0.0f, 0.0f, 0.0f, pRadius);
 
             data.pbrParams = glm::vec4(ent->roughness, ent->metallic, ent->emission, ent->normalStrength);
             data.volumeParams = glm::vec4(ent->transmission, ent->thickness, ent->attenuationDistance, ent->ior);
-            data.volumeColor  = glm::vec4(ent->attenuationColor, (float)ent->normalTextureID); 
-            data.advancedPbr = glm::vec4(ent->clearcoat, ent->clearcoatRoughness, ent->sheen, (float)ent->ormTextureID);       
+            data.volumeColor  = glm::vec4(atmoTint, (float)ent->normalTextureID); 
             data.extendedPbr = glm::vec4(ent->subsurface, ent->specular, ent->specularTint, ent->anisotropic);
             data.padding1 = glm::vec4(0.0f);
             data.padding2 = glm::vec4(0.0f);
@@ -3153,19 +3146,6 @@ namespace Crescendo {
                 vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
             }
 
-            // 2. --- MODULAR VOXEL HOOK: Draw Voxel Shadows ---
-            std::vector<VoxelDrawPacket> voxelShadows;
-            m_voxelModule.GatherShadowPackets(scene, this, entityGPUIndices, voxelShadows);
-            for (const auto& packet : voxelShadows) {
-                VkBuffer vBuffers[] = { packet.vertexBuffer };
-                VkDeviceSize offsets[] = {0};
-                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffers[currentFrame], packet.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-
-                ShadowPushConsts push{ globalData.lightSpaceMatrices[i], packet.entityGPUIndex };
-                vkCmdPushConstants(commandBuffers[currentFrame], shadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShadowPushConsts), &push);
-                vkCmdDrawIndexed(commandBuffers[currentFrame], packet.indexCount, 1, 0, 0, 0);
-            }
 
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
         }
@@ -3215,7 +3195,7 @@ namespace Crescendo {
                 glm::mat4 viewNoTrans = glm::mat4(glm::mat3(view));
                 skyPush.invViewProj = glm::inverse(proj * viewNoTrans);
                 skyPush.sunDirection = glm::vec4(scene->environment.sunDirection, scene->environment.sunIntensity);
-                skyPush.zenithColor = glm::vec4(glm::vec3(0.0f), 1.0f);
+                skyPush.zenithColor = glm::vec4(glm::vec3(0.0f), static_cast<float>(scene->environment.skyType));
                 skyPush.horizonColor = glm::vec4(0.0f, 0.0f, 0.005f, 1.0f);
 
                 vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SkyboxPush), &skyPush);
@@ -3246,19 +3226,6 @@ namespace Crescendo {
             vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
 
             DrawList(opaqueList);
-
-            // --- MODULAR VOXEL HOOK: Draw Opaque Terrain Packets ---
-            std::vector<VoxelDrawPacket> terrainPackets;
-                m_voxelModule.GatherOpaquePackets(scene, this, entityGPUIndices, terrainPackets);            for (const auto& packet : terrainPackets) {
-                VkBuffer vBuffers[] = { packet.vertexBuffer };
-                VkDeviceSize offsets[] = {0};
-                vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
-                vkCmdBindIndexBuffer(commandBuffers[currentFrame], packet.indexBuffer, 0, VK_INDEX_TYPE_UINT32);
-
-                PushConsts push{ packet.entityGPUIndex };
-                vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushConsts), &push);
-                vkCmdDrawIndexed(commandBuffers[currentFrame], packet.indexCount, 1, 0, 0, 0);
-            }
 
             // Close the opaque pass so the depth buffer transitions to READ_ONLY
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
@@ -3679,7 +3646,25 @@ namespace Crescendo {
             barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             sourceStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
             destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-        } else {
+        } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        }
+        // ------------------------------------------------------
+        else {
+            std::cerr << "[Error] Unsupported Layout Transition: " << oldLayout << " -> " << newLayout << std::endl;
             throw std::invalid_argument("unsupported layout transition!");
         }
 
@@ -3776,6 +3761,10 @@ namespace Crescendo {
 
     TextureResource RenderingServer::generateCubemapFromHDR(const std::string& hdrPath) {
         TextureResource resource{};
+        if (equirectToCubePipeline == VK_NULL_HANDLE || computeDescriptorLayout == VK_NULL_HANDLE || computePipelineLayout == VK_NULL_HANDLE) {
+            std::cerr << "[Compute Error] Compute pipeline not initialized for HDR cubemap baking!" << std::endl;
+            return resource;
+        }
         uint32_t cubeSize = 1024; // 1024x1024 pixels per face for a crisp skybox
 
         // 1. Load the flat HDR using your existing function
@@ -3829,8 +3818,13 @@ namespace Crescendo {
         allocSetInfo.descriptorSetCount = 1;
         allocSetInfo.pSetLayouts = &computeDescriptorLayout;
         
-        VkDescriptorSet computeSet;
-        vkAllocateDescriptorSets(device, &allocSetInfo, &computeSet);
+        VkDescriptorSet computeSet = VK_NULL_HANDLE;
+        if (vkAllocateDescriptorSets(device, &allocSetInfo, &computeSet) != VK_SUCCESS) {
+            std::cerr << "[Compute Error] Failed to allocate compute descriptor set!" << std::endl;
+            flatHDR.destroy();
+            resource.image.destroy();
+            return resource;
+        }
 
         VkDescriptorImageInfo inputInfo{};
         inputInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -3944,6 +3938,14 @@ namespace Crescendo {
             sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
             destinationStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         }
+        // --- ADDED THIS MISSING BLOCK ---
+        else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+            barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            sourceStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        }
+        // --------------------------------
         else {
             std::cerr << "[Error] Unsupported Layout Transition: " << oldLayout << " -> " << newLayout << std::endl;
             throw std::invalid_argument("unsupported layout transition!");
@@ -4557,6 +4559,7 @@ namespace Crescendo {
         editorUI.SetTagEditorMode(isTagEditor);
         editorUI.SetProjectRoot(projectRoot);
     }
+    
 
     // --------------------------------------------------------------------
     // SERVER JANITOR LOOP
@@ -4719,6 +4722,7 @@ namespace Crescendo {
                 vkDeviceWaitIdle(device);
             }
 
+
             // 1. DESTROY TOP LEVEL
             symbolServer.Cleanup(device);
             editorUI.Shutdown(device);
@@ -4739,9 +4743,11 @@ namespace Crescendo {
             if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
             if (shadowPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
             if (ssrPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, ssrPipelineLayout, nullptr);
+            if (computePipelineLayout != VK_NULL_HANDLE) { vkDestroyPipelineLayout(device, computePipelineLayout, nullptr); computePipelineLayout = VK_NULL_HANDLE; }
             if (symbolTextureLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, symbolTextureLayout, nullptr);
             if (postProcessLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, postProcessLayout, nullptr);
             if (ssrDescriptorLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, ssrDescriptorLayout, nullptr);
+            if (computeDescriptorLayout != VK_NULL_HANDLE) { vkDestroyDescriptorSetLayout(device, computeDescriptorLayout, nullptr); computeDescriptorLayout = VK_NULL_HANDLE; }
             if (descriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
             if (renderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, renderPass, nullptr);
             if (shadowRenderPass != VK_NULL_HANDLE) vkDestroyRenderPass(device, shadowRenderPass, nullptr);

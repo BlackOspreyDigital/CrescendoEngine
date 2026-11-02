@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "servers/rendering/IRenderer.hpp"
+#include "servers/rendering/RenderTypes.hpp"
 #include "servers/rendering/Vertex.hpp"
 #include "Material.hpp"
 #include "tiny_obj_loader.h"
@@ -25,8 +26,6 @@
 #include "core/EngineState.hpp"
 #include "IO/ConfigManager.hpp"
 #include "servers/rendering/vulkan/VulkanResources.hpp" 
-
-#include "modules/voxel/VoxelTerrainModule.hpp"
 #include "modules/atmosphere/VolumetricAtmosphereModule.hpp"
 #include "servers/rendering/vulkan/VulkanResources.hpp"
 #include <memory>
@@ -44,6 +43,13 @@ namespace Crescendo {
     class Scene;
     class CBaseEntity;
     class CanvasRenderer;
+
+    struct PSXRenderBatch {
+        VulkanBuffer vertexBuffer;
+        VulkanBuffer indexBuffer;
+        uint32_t indexCount;
+    };
+    
 
     struct TextureResource {
         VulkanImage image;
@@ -157,16 +163,31 @@ namespace Crescendo {
         bool enableSSR = true;
         bool halfResSSR = false;
     };
+
+    
     
     class RenderingServer : public IRenderer {   
     friend class KtxLoader;
-    
-    public:
+    friend class VoxelTerrainModule;
+    friend class VoxelNode;
+    friend class AssetLoader;
 
-        friend class AssetLoader;
+    public:
         RenderingServer();
         ~RenderingServer();
 
+        int addMesh(MeshResource&& res) {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            int id = static_cast<int>(meshes.size());
+            meshes.push_back(std::move(res));
+            return id;
+        }
+        VulkanBuffer uploadVertexBuffer(const std::vector<Vertex>& vertices) {
+            return createVertexBuffer(vertices);
+        }
+        VulkanBuffer uploadIndexBuffer(const std::vector<uint32_t>& indices) {
+            return createIndexBuffer(indices);
+        }
         std::mutex queueMutex;
         VkCommandPool asyncCommandPool = VK_NULL_HANDLE;
         VkCommandBuffer beginAsyncCommands(VkCommandPool& outLocalPool);
@@ -180,17 +201,18 @@ namespace Crescendo {
         Camera* GetMainCamera() override { return &mainCamera; }
         void calculateCascades(Scene* scene, Camera& camera, float aspectRatio, GlobalUniforms& globalData);
         void SetMSAASamples(VkSampleCountFlagBits newSamples);
-
+        
         VkSampleCountFlagBits pendingMsaaSamples = VK_SAMPLE_COUNT_4_BIT;
         bool msaaNeedsRebuild = false;
 
         // Asset Management
+        
 
         int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices)override;
         int acquireTexture(const std::string& path)override;
         VkDescriptorSet getImGuiTextureID(const std::string& path);
        
-        void loadSkybox(const std::string& path, Scene * scene);
+        void loadSkybox(const std::string& path, Scene * scene) override;
         TextureResource UploadCubemap(void* pixels, size_t totalSize, uint32_t width, uint32_t height, uint32_t mipLevels);
         TextureResource loadKTXCubemap(const std::string& filePath);
         TextureResource generateCubemapFromHDR(const std::string& hdrPath);
@@ -209,6 +231,7 @@ namespace Crescendo {
             1.0f,   // bloomStrength
             1.0f   // bloomThreshold
         };
+        SymbolServer* GetSymbolServer() override { return &symbolServer; }
 
         // --- SYMBOL SERVER ---
         SymbolServer symbolServer;
@@ -231,15 +254,14 @@ namespace Crescendo {
         std::vector<MeshResource> meshes;
         int waterTextureID = 0;
         
-        Crescendo::VoxelTerrainModule m_voxelModule;
         Crescendo::VolumetricAtmosphereModule m_atmosphereModule;
+
 
         // Constants
         const uint32_t SHADOW_DIM = 2048; 
         const uint32_t SHADOW_CASCADES = 4;
 
         // Inside RenderingServer class in RenderingServer.hpp
-        ChunkBakeResult buildChunkMesh(const TerrainComputePush& pushData, bool needsCollision) override;
 
 
         // EMULATION / FULSCREEN HELPERS
@@ -248,7 +270,9 @@ namespace Crescendo {
         // 2D Canvas Renderer
         std::unique_ptr<CanvasRenderer> canvasRenderer;
 
+
     private:
+        std::vector<PSXRenderBatch> framePSXBatches;
         VkInstance instance = VK_NULL_HANDLE;
         VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
         VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -260,7 +284,7 @@ namespace Crescendo {
 
         VmaAllocator allocator = nullptr;
         
-        // --- [SSBO & UBO] RAII ---
+        //  [SSBO & UBO] RAII 
         static constexpr size_t MAX_ENTITIES = 10000;
         std::vector<VulkanBuffer> entityStorageBuffers; 
         std::vector<void*> entityStorageBuffersMapped;
@@ -470,7 +494,7 @@ namespace Crescendo {
         
         void updateUniformBuffer(uint32_t currentImage, Scene* scene);
 
-        // --- SHADOW RESOURCES ---
+        // Shadow Resources
         VulkanImage shadowImage; 
         VkImageView shadowImageView = VK_NULL_HANDLE; // Array View (for sampling)
         std::vector<VkImageView> shadowCascadeViews;  // Individual Layer Views (for rendering)

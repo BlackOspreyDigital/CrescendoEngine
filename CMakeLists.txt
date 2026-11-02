@@ -69,8 +69,7 @@ file(GLOB_RECURSE CORE_SOURCES
     "src/controllers/*.cpp"
     "modules/gltf/*.cpp" 
     "modules/image/*.cpp"
-    "modules/terrain/*.cpp" 
-    "modules/voxel/*.cpp"    
+    "modules/voxel/*.cpp"
     "modules/atmosphere/*.cpp"
     "deps/xatlas.cpp"
 )

@@ -1,19 +1,21 @@
 #pragma once
-
 #include <string>
 #include <memory>
 #include "controllers/FPSController.hpp"
+#include "controllers/RTSController.hpp"
 #include "servers/display/DisplayServer.hpp"
 #include "servers/audio/AudioServer.hpp"
 #include "servers/physics/PhysicsServer.hpp" 
 
 #include "servers/rendering/IRenderer.hpp" 
-
 #include "scene/Scene.hpp"
 #include "core/EngineState.hpp"
 
 namespace Crescendo {
     class ScriptSystem;
+
+    extern RTSController* activeRTSControllerGlobal;
+    extern bool rtsModeGlobal;
 
     class Engine {
     public:
