@@ -9,6 +9,9 @@ _deps/
 compile_commands.json
 .clangd
 crescendo_engine
+/CrescendoPacker
+/Lemur
+/Spectra
 *.o
 *.a
 *.so
