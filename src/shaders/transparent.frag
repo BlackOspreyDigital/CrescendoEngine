@@ -10,6 +10,7 @@ layout(location = 6) in flat int inEntityIndex;
 layout(location = 7) in vec2 fragTexCoord1; 
 
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec4 outNormal;
 
 layout(binding = 0) uniform sampler2D texSampler[100];
 layout(binding = 1) uniform samplerCube skyTexture;
@@ -55,7 +56,7 @@ layout(set = 0, binding = 3) uniform GlobalUniforms {
     vec4 skyColor;
     vec4 groundColor;
     vec4 pointLightParams;
-    PointLight pointLights[16];
+    PointLight pointLights[64];
 } global;
 
 vec2 EquirectangularUV(vec3 v) {
@@ -107,25 +108,64 @@ float CalculateShadow(vec3 worldPos, vec3 normal, float viewDepth) {
     return shadow / 9.0;
 }
 
-vec3 ApplyFog(vec3 rgb, float dist, float worldZ) {
+vec3 ApplyFog(vec3 rgb, float dist, vec3 fragPos) {
     float fogDensity = global.fogColor.a;
-    if (fogDensity <= 0.0001) return rgb; // Safely early-out if fog is disabled
+    if (fogDensity <= 0.00001) return rgb;
 
     float fogFalloff = max(global.fogParams.x, 0.001);
     float maxOpacity = clamp(global.fogParams.y, 0.0, 1.0);
     float fogStart   = max(global.fogParams.z, 0.0);
-    float fogHeight  = global.fogParams.w;
+    float fogFloor   = global.fogParams.w;
 
-    float d = max(dist - fogStart, 0.0);
-    
-    // As worldZ goes ABOVE the fog plane, density drops off.
-    float heightFalloff = max(worldZ - fogHeight, 0.0);
-    float effectiveDensity = fogDensity * exp(-fogFalloff * heightFalloff);
-    
-    float fogFactor = exp(-d * effectiveDensity);
-    fogFactor = clamp(fogFactor, 1.0 - maxOpacity, 1.0); // Limit maximum thickness
-    
-    return mix(global.fogColor.rgb, rgb, fogFactor);
+    vec3 worldPos = fragPos + global.cameraPos.xyz;
+    vec3 ray = fragPos;
+    float rayLen = max(dist, 0.001);
+    vec3 v = ray / rayLen;
+
+    float cz = max(global.cameraPos.z - fogFloor, 0.0);
+    float vz = v.z;
+
+    float tau = 0.0;
+    if (abs(vz) > 0.001) {
+        float t0 = min(fogStart, rayLen);
+        float t1 = rayLen;
+        float intStart = exp(-fogFalloff * (cz + t0 * vz));
+        float intEnd   = exp(-fogFalloff * (cz + t1 * vz));
+        tau = (fogDensity / (fogFalloff * vz)) * (intStart - intEnd);
+        tau = max(tau, 0.0);
+    } else {
+        float d = max(dist - fogStart, 0.0);
+        tau = fogDensity * exp(-fogFalloff * cz) * d;
+    }
+
+    float fowRadius = global.pointLightParams.w;
+    float visionClear = 0.0;
+    if (fowRadius > 1.0) {
+        float distToBase = length(worldPos.xy - global.pointLightParams.yz);
+        visionClear = max(visionClear, smoothstep(fowRadius, fowRadius * 0.70, distToBase));
+    }
+
+    int unitVisionCount = int(global.pointLightParams.x);
+    for (int i = 0; i < unitVisionCount && i < 64; ++i) {
+        float uRadius = global.pointLights[i].positionAndRadius.w;
+        if (uRadius > 1.0) {
+            vec3 uPos = global.pointLights[i].positionAndRadius.xyz;
+            float distToUnit = length(worldPos - uPos);
+            if (distToUnit < uRadius) {
+                visionClear = max(visionClear, smoothstep(uRadius, uRadius * 0.65, distToUnit));
+                if (visionClear >= 0.999) break;
+            }
+        }
+    }
+
+    float tauEffective = tau * (1.0 - clamp(visionClear, 0.0, 1.0));
+    float transmittance = clamp(exp(-tauEffective), 1.0 - maxOpacity, 1.0);
+
+    vec3 sunDir = normalize(global.sunDirection.xyz);
+    float sunScattering = max(dot(-v, sunDir), 0.0);
+    vec3 inscatterColor = mix(global.fogColor.rgb, global.sunColor.rgb, pow(sunScattering, 8.0) * 0.35);
+
+    return mix(inscatterColor, rgb, transmittance);
 }
 
 const float PI = 3.14159265359;
@@ -239,6 +279,7 @@ void main() {
     float metallic  = ent.pbrParams.y;
     float emission  = ent.pbrParams.z;
     float transmission = ent.volumeParams.x;
+    float materialAlpha = (ent.padding1.x > 0.0) ? ent.padding1.x : 1.0;
 
     // --- PBR MATH (Cook-Torrance GGX) ---
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
@@ -269,11 +310,10 @@ void main() {
 
     vec3 finalColor = directLight + hemiAmbient + emissive;
 
-    float thickness        = max(ent.volumeParams.y, 1.0);
+    float thickness        = max(ent.volumeParams.y, 0.001);
     float attenDist        = max(ent.volumeParams.z, 0.001); 
     float ior              = max(ent.volumeParams.w, 1.0);
     vec3  tintColor        = clamp(ent.volumeColor.rgb, vec3(0.001), vec3(0.999));
-
     float subsurface       = ent.extendedPbr.x;
     float specularAmount   = ent.extendedPbr.y;
     float specularTint     = ent.extendedPbr.z;
@@ -285,7 +325,10 @@ void main() {
 
     vec3 transmissionColor = vec3(0.0);
     if (transmission > 0.0) {
-        vec2 screenUV = gl_FragCoord.xy / vec2(global.params.z, global.params.w);
+        vec2 screenSize = vec2(global.params.z, global.params.w);
+        if (screenSize.x < 1.0) screenSize.x = 1920.0;
+        if (screenSize.y < 1.0) screenSize.y = 1080.0;
+        vec2 screenUV = gl_FragCoord.xy / screenSize;
         
         // Convert Normal to View Space so X/Y always align with the screen
         vec3 viewNormal = mat3(global.view) * N;
@@ -296,7 +339,8 @@ void main() {
 
         float maxLod = 10.0;
         float blurLevel = roughness * maxLod;
-        vec3 sceneRefr = textureLod(refractionTexture, screenUV + distortion, blurLevel).rgb;
+        vec2 refrUV = clamp(screenUV + distortion, vec2(0.001), vec2(0.999));
+        vec3 sceneRefr = textureLod(refractionTexture, refrUV, blurLevel).rgb;
         
         // Proper Beer-Lambert Law 
         vec3 absorption = -log(tintColor) / attenDist;
@@ -328,16 +372,15 @@ void main() {
     vec3 finalReflection = skyRefl * F_ambient;
 
     
-    vec3 finalOutput;
-
     if (transmission > 0.0) {
-        finalOutput = transmissionColor + finalColor + finalReflection;
-        finalOutput = ApplyFog(finalOutput, dist, fragPos.z);
-        outColor = vec4(finalOutput, 1.0); 
+        vec3 glassOutput = transmissionColor + finalColor + finalReflection;
+        glassOutput = ApplyFog(glassOutput, dist, fragPos);
+        outColor = vec4(glassOutput, materialAlpha);
     } 
     else {
-        finalOutput = finalColor + finalReflection;
-        finalOutput = ApplyFog(finalOutput, dist, fragPos.z);
-        outColor = vec4(finalOutput, albedoSample.a); 
+        float finalAlpha = albedoSample.a * materialAlpha;
+        vec3 opaqueOutput = ApplyFog(finalColor + finalReflection, dist, fragPos);
+        outColor = vec4(opaqueOutput, finalAlpha);
     }
+    outNormal = vec4(N * 0.5 + 0.5, 1.0);
 }

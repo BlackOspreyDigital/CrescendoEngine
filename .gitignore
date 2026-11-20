@@ -19,23 +19,7 @@ crescendo_engine
 shaders/*.spv
 
 # --- System Symbos ---
-assets/systemsymbols
-assets/models
-assets/hdr
-assets/audio
-assets/scripts
-assets/textures
-assets/alphalogo.png
-assets/HoloTestCard.png
-assets/newospreylogo.jpg
-assets/testcard.glb
-assets/favicon.png
-
-assets/icons/*
-
-!assets/icons/voxelthumbnail.png
-!assets/icons/voxelthumbnail2.png
-
+assets/
 
 # --- Dependencies (The Clutter Killers) ---
 # This stops Git from ever looking inside these folders
@@ -62,3 +46,5 @@ install_manifest.txt
 data/bios/
 data/roms/
 *.bin
+machinevision/
+Meridian_Crescendo_Edition/

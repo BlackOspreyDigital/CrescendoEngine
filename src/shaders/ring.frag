@@ -15,14 +15,16 @@ void main() {
     float d = length(p);
 
     // Procedural ring boundaries
-    float innerR = 0.36;
+    float innerR = 0.35;
     float outerR = 0.49;
-    float edgeWidth = 0.015;
+    float edgeWidth = 0.025;
 
-    float alpha = smoothstep(innerR - edgeWidth, innerR, d) *
-                  (1.0 - smoothstep(outerR, outerR + edgeWidth, d));
+    float ringAlpha = smoothstep(innerR - edgeWidth, innerR, d) *
+                      (1.0 - smoothstep(outerR, outerR + edgeWidth, d));
+    float coreBlob = exp(-d * d * 16.0) * 0.25;
+    float alpha = clamp(ringAlpha + coreBlob, 0.0, 1.0);
 
-    if (alpha < 0.05) {
+    if (alpha < 0.03) {
         discard;
     }
 

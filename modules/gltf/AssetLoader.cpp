@@ -221,7 +221,7 @@ namespace Crescendo {
 
                 if (vertices.empty() || indices.empty()) continue;
                 
-                std::string meshKey = baseDir + "_mesh_" + std::to_string(i) + "_" + std::to_string(j); 
+                std::string meshKey = normalizePath(filePath) + "_mesh_" + std::to_string(i) + "_" + std::to_string(j); 
                 rawMeshes[meshKey] = {vertices, indices};
 
 #ifndef __EMSCRIPTEN__
@@ -463,7 +463,7 @@ namespace Crescendo {
                     }
                 } else { targetEnt->textureID = 0; }
                 
-                std::string meshKey = normalizePath(baseDir) + "_mesh_" + std::to_string(node.mesh) + "_" + std::to_string(i); 
+                std::string meshKey = normalizePath(filePath) + "_mesh_" + std::to_string(node.mesh) + "_" + std::to_string(i); 
 
                 bool hasMeshReady = false;
 

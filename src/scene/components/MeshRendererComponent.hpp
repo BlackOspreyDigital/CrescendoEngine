@@ -35,6 +35,7 @@ namespace Crescendo {
             ImGui::Spacing();
             
             ImGui::TextDisabled("Transparency & Volume");
+            ImGui::SliderFloat("Alpha (Opacity)", &owner->alpha, 0.0f, 1.0f);
             ImGui::SliderFloat("Transmission (Glass)", &owner->transmission, 0.0f, 1.0f);
             
             // Only show advanced volume settings if the material is actually transparent
@@ -42,6 +43,7 @@ namespace Crescendo {
                 ImGui::Indent();
                 ImGui::ColorEdit3("Volume Tint", glm::value_ptr(owner->attenuationColor));
                 ImGui::DragFloat("Density (Dist)", &owner->attenuationDistance, 0.01f, 0.001f, 10.0f);
+                ImGui::DragFloat("Thickness", &owner->thickness, 0.01f, 0.0f, 10.0f);
                 ImGui::SliderFloat("Refraction (IOR)", &owner->ior, 1.0f, 2.5f); 
                 ImGui::Unindent();
             }

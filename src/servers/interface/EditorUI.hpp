@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <vulkan/vulkan_core.h>
 #include "deps/json/json.hpp"
+#include "servers/audio/SoundSynth.hpp"
 
 namespace Crescendo {
     
@@ -78,7 +79,7 @@ namespace Crescendo {
         void SetTagEditorMode(bool mode) { isTagEditor = mode; }
         void SetProjectRoot(const std::string& root) { projectRoot = root; }
         void DrawLemurLayout();
-       
+        void DrawAudioSynthesizerWindow();
 
     private:
         RenderingServer* rendererRef;
@@ -106,6 +107,32 @@ namespace Crescendo {
         bool showSelection = true;
         bool showSelectionOutline = true;
         bool showPauseMenu = false;
+        bool showAudioSynthWindow = false;
+
+        // Audio Synthesizer Tool State
+        SynthSoundParams activeSynthParams;
+        std::vector<float> cachedWaveformPlot;
+        bool synthWaveformDirty = true;
+        int selectedSynthPresetIndex = 0;
+        std::string synthStatusMessage = "";
+        char synthTargetFilepath[256] = "assets/audio/custom.wav";
+
+        // MIDI-style note sequencer state
+        struct SequencerNote {
+            int midiNote = 60;
+            int startStep = 0;
+            int lengthSteps = 1;
+        };
+
+        std::vector<SequencerNote> sequencerNotes;
+        int sequencerTransposeOctaves = 0;
+        int sequencerViewOctave = 0;
+        int sequencerBpm = 120;
+        int sequencerCurrentStep = 0;
+        float sequencerStepTimer = 0.0f;
+        bool sequencerPlaying = false;
+        int sequencerResizingNote = -1;
+
         // Asset Browser State
         std::filesystem::path currentAssetDirectory = "assets";
 

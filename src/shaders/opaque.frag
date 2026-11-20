@@ -56,7 +56,7 @@ layout(set = 0, binding = 3) uniform GlobalUniforms {
     vec4 skyColor;
     vec4 groundColor;
     vec4 pointLightParams;
-    PointLight pointLights[16];
+    PointLight pointLights[64];
 } global;
 
 const float PI = 3.14159265359;
@@ -200,19 +200,70 @@ float CalculateShadow(vec3 worldPos, vec3 normal, float viewDepth) {
     return mix(shadow, 1.0, fadeFactor);
 }
 
-vec3 ApplyFog(vec3 rgb, float dist, float worldZ) {
+vec3 ApplyFog(vec3 rgb, float dist, vec3 fragPos) {
     float fogDensity = global.fogColor.a;
-    float fogFalloff = global.fogParams.x;
-    float maxOpacity = global.fogParams.y;
-    float fogStart   = global.fogParams.z;
-    float fogHeight  = global.fogParams.w;
+    if (fogDensity <= 0.00001) return rgb;
 
-    float d = max(dist - fogStart, 0.0);
-    float distFactor = exp(-d * fogDensity);
-    float heightFactor = exp(-fogFalloff * (worldZ - fogHeight));
+    float fogFalloff = max(global.fogParams.x, 0.001);
+    float maxOpacity = clamp(global.fogParams.y, 0.0, 1.0);
+    float fogStart   = max(global.fogParams.z, 0.0);
+    float fogFloor   = global.fogParams.w; // Reference ground altitude (Z = 0.0)
 
-    float fogFactor = clamp(distFactor * heightFactor, 1.0 - maxOpacity, 1.0);
-    return mix(global.fogColor.rgb, rgb, fogFactor);
+    // True camera-space ray: fragPos is (worldPos - cameraPos)
+    vec3 worldPos = fragPos + global.cameraPos.xyz;
+    vec3 ray = fragPos;
+    float rayLen = max(dist, 0.001);
+    vec3 v = ray / rayLen; // Unit ray direction
+
+    // Analytical 3D Volumetric Exponential Height Fog Integral:
+    // Integrates density(z) = fogDensity * exp(-fogFalloff * max(z - fogFloor, 0.0)) along ray
+    float cz = max(global.cameraPos.z - fogFloor, 0.0);
+    float vz = v.z;
+
+    float tau = 0.0;
+    if (abs(vz) > 0.001) {
+        float t0 = min(fogStart, rayLen);
+        float t1 = rayLen;
+        float intStart = exp(-fogFalloff * (cz + t0 * vz));
+        float intEnd   = exp(-fogFalloff * (cz + t1 * vz));
+        tau = (fogDensity / (fogFalloff * vz)) * (intStart - intEnd);
+        tau = max(tau, 0.0);
+    } else {
+        float d = max(dist - fogStart, 0.0);
+        tau = fogDensity * exp(-fogFalloff * cz) * d;
+    }
+
+    // Fog of War: 3D Volumetric vision clearing around player base and living units
+    float fowRadius = global.pointLightParams.w;
+    float visionClear = 0.0;
+    if (fowRadius > 1.0) {
+        float distToBase = length(worldPos.xy - global.pointLightParams.yz);
+        visionClear = max(visionClear, smoothstep(fowRadius, fowRadius * 0.70, distToBase));
+    }
+
+    int unitVisionCount = int(global.pointLightParams.x);
+    for (int i = 0; i < unitVisionCount && i < 64; ++i) {
+        float uRadius = global.pointLights[i].positionAndRadius.w;
+        if (uRadius > 1.0) {
+            vec3 uPos = global.pointLights[i].positionAndRadius.xyz;
+            float distToUnit = length(worldPos - uPos);
+            if (distToUnit < uRadius) {
+                visionClear = max(visionClear, smoothstep(uRadius, uRadius * 0.65, distToUnit));
+                if (visionClear >= 0.999) break;
+            }
+        }
+    }
+
+    // Modulate optical depth by vision clearance
+    float tauEffective = tau * (1.0 - clamp(visionClear, 0.0, 1.0));
+    float transmittance = clamp(exp(-tauEffective), 1.0 - maxOpacity, 1.0);
+
+    // Sun atmospheric forward-scattering glow through the volume
+    vec3 sunDir = normalize(global.sunDirection.xyz);
+    float sunScattering = max(dot(-v, sunDir), 0.0);
+    vec3 inscatterColor = mix(global.fogColor.rgb, global.sunColor.rgb, pow(sunScattering, 8.0) * 0.35);
+
+    return mix(inscatterColor, rgb, transmittance);
 }
 
 float analyticPlanetShadow(vec3 fragWorldPos, vec3 planetCenter, float planetRadius, vec3 sunDir) {
@@ -272,6 +323,19 @@ void main() {
     }
 
     vec3 albedo = albedoSample.rgb * baseColor * fragColor;
+
+    // --- 1B. ROLLING MARS/EARTH DUST SIMULATION ---
+    vec3 worldPosGlobal = fragPos + global.cameraPos.xyz;
+    float time = global.params.x;
+    vec2 dustUV = worldPosGlobal.xy * 0.016 + vec2(time * 0.045, time * 0.022);
+    float d1 = sin(dustUV.x * 3.14159) * cos(dustUV.y * 3.14159) * 0.5 + 0.5;
+    vec2 dustUV2 = dustUV * 2.35 - vec2(time * 0.032, time * 0.038);
+    float d2 = sin(dustUV2.x * 3.14159) * cos(dustUV2.y * 3.14159) * 0.5 + 0.5;
+    float dustNoise = d1 * 0.6 + d2 * 0.4;
+    float groundProximity = clamp(1.0 - (worldPosGlobal.z / 9.0), 0.0, 1.0);
+    float dustFactor = dustNoise * groundProximity * 0.28;
+    vec3 marsDustColor = vec3(0.72, 0.36, 0.18);
+    albedo = mix(albedo, marsDustColor, dustFactor);
 
     // --- NORMAL MAPPING ---
     float normalStr = ent.pbrParams.w;
@@ -393,6 +457,15 @@ void main() {
         vec3 kD = vec3(1.0) - kS;
         kD *= 1.0 - metallic;
 
+        // Procedural Perlin Cloud Shadows (World Speed Simulation)
+        vec2 cloudUV = worldPosGlobal.xy * 0.0032 + vec2(time * 0.012, time * 0.007);
+        float c1 = sin(cloudUV.x * 6.283) * cos(cloudUV.y * 6.283) * 0.5 + 0.5;
+        vec2 cloudUV2 = cloudUV * 2.15 + vec2(time * 0.008, -time * 0.011);
+        float c2 = sin(cloudUV2.x * 6.283) * cos(cloudUV2.y * 6.283) * 0.5 + 0.5;
+        float cloudDensity = c1 * 0.65 + c2 * 0.35;
+        float cloudShadow = smoothstep(0.42, 0.78, cloudDensity);
+        shadowFactor *= (1.0 - cloudShadow * 0.55);
+
         vec3 radiance = global.sunColor.rgb * global.sunDirection.w;
         directLight = (kD * albedo / PI + specular) * radiance * NdotL * shadowFactor;
     }
@@ -406,6 +479,7 @@ void main() {
         float radius = global.pointLights[i].positionAndRadius.w;
         vec3 lightColor = global.pointLights[i].colorAndIntensity.xyz;
         float intensity = global.pointLights[i].colorAndIntensity.w;
+        if (intensity <= 0.0001) continue;
 
         vec3 L_pt = lightPos - fragPos;
         float dist_pt = length(L_pt);
@@ -465,9 +539,9 @@ void main() {
     vec3 finalReflection = skyRefl * F_ambient;
     vec3 finalOutput = finalColor + finalReflection;
    
-    // Fog Integration
-    float dist = length(global.cameraPos.xyz - fragPos);
-    finalOutput = ApplyFog(finalOutput, dist, fragPos.z);
+    // Fog Integration: fragPos is already the camera-relative vector
+    float dist = length(fragPos);
+    finalOutput = ApplyFog(finalOutput, dist, fragPos);
 
     // --- SUN-DRIVEN ATMOSPHERIC RIM SCATTERING ---
     if (ent.sphereBounds.w > 0.0) {

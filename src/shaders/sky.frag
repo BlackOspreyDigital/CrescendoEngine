@@ -20,7 +20,11 @@ void main() {
     int skyType = int(push.zenithColor.w);
     if (skyType >= 2) {
         vec3 cubemapColor = texture(skyTexture, viewDir).rgb;
-        outColor = vec4(cubemapColor, 1.0);
+        // Smooth atmospheric horizon haze matching fog color
+        float horizonBlend = exp(-max(viewDir.z, 0.0) * 16.0);
+        float fogStrength = clamp(push.horizonColor.a * 60.0, 0.0, 1.0);
+        vec3 finalSky = mix(cubemapColor, push.horizonColor.rgb, horizonBlend * fogStrength);
+        outColor = vec4(finalSky, 1.0);
     } else {
         vec3 sunDir = normalize(-push.sunDirection.xyz);
 

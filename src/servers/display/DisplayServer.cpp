@@ -4,6 +4,7 @@
 #endif
 #include "imgui_impl_sdl2.h"
 #include <iostream>
+ #include "core/Input.hpp"
 
 namespace Crescendo {
 
@@ -40,18 +41,22 @@ namespace Crescendo {
     }
 
     void DisplayServer::poll_events(bool& running) {
-    SDL_Event event;
-    while (SDL_PollEvent(&event)) {
-        // NEW: Only forward to ImGui if the context and backend exist
-        if (ImGui::GetCurrentContext() != nullptr) {
-            ImGui_ImplSDL2_ProcessEvent(&event);
-        }
-        
-        if (event.type == SDL_QUIT) {
-            running = false;
-        }
-    }    
-}
+        Input::scrollY = 0;
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (ImGui::GetCurrentContext() != nullptr) {
+                ImGui_ImplSDL2_ProcessEvent(&event);
+            }
+            
+            if (event.type == SDL_MOUSEWHEEL) {
+                Input::scrollY += event.wheel.y;
+            }
+
+            if (event.type == SDL_QUIT) {
+                running = false;
+            }
+        }    
+    }
 
     VkResult DisplayServer::create_window_surface(VkInstance instance, VkSurfaceKHR* surface) {
 #ifndef __EMSCRIPTEN__

@@ -12,6 +12,7 @@
 #include "deps/vk_mem_alloc.h"
 
 #include <array>
+#include <chrono>
 #include <set>
 #include "scene/Scene.hpp"
 #include <cstring>
@@ -118,6 +119,7 @@ namespace Crescendo {
         if (!createDescriptorSetLayout()) return false;
         if (!createDescriptorPool()) return false;
         createStorageBuffers(); 
+        createFoliageStorageBuffers();
         createGlobalUniformBuffer();
         if (!createShadowResources()) return false; 
         if (!createTextureImage()) return false; 
@@ -163,9 +165,11 @@ namespace Crescendo {
         if (!createWaterPipeline()) return false;       
         if (!createTransparentPipeline()) return false;
         if (!createOpaquePipeline()) return false;
+        if (!createFoliagePipelines()) return false;
         if (!createBloomPipeline()) return false;
         if (!createCompositePipeline()) return false;
         if (!createShadowPipeline()) return false;
+        if (!createFoliageShadowPipeline()) return false;
         if (!createSSRPipeline()) return false;
         if (!createComputePipelines()) return false;
 
@@ -929,10 +933,19 @@ namespace Crescendo {
 
 
         globalBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        
-        std::array<VkDescriptorSetLayoutBinding, 10> bindings = { 
-            samplerLayoutBinding, skyLayoutBinding, ssboBinding, globalBinding, 
-            shadowBinding, refractionBinding, irradianceBinding, prefilterBinding, brdfBinding, depthBinding 
+
+        // Binding 10: Instanced Foliage SSBO
+        VkDescriptorSetLayoutBinding foliageBinding{};
+        foliageBinding.binding = 10;
+        foliageBinding.descriptorCount = 1;
+        foliageBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        foliageBinding.pImmutableSamplers = nullptr;
+        foliageBinding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        std::array<VkDescriptorSetLayoutBinding, 11> bindings = {
+            samplerLayoutBinding, skyLayoutBinding, ssboBinding, globalBinding,
+            shadowBinding, refractionBinding, irradianceBinding, prefilterBinding, brdfBinding, depthBinding,
+            foliageBinding
         };
 
         VkDescriptorSetLayoutCreateInfo layoutInfo{};
@@ -1206,13 +1219,25 @@ namespace Crescendo {
             depthWrite.descriptorCount = 1;
             depthWrite.pImageInfo = &depthInfo;
 
-            // Update the array size to 10 and add depthWrite to the end
-            std::array<VkWriteDescriptorSet, 10> writes = {
+            VkDescriptorBufferInfo foliageInfo{};
+            foliageInfo.buffer = foliageStorageBuffers[i].handle;
+            foliageInfo.offset = 0;
+            foliageInfo.range = sizeof(FoliageGPUInstance) * MAX_FOLIAGE_INSTANCES;
+
+            VkWriteDescriptorSet foliageWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            foliageWrite.dstSet = descriptorSets[i];
+            foliageWrite.dstBinding = 10;
+            foliageWrite.dstArrayElement = 0;
+            foliageWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            foliageWrite.descriptorCount = 1;
+            foliageWrite.pBufferInfo = &foliageInfo;
+
+            // Update the array size to 11 and add foliageWrite to the end
+            std::array<VkWriteDescriptorSet, 11> writes = {
                 descriptorWrite, skyWrite, ssboWrite, globalWrite, shadowWrite, refWrite,
-                irradianceWrite, prefilterWrite, brdfWrite, depthWrite
+                irradianceWrite, prefilterWrite, brdfWrite, depthWrite, foliageWrite
             };
             vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-            
         } // End of the frames-in-flight loop
 
         // -----------------------------------------------------------
@@ -1290,6 +1315,14 @@ namespace Crescendo {
 
         return meshID;
     }
+    bool RenderingServer::updateMesh(int meshID, const std::vector<Vertex>& vertices) {
+        if (meshID < 0 || meshID >= static_cast<int>(meshes.size())) return false;
+        vkDeviceWaitIdle(device);
+        meshes[meshID].vertexBuffer.destroy();
+        meshes[meshID].vertexBuffer = createVertexBuffer(vertices);
+        return true;
+    }
+
 
     int RenderingServer::acquireTexture(const std::string& path) {
         if (cache.textures.find(path) != cache.textures.end()) {
@@ -1342,15 +1375,20 @@ namespace Crescendo {
         return newID;
     }
 
-    VkDescriptorSet RenderingServer::getImGuiTextureID(const std::string& path) {
+    void* RenderingServer::getImGuiTextureID(const std::string& path) {
+        static std::unordered_map<std::string, VkDescriptorSet> imGuiTextureCache;
+        auto it = imGuiTextureCache.find(path);
+        if (it != imGuiTextureCache.end()) return (void*)it->second;
+
         int id = acquireTexture(path);
         // Ensure the texture was loaded and exists in the bank
         if (id > 0 && id < textureBank.size() && textureBank[id].image.view != VK_NULL_HANDLE) {
-            return ImGui_ImplVulkan_AddTexture(textureSampler, textureBank[id].image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            VkDescriptorSet ds = ImGui_ImplVulkan_AddTexture(textureSampler, textureBank[id].image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            imGuiTextureCache[path] = ds;
+            return (void*)ds;
         }
-        return VK_NULL_HANDLE;
+        return nullptr;
     }
-
 
     //===============================================
     // PIPELINE LOGIC
@@ -1636,9 +1674,9 @@ namespace Crescendo {
         colorBlendAttachments[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
         colorBlendAttachments[0].alphaBlendOp = VK_BLEND_OP_ADD;
 
-        // Attachment 1: Normal G-Buffer (Clone Attachment 0 to bypass the independentBlend rule!)
-        colorBlendAttachments[1] = colorBlendAttachments[0]; 
-
+        // Attachment 1: Normal G-Buffer (Disable writes so transparent pass preserves opaque scene normals)
+        colorBlendAttachments[1].colorWriteMask = 0;
+        colorBlendAttachments[1].blendEnable = VK_FALSE;
         VkPipelineColorBlendStateCreateInfo colorBlending{};
         colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
         colorBlending.attachmentCount = 2; 
@@ -1776,6 +1814,116 @@ namespace Crescendo {
         return true;
     }
 
+    bool RenderingServer::createFoliagePipelines() {
+        auto vertShaderCode = readFile("shaders/foliage.vert.spv");
+        auto fragShaderCode = readFile("shaders/foliage.frag.spv");
+
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+        VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertShaderStageInfo.module = vertShaderModule;
+        vertShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageInfo.module = fragShaderModule;
+        fragShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
+
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+        VkViewport viewport{0.0f, 0.0f, (float)swapChainExtent.width, (float)swapChainExtent.height, 0.0f, 1.0f};
+        VkRect2D scissor{{0, 0}, swapChainExtent};
+        VkPipelineViewportStateCreateInfo viewportState{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+        viewportState.viewportCount = 1;
+        viewportState.pViewports = &viewport;
+        viewportState.scissorCount = 1;
+        viewportState.pScissors = &scissor;
+
+        VkPipelineRasterizationStateCreateInfo rasterizer{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+        rasterizer.depthClampEnable = VK_FALSE;
+        rasterizer.rasterizerDiscardEnable = VK_FALSE;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE; // Double-sided foliage cards
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+        VkPipelineMultisampleStateCreateInfo multisampling{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+        multisampling.sampleShadingEnable = VK_FALSE;
+        multisampling.rasterizationSamples = msaaSamples;
+        multisampling.alphaToCoverageEnable = (msaaSamples != VK_SAMPLE_COUNT_1_BIT) ? VK_TRUE : VK_FALSE;
+
+        VkPipelineDepthStencilStateCreateInfo depthStencil{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        depthStencil.depthTestEnable = VK_TRUE;
+        depthStencil.depthWriteEnable = VK_TRUE;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+
+        VkPipelineColorBlendAttachmentState colorBlendAttachments[2] = {};
+        colorBlendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        colorBlendAttachments[0].blendEnable = VK_FALSE;
+        colorBlendAttachments[1] = colorBlendAttachments[0];
+
+        VkPipelineColorBlendStateCreateInfo colorBlending{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        colorBlending.logicOpEnable = VK_FALSE;
+        colorBlending.attachmentCount = 2;
+        colorBlending.pAttachments = colorBlendAttachments;
+
+        std::vector<VkDynamicState> dynamicStates = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynamicState{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+        dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+        dynamicState.pDynamicStates = dynamicStates.data();
+
+        VkGraphicsPipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.layout = pipelineLayout;
+        pipelineInfo.renderPass = viewportRenderPass;
+        pipelineInfo.subpass = 0;
+
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &foliagePipeline) != VK_SUCCESS) {
+            vkDestroyShaderModule(device, fragShaderModule, nullptr);
+            vkDestroyShaderModule(device, vertShaderModule, nullptr);
+            return false;
+        }
+
+        // Single-sided variant for solid tree trunks/branches
+        rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+        multisampling.alphaToCoverageEnable = VK_FALSE;
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &foliageCulledPipeline) != VK_SUCCESS) {
+            vkDestroyShaderModule(device, fragShaderModule, nullptr);
+            vkDestroyShaderModule(device, vertShaderModule, nullptr);
+            return false;
+        }
+
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
+        return true;
+    }
+
     bool RenderingServer::createWaterPipeline() {
         auto vertShaderCode = readFile("shaders/water.vert.spv");
         auto fragShaderCode = readFile("shaders/water.frag.spv");
@@ -1834,8 +1982,8 @@ namespace Crescendo {
         rasterizer.rasterizerDiscardEnable = VK_FALSE;
         rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
         rasterizer.lineWidth = 1.0f;
-        rasterizer.cullMode = VK_CULL_MODE_BACK_BIT; 
-        rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        rasterizer.cullMode = VK_CULL_MODE_NONE; 
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
         VkPipelineMultisampleStateCreateInfo multisampling{};
         multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -2069,6 +2217,123 @@ namespace Crescendo {
     
         if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &shadowPipeline) != VK_SUCCESS) return false;
     
+        vkDestroyShaderModule(device, vertShaderModule, nullptr);
+        return true;
+    }
+
+    bool RenderingServer::createFoliageShadowPipeline() {
+        auto vertShaderCode = readFile("shaders/shadow_foliage.vert.spv");
+        auto fragShaderCode = readFile("shaders/shadow_foliage.frag.spv");
+        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+        VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+        vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        vertShaderStageInfo.module = vertShaderModule;
+        vertShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+        fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        fragShaderStageInfo.module = fragShaderModule;
+        fragShaderStageInfo.pName = "main";
+
+        VkPipelineShaderStageCreateInfo shaderStages[] = { vertShaderStageInfo, fragShaderStageInfo };
+
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
+        inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        inputAssembly.primitiveRestartEnable = VK_FALSE;
+
+        VkPipelineViewportStateCreateInfo viewportState{};
+        viewportState.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+
+        VkPipelineRasterizationStateCreateInfo rasterizer{};
+        rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizer.depthClampEnable = VK_TRUE;
+        rasterizer.rasterizerDiscardEnable = VK_FALSE;
+        rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizer.lineWidth = 1.0f;
+        rasterizer.cullMode = VK_CULL_MODE_NONE;
+        rasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterizer.depthBiasEnable = VK_TRUE;
+        rasterizer.depthBiasConstantFactor = 1.25f;
+        rasterizer.depthBiasSlopeFactor = 1.75f;
+
+        VkPipelineMultisampleStateCreateInfo multisampling{};
+        multisampling.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampling.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo depthStencil{};
+        depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depthStencil.depthTestEnable = VK_TRUE;
+        depthStencil.depthWriteEnable = VK_TRUE;
+        depthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+
+        std::vector<VkDynamicState> dynamicStates = {
+            VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR,
+            VK_DYNAMIC_STATE_DEPTH_BIAS
+        };
+        VkPipelineDynamicStateCreateInfo dynamicState{};
+        dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamicState.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+        dynamicState.pDynamicStates = dynamicStates.data();
+
+        VkPushConstantRange pushConstant{};
+        pushConstant.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        pushConstant.offset = 0;
+        pushConstant.size = sizeof(FoliageShadowPushConsts);
+
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
+        pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipelineLayoutInfo.setLayoutCount = 1;
+        pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &pushConstant;
+
+        if (foliageShadowPipelineLayout == VK_NULL_HANDLE) {
+            if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &foliageShadowPipelineLayout) != VK_SUCCESS) {
+                vkDestroyShaderModule(device, fragShaderModule, nullptr);
+                vkDestroyShaderModule(device, vertShaderModule, nullptr);
+                return false;
+            }
+        }
+
+        VkGraphicsPipelineCreateInfo pipelineInfo{};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterizer;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
+        pipelineInfo.pColorBlendState = nullptr;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.layout = foliageShadowPipelineLayout;
+        pipelineInfo.renderPass = shadowRenderPass;
+        pipelineInfo.subpass = 0;
+
+        if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &foliageShadowPipeline) != VK_SUCCESS) {
+            vkDestroyShaderModule(device, fragShaderModule, nullptr);
+            vkDestroyShaderModule(device, vertShaderModule, nullptr);
+            return false;
+        }
+
+        vkDestroyShaderModule(device, fragShaderModule, nullptr);
         vkDestroyShaderModule(device, vertShaderModule, nullptr);
         return true;
     }
@@ -2756,6 +3021,19 @@ namespace Crescendo {
         }
     }
 
+    void RenderingServer::createFoliageStorageBuffers() {
+        VkDeviceSize bufferSize = sizeof(FoliageGPUInstance) * MAX_FOLIAGE_INSTANCES;
+        foliageStorageBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+        foliageStorageBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
+
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+            foliageStorageBuffers[i] = VulkanBuffer(allocator, bufferSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT);
+            if (vmaMapMemory(allocator, foliageStorageBuffers[i].allocation, &foliageStorageBuffersMapped[i]) != VK_SUCCESS) {
+                throw std::runtime_error("Failed to map Foliage Storage Buffer memory!");
+            }
+        }
+    }
+
     // --------------------------------------------------------------------
     // TOOLING (OFFSCREEN)
     // --------------------------------------------------------------------
@@ -3003,9 +3281,10 @@ namespace Crescendo {
 
             data.pbrParams = glm::vec4(ent->roughness, ent->metallic, ent->emission, ent->normalStrength);
             data.volumeParams = glm::vec4(ent->transmission, ent->thickness, ent->attenuationDistance, ent->ior);
-            data.volumeColor  = glm::vec4(atmoTint, (float)ent->normalTextureID); 
+            glm::vec3 volTint = ent->HasComponent<Crescendo::Voxel::VoxelPlanetComponent>() ? atmoTint : ent->attenuationColor;
+            data.volumeColor  = glm::vec4(volTint, (float)ent->normalTextureID); 
             data.extendedPbr = glm::vec4(ent->subsurface, ent->specular, ent->specularTint, ent->anisotropic);
-            data.padding1 = glm::vec4(0.0f);
+            data.padding1 = glm::vec4(ent->alpha, 0.0f, 0.0f, 0.0f);
             data.padding2 = glm::vec4(0.0f);
 
             entityGPUIndices[ent] = entityCount;
@@ -3071,27 +3350,160 @@ namespace Crescendo {
         globalData.params = glm::vec4(
             scene->environment.ambientIntensity,
             static_cast<float>(scene->environment.skyType), 
-            SDL_GetTicks() / 1000.0f, 
-            viewportSize.x
+            static_cast<float>(swapChainExtent.width), 
+            static_cast<float>(swapChainExtent.height)
         );
 
         globalData.fogColor = scene->environment.fogColor;
         if (!scene->environment.enableFog) globalData.fogColor.w = 0.0f;
         globalData.fogParams   = scene->environment.fogParams;
-        globalData.skyColor    = glm::vec4(scene->environment.skyColor, 1.0f);
+        static const auto s_foliageStartClock = std::chrono::steady_clock::now();
+        float elapsedSec = std::chrono::duration<float>(std::chrono::steady_clock::now() - s_foliageStartClock).count();
+        globalData.skyColor    = glm::vec4(scene->environment.skyColor, elapsedSec);
         globalData.groundColor = glm::vec4(scene->environment.groundColor, 1.0f);
-        globalData.pointLightParams.x = 0; 
+        int clearCount = std::min((int)scene->environment.fogClearSources.size(), 64);
+        globalData.pointLightParams = glm::vec4(
+            (float)clearCount,
+            scene->environment.fogOfWarCenter.x,
+            scene->environment.fogOfWarCenter.y,
+            scene->environment.enableFog ? scene->environment.fogOfWarRadius : 0.0f
+        );
+        for (int i = 0; i < 64; ++i) {
+            if (i < clearCount) {
+                globalData.pointLights[i].positionAndRadius = glm::vec4(
+                    scene->environment.fogClearSources[i].position,
+                    scene->environment.fogClearSources[i].radius
+                );
+                globalData.pointLights[i].colorAndIntensity = glm::vec4(0.0f);
+            } else {
+                globalData.pointLights[i].positionAndRadius = glm::vec4(0.0f);
+                globalData.pointLights[i].colorAndIntensity = glm::vec4(0.0f);
+            }
+        }
 
         calculateCascades(scene, mainCamera, aspectRatio, globalData);
         memcpy(globalUniformBuffersMapped[currentFrame], &globalData, sizeof(GlobalUniforms));
 
+
+        // Extract normalized Gribb-Hartmann frustum planes from camera-relative vp (Vulkan reversed-Z [0,1])
+        struct FoliageBatchDrawPlan {
+            size_t batchIdx = 0;
+            uint32_t shadowFirst = 0;
+            uint32_t shadowCount = 0;
+            uint32_t lod0First = 0;
+            uint32_t lod0Count = 0;
+            uint32_t lod1First = 0;
+            uint32_t lod1Count = 0;
+        };
+        std::vector<FoliageBatchDrawPlan> foliageDrawPlans;
+        if (!scene->foliageBatches.empty() && !foliageStorageBuffersMapped.empty()) {
+            glm::vec4 row0(vp[0][0], vp[1][0], vp[2][0], vp[3][0]);
+            glm::vec4 row1(vp[0][1], vp[1][1], vp[2][1], vp[3][1]);
+            glm::vec4 row2(vp[0][2], vp[1][2], vp[2][2], vp[3][2]);
+            glm::vec4 row3(vp[0][3], vp[1][3], vp[2][3], vp[3][3]);
+            glm::vec4 frustumPlanes[6] = {
+                row3 + row0, // Left
+                row3 - row0, // Right
+                row3 + row1, // Bottom
+                row3 - row1, // Top
+                row2,        // Far (reversed-Z: z_clip >= 0)
+                row3 - row2  // Near (reversed-Z: w_clip - z_clip >= 0)
+            };
+            for (int p = 0; p < 6; ++p) {
+                float len = glm::length(glm::vec3(frustumPlanes[p]));
+                if (len > 1e-6f) frustumPlanes[p] /= len;
+            }
+
+            auto* foliageGPU = static_cast<FoliageGPUInstance*>(foliageStorageBuffersMapped[currentFrame]);
+            uint32_t gpuWriteCursor = 0;
+            foliageDrawPlans.reserve(scene->foliageBatches.size());
+
+            for (size_t bIdx = 0; bIdx < scene->foliageBatches.size(); ++bIdx) {
+                const auto& batch = scene->foliageBatches[bIdx];
+                if (batch.instances.empty() || batch.parts.empty()) continue;
+
+                bool hasLod1 = false;
+                bool anyShadow = false;
+                for (const auto& part : batch.parts) {
+                    if (part.lod1MeshID >= 0 && static_cast<size_t>(part.lod1MeshID) < meshes.size()) hasLod1 = true;
+                    if (part.castShadows) anyShadow = true;
+                }
+
+                m_foliageScratchShadow.clear();
+                m_foliageScratchLOD0.clear();
+                m_foliageScratchLOD1.clear();
+
+                float maxDrawSq = batch.maxDrawDist * batch.maxDrawDist;
+                float lodSwitchSq = batch.lodSwitchDist * batch.lodSwitchDist;
+                float shadowMaxDist = config.shadowDistance + batch.boundingRadius;
+                float shadowMaxSq = shadowMaxDist * shadowMaxDist;
+
+                for (const auto& inst : batch.instances) {
+                    glm::vec3 relPos = glm::vec3(glm::dvec3(inst.position) - cameraWorldPos);
+                    float distSq = glm::dot(relPos, relPos);
+                    float maxScale = std::max(inst.scale.x, std::max(inst.scale.y, inst.scale.z));
+                    float radius = batch.boundingRadius * maxScale;
+
+                    FoliageGPUInstance gpuInst{};
+                    gpuInst.posAndYaw = glm::vec4(relPos, inst.yawRadians);
+                    gpuInst.scaleAndPhase = glm::vec4(inst.scale, inst.windPhase);
+                    gpuInst.tintAndParams = inst.tint;
+
+                    if (anyShadow && distSq <= shadowMaxSq) {
+                        m_foliageScratchShadow.push_back(gpuInst);
+                    }
+
+                    if (distSq <= maxDrawSq) {
+                        bool inFrustum = true;
+                        for (int p = 0; p < 6; ++p) {
+                            if (glm::dot(glm::vec3(frustumPlanes[p]), relPos) + frustumPlanes[p].w < -radius) {
+                                inFrustum = false;
+                                break;
+                            }
+                        }
+                        if (inFrustum) {
+                            if (hasLod1 && distSq >= lodSwitchSq) {
+                                m_foliageScratchLOD1.push_back(gpuInst);
+                            } else {
+                                m_foliageScratchLOD0.push_back(gpuInst);
+                            }
+                        }
+                    }
+                }
+
+                FoliageBatchDrawPlan plan{};
+                plan.batchIdx = bIdx;
+
+                auto appendSpan = [&](const std::vector<FoliageGPUInstance>& src, uint32_t& outFirst, uint32_t& outCount) {
+                    if (src.empty() || gpuWriteCursor >= MAX_FOLIAGE_INSTANCES) {
+                        outFirst = 0;
+                        outCount = 0;
+                        return;
+                    }
+                    uint32_t avail = static_cast<uint32_t>(MAX_FOLIAGE_INSTANCES) - gpuWriteCursor;
+                    uint32_t copyCount = std::min(avail, static_cast<uint32_t>(src.size()));
+                    memcpy(foliageGPU + gpuWriteCursor, src.data(), copyCount * sizeof(FoliageGPUInstance));
+                    outFirst = gpuWriteCursor;
+                    outCount = copyCount;
+                    gpuWriteCursor += copyCount;
+                };
+
+                appendSpan(m_foliageScratchShadow, plan.shadowFirst, plan.shadowCount);
+                appendSpan(m_foliageScratchLOD0, plan.lod0First, plan.lod0Count);
+                appendSpan(m_foliageScratchLOD1, plan.lod1First, plan.lod1Count);
+
+                if (plan.shadowCount > 0 || plan.lod0Count > 0 || plan.lod1Count > 0) {
+                    foliageDrawPlans.push_back(plan);
+                }
+            }
+        }
         std::vector<CBaseEntity*> opaqueList;
         std::vector<std::pair<float, CBaseEntity*>> transPairs;
         glm::vec3 camPos = glm::vec3(mainCamera.Position);
 
         for (auto* ent : scene->entities) {
-            if (!ent || ent->modelIndex >= meshes.size() || ent->className == "prop_water") continue;
-            if (ent->transmission > 0.0f) {
+            if (!ent || ent->modelIndex >= meshes.size() || ent->className == "prop_water" || ent->scale.x <= 0.001f || ent->origin.z <= -900.0) continue;
+            if (ent->transmission > 0.0f || ent->alpha < 0.999f) {
                 glm::vec3 entPosFloat = glm::vec3(ent->origin);
                 float distSq = glm::dot(entPosFloat - camPos, entPosFloat - camPos);
                 transPairs.push_back({distSq, ent});
@@ -3145,6 +3557,42 @@ namespace Crescendo {
                 vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, 1, 0, 0, 0);
             }
 
+            // 2. Draw instanced foliage into this shadow cascade (with wind + alpha cutout)
+            if (!foliageDrawPlans.empty() && foliageShadowPipeline != VK_NULL_HANDLE) {
+                vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, foliageShadowPipeline);
+                vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, foliageShadowPipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
+                for (const auto& plan : foliageDrawPlans) {
+                    if (plan.shadowCount == 0) continue;
+                    const auto& batch = scene->foliageBatches[plan.batchIdx];
+                    for (const auto& part : batch.parts) {
+                        if (!part.castShadows) continue;
+                        int meshID = (i >= 2 && part.lod1MeshID >= 0) ? part.lod1MeshID : part.lod0MeshID;
+                        if (meshID < 0 || static_cast<size_t>(meshID) >= meshes.size()) continue;
+                        MeshResource& mesh = meshes[meshID];
+                        if (mesh.vertexBuffer.handle == VK_NULL_HANDLE) continue;
+
+                        VkBuffer vBuffers[] = { mesh.vertexBuffer.handle };
+                        VkDeviceSize offsets[] = { 0 };
+                        vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
+                        vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
+
+                        FoliageShadowPushConsts fPush{};
+                        fPush.lightSpaceMatrix = globalData.lightSpaceMatrices[i];
+                        fPush.firstInstance = plan.shadowFirst;
+                        fPush.texID = part.textureID;
+                        fPush.alphaCutoff = part.alphaCutoff;
+                        fPush.windStrength = batch.windStrength;
+                        fPush.windFrequency = batch.windFrequency;
+                        vkCmdPushConstants(commandBuffers[currentFrame], foliageShadowPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliageShadowPushConsts), &fPush);
+                        vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, plan.shadowCount, 0, 0, 0);
+                    }
+                }
+                // Restore standard shadow pipeline for next cascade iteration
+                if (i + 1 < SHADOW_CASCADES) {
+                    vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipeline);
+                    vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, shadowPipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
+                }
+            }
 
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
         }
@@ -3195,7 +3643,7 @@ namespace Crescendo {
                 skyPush.invViewProj = glm::inverse(proj * viewNoTrans);
                 skyPush.sunDirection = glm::vec4(scene->environment.sunDirection, scene->environment.sunIntensity);
                 skyPush.zenithColor = glm::vec4(glm::vec3(0.0f), static_cast<float>(scene->environment.skyType));
-                skyPush.horizonColor = glm::vec4(0.0f, 0.0f, 0.005f, 1.0f);
+                skyPush.horizonColor = scene->environment.enableFog ? scene->environment.fogColor : glm::vec4(0.0f, 0.0f, 0.005f, 0.0f);
 
                 vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SkyboxPush), &skyPush);
                 vkCmdDraw(commandBuffers[currentFrame], 3, 1, 0, 0);
@@ -3226,6 +3674,49 @@ namespace Crescendo {
 
             DrawList(opaqueList);
 
+            // -----------------------------------------------------------------
+            // 1B. DRAW INSTANCED FOLIAGE (LOD0 + LOD1, Double-Sided & Culled)
+            // -----------------------------------------------------------------
+            if (!foliageDrawPlans.empty() && foliagePipeline != VK_NULL_HANDLE) {
+                auto drawFoliageTier = [&](const FoliageBatch& batch, const FoliageMeshPart& part, int meshID, uint32_t firstInst, uint32_t count) {
+                    if (count == 0 || meshID < 0 || static_cast<size_t>(meshID) >= meshes.size()) return;
+                    MeshResource& mesh = meshes[meshID];
+                    if (mesh.vertexBuffer.handle == VK_NULL_HANDLE) return;
+
+                    VkPipeline targetPipe = (part.doubleSided || foliageCulledPipeline == VK_NULL_HANDLE) ? foliagePipeline : foliageCulledPipeline;
+                    vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, targetPipe);
+                    vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
+
+                    VkBuffer vBuffers[] = { mesh.vertexBuffer.handle };
+                    VkDeviceSize offsets[] = { 0 };
+                    vkCmdBindVertexBuffers(commandBuffers[currentFrame], 0, 1, vBuffers, offsets);
+                    vkCmdBindIndexBuffer(commandBuffers[currentFrame], mesh.indexBuffer.handle, 0, VK_INDEX_TYPE_UINT32);
+
+                    FoliagePushConsts push{};
+                    push.firstInstance = firstInst;
+                    push.texID = part.textureID;
+                    push.normalTexID = part.normalTextureID;
+                    push.roughness = part.roughness;
+                    push.subsurface = part.subsurface;
+                    push.alphaCutoff = part.alphaCutoff;
+                    push.windStrength = batch.windStrength;
+                    push.windFrequency = batch.windFrequency;
+                    vkCmdPushConstants(commandBuffers[currentFrame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(FoliagePushConsts), &push);
+                    vkCmdDrawIndexed(commandBuffers[currentFrame], mesh.indexCount, count, 0, 0, 0);
+                };
+
+                for (const auto& plan : foliageDrawPlans) {
+                    const auto& batch = scene->foliageBatches[plan.batchIdx];
+                    for (const auto& part : batch.parts) {
+                        drawFoliageTier(batch, part, part.lod0MeshID, plan.lod0First, plan.lod0Count);
+                        if (plan.lod1Count > 0) {
+                            int lod1ID = (part.lod1MeshID >= 0) ? part.lod1MeshID : part.lod0MeshID;
+                            drawFoliageTier(batch, part, lod1ID, plan.lod1First, plan.lod1Count);
+                        }
+                    }
+                }
+            }
+
             // Close the opaque pass so the depth buffer transitions to READ_ONLY
             vkCmdEndRenderPass(commandBuffers[currentFrame]);
 
@@ -3253,16 +3744,20 @@ namespace Crescendo {
                 barriers[0].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 barriers[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
                 barriers[0].image = viewportImage.handle;
+                barriers[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barriers[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 barriers[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
                 barriers[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
                 barriers[0].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 
                 barriers[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-                barriers[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                barriers[1].oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
                 barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
                 barriers[1].image = refractionImage.handle;
+                barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 barriers[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, refractionMipLevels, 0, 1};
-                barriers[1].srcAccessMask = 0;
+                barriers[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
                 barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 
                 vkCmdPipelineBarrier(commandBuffers[currentFrame], VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, barriers);
@@ -3285,6 +3780,8 @@ namespace Crescendo {
                 int32_t mipHeight = swapChainExtent.height;
                 VkImageMemoryBarrier mipBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
                 mipBarrier.image = refractionImage.handle;
+                mipBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                mipBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 mipBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
                 mipBarrier.subresourceRange.layerCount = 1;
                 mipBarrier.subresourceRange.levelCount = 1;
@@ -3322,9 +3819,30 @@ namespace Crescendo {
                 vkCmdPipelineBarrier(commandBuffers[currentFrame], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &mipBarrier);
             };
 
+            std::vector<CBaseEntity*> pureAlphaList;
             for (auto* transEnt : transparentList) {
-                UpdateRefractionTexture();
+                if (transEnt->transmission > 0.001f) {
+                    UpdateRefractionTexture();
 
+                    VkRenderPassBeginInfo transPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+                    transPassInfo.renderPass = transparentRenderPass; 
+                    transPassInfo.framebuffer = viewportFramebuffer; 
+                    transPassInfo.renderArea.extent = swapChainExtent;
+                    vkCmdBeginRenderPass(commandBuffers[currentFrame], &transPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+                    vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, transparentPipeline);
+                    vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
+
+                    std::vector<CBaseEntity*> singleList = { transEnt };
+                    DrawList(singleList);
+
+                    vkCmdEndRenderPass(commandBuffers[currentFrame]);
+                } else {
+                    pureAlphaList.push_back(transEnt);
+                }
+            }
+
+            if (!pureAlphaList.empty()) {
                 VkRenderPassBeginInfo transPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
                 transPassInfo.renderPass = transparentRenderPass; 
                 transPassInfo.framebuffer = viewportFramebuffer; 
@@ -3334,12 +3852,10 @@ namespace Crescendo {
                 vkCmdBindPipeline(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, transparentPipeline);
                 vkCmdBindDescriptorSets(commandBuffers[currentFrame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
 
-                std::vector<CBaseEntity*> singleList = { transEnt };
-                DrawList(singleList);
+                DrawList(pureAlphaList);
 
                 vkCmdEndRenderPass(commandBuffers[currentFrame]);
             }
-
             // 4. WATER OBJECTS
             bool hasWater = false;
             std::vector<CBaseEntity*> waterList;
@@ -4377,6 +4893,14 @@ namespace Crescendo {
         refractionImage.device = device;
         if (vmaCreateImage(allocator, &refInfo, &allocInfo, &refractionImage.handle, &refractionImage.allocation, nullptr) != VK_SUCCESS) return false;
 
+        VkCommandBuffer refractionInitCmd = beginSingleTimeCommands();
+        transitionImageLayout(refractionInitCmd, refractionImage.handle, refInfo.format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, refractionMipLevels, 1);
+        VkClearColorValue clearColor{};
+        VkImageSubresourceRange refractionRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, refractionMipLevels, 0, 1};
+        vkCmdClearColorImage(refractionInitCmd, refractionImage.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearColor, 1, &refractionRange);
+        transitionImageLayout(refractionInitCmd, refractionImage.handle, refInfo.format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, refractionMipLevels, 1);
+        endSingleTimeCommands(refractionInitCmd);
+
         VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         viewInfo.image = refractionImage.handle;
         viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -4635,7 +5159,8 @@ namespace Crescendo {
             depthWrite.descriptorCount = 1;
             depthWrite.pImageInfo = &depthInfo;
 
-            vkUpdateDescriptorSets(device, 1, &depthWrite, 0, nullptr);
+            VkWriteDescriptorSet recreatedImageWrites[] = {refWrite, depthWrite};
+            vkUpdateDescriptorSets(device, 2, recreatedImageWrites, 0, nullptr);
         }
         
     } 
@@ -4650,6 +5175,7 @@ namespace Crescendo {
 
         // 2. Destroy Images
         depthImage.destroy();
+        if (refractionImageView != VK_NULL_HANDLE) { vkDestroyImageView(device, refractionImageView, nullptr); refractionImageView = VK_NULL_HANDLE; }
         refractionImage.destroy();
         viewportImage.destroy();
         viewportNormalImage.destroy();
@@ -4665,7 +5191,6 @@ namespace Crescendo {
         ssrImage.destroy();
         
         // 3. Destroy Manual Views & Samplers
-        if (refractionImageView != VK_NULL_HANDLE) { vkDestroyImageView(device, refractionImageView, nullptr); refractionImageView = VK_NULL_HANDLE; }
         if (refractionSampler != VK_NULL_HANDLE) { vkDestroySampler(device, refractionSampler, nullptr); refractionSampler = VK_NULL_HANDLE; }
         if (viewportSampler != VK_NULL_HANDLE) { vkDestroySampler(device, viewportSampler, nullptr); viewportSampler = VK_NULL_HANDLE; }
 
@@ -4698,6 +5223,8 @@ namespace Crescendo {
         if (graphicsPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, graphicsPipeline,nullptr); graphicsPipeline = VK_NULL_HANDLE; }
         if (skyPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, skyPipeline, nullptr); skyPipeline = VK_NULL_HANDLE; }
         if (opaquePipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, opaquePipeline, nullptr);opaquePipeline = VK_NULL_HANDLE; }
+        if (foliagePipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, foliagePipeline, nullptr); foliagePipeline = VK_NULL_HANDLE; }
+        if (foliageCulledPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, foliageCulledPipeline, nullptr); foliageCulledPipeline = VK_NULL_HANDLE; }
         if (transparentPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, transparentPipeline, nullptr); transparentPipeline = VK_NULL_HANDLE; }
         if (waterPipeline != VK_NULL_HANDLE) { vkDestroyPipeline(device, waterPipeline, nullptr); waterPipeline = VK_NULL_HANDLE; }
 
@@ -4705,6 +5232,7 @@ namespace Crescendo {
 
         createGraphicsPipeline();
         createOpaquePipeline();
+        createFoliagePipelines();
         createTransparentPipeline();
         createWaterPipeline();
 
@@ -4731,6 +5259,9 @@ namespace Crescendo {
             if (graphicsPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, graphicsPipeline, nullptr);
             if (transparentPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, transparentPipeline, nullptr);
             if (opaquePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, opaquePipeline, nullptr);
+            if (foliagePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, foliagePipeline, nullptr);
+            if (foliageCulledPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, foliageCulledPipeline, nullptr);
+            if (foliageShadowPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, foliageShadowPipeline, nullptr);
             if (waterPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, waterPipeline, nullptr);
             if (bloomPipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, bloomPipeline, nullptr);
             if (compositePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, compositePipeline, nullptr);
@@ -4741,6 +5272,7 @@ namespace Crescendo {
             if (pipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
             if (compositePipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, compositePipelineLayout, nullptr);
             if (shadowPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, shadowPipelineLayout, nullptr);
+            if (foliageShadowPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, foliageShadowPipelineLayout, nullptr);
             if (ssrPipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device, ssrPipelineLayout, nullptr);
             if (computePipelineLayout != VK_NULL_HANDLE) { vkDestroyPipelineLayout(device, computePipelineLayout, nullptr); computePipelineLayout = VK_NULL_HANDLE; }
             if (symbolTextureLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device, symbolTextureLayout, nullptr);
@@ -4799,6 +5331,8 @@ namespace Crescendo {
             
             for (auto& buf : entityStorageBuffers) buf.destroy();
             entityStorageBuffers.clear();
+            for (auto& buf : foliageStorageBuffers) buf.destroy();
+            foliageStorageBuffers.clear();
 
             for (auto& buf : globalUniformBuffers) buf.destroy();
             globalUniformBuffers.clear();

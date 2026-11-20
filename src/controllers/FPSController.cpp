@@ -85,7 +85,7 @@ namespace Crescendo {
 
             footstepTimer += deltaTime;
             if (footstepTimer >= stepInterval) {
-                if (audioServer) audioServer->PlayOneShot("assets/audio/step.mp3", 0.6f);
+                if (audioServer) audioServer->PlayOneShot("assets/audio/footstep.wav", 0.6f);
                 footstepTimer = 0.0f;
             }
         } else {

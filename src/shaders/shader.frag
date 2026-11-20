@@ -58,29 +58,42 @@ layout(set = 0, binding = 3) uniform GlobalUniforms {
     
     // --- POINT LIGHTS ---
     vec4 pointLightParams; // x = count (No stray 'int' variables here!)
-    PointLight pointLights[16];
+    PointLight pointLights[64];
 } global;
 
 // Exponential Height Fog MATH
-vec3 ApplyFog(vec3 rgb, float dist, float worldZ) {
+vec3 ApplyFog(vec3 rgb, float dist, vec3 fragPos) {
     float fogDensity = global.fogColor.a;
     if (fogDensity <= 0.0001) return rgb; // Safely early-out if fog is disabled
 
     float fogFalloff = max(global.fogParams.x, 0.001);
     float maxOpacity = clamp(global.fogParams.y, 0.0, 1.0);
     float fogStart   = max(global.fogParams.z, 0.0);
-    float fogHeight  = global.fogParams.w;
+    float fogFloor   = global.fogParams.w;
 
-    float d = max(dist - fogStart, 0.0);
-    
-    // As worldZ goes ABOVE the fog plane, density drops off.
-    float heightFalloff = max(worldZ - fogHeight, 0.0);
-    float effectiveDensity = fogDensity * exp(-fogFalloff * heightFalloff);
-    
-    float fogFactor = exp(-d * effectiveDensity);
-    fogFactor = clamp(fogFactor, 1.0 - maxOpacity, 1.0); // Limit maximum thickness
-    
-    return mix(global.fogColor.rgb, rgb, fogFactor);
+    vec3 worldPos = fragPos + global.cameraPos.xyz;
+    vec3 ray = fragPos;
+    float rayLen = max(dist, 0.001);
+    vec3 v = ray / rayLen;
+
+    float cz = max(global.cameraPos.z - fogFloor, 0.0);
+    float vz = v.z;
+
+    float tau = 0.0;
+    if (abs(vz) > 0.001) {
+        float t0 = min(fogStart, rayLen);
+        float t1 = rayLen;
+        float intStart = exp(-fogFalloff * (cz + t0 * vz));
+        float intEnd   = exp(-fogFalloff * (cz + t1 * vz));
+        tau = (fogDensity / (fogFalloff * vz)) * (intStart - intEnd);
+        tau = max(tau, 0.0);
+    } else {
+        float d = max(dist - fogStart, 0.0);
+        tau = fogDensity * exp(-fogFalloff * cz) * d;
+    }
+
+    float transmittance = clamp(exp(-tau), 1.0 - maxOpacity, 1.0);
+    return mix(global.fogColor.rgb, rgb, transmittance);
 }
 
 vec2 EquirectangularUV(vec3 v) {
@@ -359,6 +372,7 @@ void main() {
         float radius = global.pointLights[i].positionAndRadius.w;
         vec3 lightColor = global.pointLights[i].colorAndIntensity.xyz;
         float intensity = global.pointLights[i].colorAndIntensity.w;
+        if (intensity <= 0.0001) continue;
 
         vec3 L_pt = lightPos - fragPos;
         float dist_pt = length(L_pt);
@@ -443,9 +457,9 @@ void main() {
 
     vec3 finalOutput = finalColor + finalReflection;
 
-    // Fog Integration
-    float dist = length(global.cameraPos.xyz - fragPos);
-    finalOutput = ApplyFog(finalOutput, dist, fragPos.z);
+    // Fog Integration: fragPos is already camera-relative vector
+    float dist = length(fragPos);
+    finalOutput = ApplyFog(finalOutput, dist, fragPos);
 
     outColor = vec4(finalOutput, albedoSample.a);
 }

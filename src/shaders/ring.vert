@@ -53,7 +53,7 @@ layout(set = 0, binding = 3) uniform GlobalUniforms {
     vec4 skyColor;
     vec4 groundColor;
     vec4 pointLightParams;
-    PointLight pointLights[16];
+    PointLight pointLights[64];
 } global;
 
 layout(push_constant) uniform Constants {

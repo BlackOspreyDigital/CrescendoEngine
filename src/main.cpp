@@ -28,22 +28,31 @@ int main(int argc, char* argv[]) {
     // Fallback if no project argument is provided
     if (projectPath.empty()) {
         std::cout << "[Boot] Warning: No -project argument provided.\n";
-        std::cout << "[Boot] Defaulting to current working directory (./)\n";
-        projectPath = "./";
+        if (fs::exists("./tags") && fs::exists("./data")) {
+            projectPath = "./";
+        } else if (fs::exists("MyProject/tags") && fs::exists("MyProject/data")) {
+            projectPath = "MyProject";
+        } else if (fs::exists("Meridian_Crescendo_Edition/tags") && fs::exists("Meridian_Crescendo_Edition/data")) {
+            projectPath = "Meridian_Crescendo_Edition";
+        } else {
+            projectPath = "MyProject";
+        }
+        std::cout << "[Boot] Defaulting project path to: " << projectPath << "\n";
     }
 
     // Clean up trailing slashes
-    if (projectPath.back() == '/' || projectPath.back() == '\\') {
+    if (!projectPath.empty() && (projectPath.back() == '/' || projectPath.back() == '\\')) {
         projectPath.pop_back();
     }
 
     std::cout << "[Boot] Target Project Directory: " << projectPath << "\n";
 
-    // Enforce the H3EK Directory Structure
-    if (!fs::exists(projectPath + "/tags") || !fs::exists(projectPath + "/data")) {
-        std::cerr << "[Boot] FATAL ERROR: Invalid project structure.\n";
-        std::cerr << "[Boot] A Crescendo project must contain 'tags/' and 'data/' directories.\n";
-        return -1;
+    // Enforce the H3EK Directory Structure (auto-create if missing to ensure successful launch)
+    if (!fs::exists(projectPath + "/tags")) {
+        fs::create_directories(projectPath + "/tags");
+    }
+    if (!fs::exists(projectPath + "/data")) {
+        fs::create_directories(projectPath + "/data");
     }
 
     std::cout << "[Boot] Project structure verified. Initializing Core...\n";

@@ -3,7 +3,7 @@
 #include "modules/gltf/AssetLoader.hpp"
 #include "controllers/RTSController.hpp"
 #include "core/Engine.hpp"
-
+#include "servers/audio/AudioServer.hpp"
 #include "imgui.h"
 #include "scene/BaseEntity.hpp"
 #include "scene/components/PointLightComponent.hpp"
@@ -146,6 +146,15 @@ namespace Crescendo {
     EditorUI::EditorUI() : rendererRef(nullptr), selectedObjectIndex(-1) {
         mCurrentGizmoOperation = ImGuizmo::TRANSLATE;
         mCurrentGizmoMode = ImGuizmo::WORLD;
+        activeSynthParams = SoundSynth::GetPresetCannon();
+        std::snprintf(synthTargetFilepath, sizeof(synthTargetFilepath), "%s", activeSynthParams.targetFilepath.c_str());
+        sequencerNotes = {
+            {60, 0, 1}, {60, 1, 1}, {67, 2, 1}, {67, 3, 1},
+            {69, 4, 1}, {69, 5, 1}, {67, 6, 1},
+            {65, 8, 1}, {65, 9, 1}, {64, 10, 1}, {64, 11, 1},
+            {62, 12, 1}, {62, 13, 1}, {60, 14, 1}
+        };
+        synthWaveformDirty = true;
     }
 
     EditorUI::~EditorUI() {}
@@ -513,6 +522,7 @@ namespace Crescendo {
             if (ImGui::BeginMenu("Window")) {
                 ImGui::MenuItem("Engine Settings", NULL, &showSettingsWindow);
                 ImGui::MenuItem("Console", NULL, &showConsole);
+                ImGui::MenuItem("Audio Synthesizer", NULL, &showAudioSynthWindow);
                 ImGui::EndMenu();
             }
             if (ImGui::BeginMenu("Help")) {
@@ -763,6 +773,9 @@ namespace Crescendo {
             }
             ImGui::EndDragDropTarget();
         }
+        if ((engineState == EngineState::Playing || engineState == EngineState::Paused) && Crescendo::activeRTSControllerGlobal) {
+            Crescendo::activeRTSControllerGlobal->DrawViewportOverlays(viewportPos, viewportSize, ImGui::GetWindowDrawList());
+        }
 
         ImGui::End(); // Closes "Viewport"
         ImGui::PopStyleVar();
@@ -778,62 +791,69 @@ namespace Crescendo {
         ImGui::PopStyleColor();
 
         if (scene) {
+            struct EntityGroup {
+                std::string name;
+                std::vector<size_t> indices;
+            };
+
+            std::vector<EntityGroup> groups;
+            std::unordered_map<std::string, size_t> groupMap;
+
             for (size_t i = 0; i < scene->entities.size(); i++) {
                 CBaseEntity* ent = scene->entities[i];
                 if (!ent) continue;
+                std::string key = ent->targetName.empty() ? ("Entity (" + ent->className + ")") : ent->targetName;
+                if (groupMap.find(key) == groupMap.end()) {
+                    groupMap[key] = groups.size();
+                    groups.push_back({ key, { i } });
+                } else {
+                    groups[groupMap[key]].indices.push_back(i);
+                }
+            }
+
+            auto DrawEntityItem = [&](size_t i, const std::string& displayLabel) {
+                CBaseEntity* ent = scene->entities[i];
+                if (!ent) return;
                 ImGui::PushID((int)i);
-                std::string label = ent->targetName.empty() ? "Entity " + std::to_string(i) : ent->targetName;
-                if (ImGui::Selectable(label.c_str(), selectedObjectIndex == (int)i)) {
+                if (ImGui::Selectable(displayLabel.c_str(), selectedObjectIndex == (int)i)) {
                     selectedObjectIndex = (int)i;
                 }
 
                 // --- RIGHT-CLICK CONTEXT MENU ---
                 if (ImGui::BeginPopupContextItem()) {
-                    selectedObjectIndex = (int)i; // Auto-select the item you right-clicked
-                    
-                    ImGui::TextDisabled("%s", label.c_str());
+                    selectedObjectIndex = (int)i;
+                    ImGui::TextDisabled("%s", displayLabel.c_str());
                     ImGui::Separator();
 
                     if (ImGui::MenuItem("Duplicate", "Ctrl+D")) {
                         CBaseEntity* orig = scene->entities[i];
                         CBaseEntity* clone = scene->CreateEntity(orig->className);
-                        
                         clone->targetName = orig->targetName + " (Copy)";
                         clone->modelIndex = orig->modelIndex;
                         clone->textureID  = orig->textureID;
                         clone->assetPath  = orig->assetPath;
-                        
-                        // Copy Transform
                         clone->origin = orig->origin;
                         clone->angles = orig->angles;
                         clone->scale  = orig->scale;
-                        
-                        // Copy PBR Material Data
                         clone->albedoColor = orig->albedoColor;
                         clone->emission    = orig->emission;
                         clone->roughness   = orig->roughness;
                         clone->metallic    = orig->metallic;
+                        clone->alpha       = orig->alpha;
                         clone->transmission = orig->transmission;
                         clone->ior         = orig->ior;
                         clone->attenuationColor = orig->attenuationColor;
                         clone->attenuationDistance = orig->attenuationDistance;
                         clone->normalStrength = orig->normalStrength;
-
-                        // Re-attach Bridge Components
                         if (orig->HasComponent<TransformComponent>()) clone->AddComponent<TransformComponent>();
                         if (orig->HasComponent<MeshRendererComponent>()) clone->AddComponent<MeshRendererComponent>();
                         if (orig->HasComponent<PointLightComponent>()) clone->AddComponent<PointLightComponent>();
-                        
-                        // Select the newly duplicated item
                         selectedObjectIndex = clone->index; 
                     }
                     
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f)); // Red text
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.4f, 0.4f, 1.0f));
                     if (ImGui::MenuItem("Delete", "Del")) {
-                        
-                        scene->DeleteEntity(i); // Call our new safe delete!
-                        
-                        // Reset selection so the Inspector doesn't try to draw a deleted object
+                        scene->DeleteEntity(i);
                         selectedObjectIndex = -1; 
                     }
                     ImGui::PopStyleColor();
@@ -842,6 +862,22 @@ namespace Crescendo {
                 }
 
                 ImGui::PopID();
+            };
+
+            for (const auto& grp : groups) {
+                if (grp.indices.size() == 1) {
+                    DrawEntityItem(grp.indices[0], grp.name);
+                } else {
+                    std::string header = grp.name + " (" + std::to_string(grp.indices.size()) + ")";
+                    if (ImGui::TreeNode(header.c_str())) {
+                        for (size_t idx = 0; idx < grp.indices.size(); ++idx) {
+                            size_t entIdx = grp.indices[idx];
+                            std::string subLabel = grp.name + " [" + std::to_string(idx) + "]";
+                            DrawEntityItem(entIdx, subLabel);
+                        }
+                        ImGui::TreePop();
+                    }
+                }
             }
         }
         ImGui::End();
@@ -928,6 +964,64 @@ namespace Crescendo {
                         ImGui::TextDisabled("Note: Network ID must match on both clients.");
                     }
                 }
+                // --- TRANSFORM (Fallback if no TransformComponent attached) ---
+                if (!ent->HasComponent<TransformComponent>()) {
+                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
+                    if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed)) {
+                        glm::vec3 tempOrigin = glm::vec3(ent->origin);
+                        if (ImGui::DragFloat3("Position", glm::value_ptr(tempOrigin), 0.1f)) {
+                            ent->origin = glm::dvec3(tempOrigin);
+                        }
+                        ImGui::DragFloat3("Rotation", glm::value_ptr(ent->angles), 1.0f);
+                        ImGui::DragFloat3("Scale",    glm::value_ptr(ent->scale), 0.1f);
+                        ImGui::Spacing();
+                    }
+                    ImGui::PopStyleColor();
+                }
+
+                // --- MATERIAL & BSDF PROPERTIES (Fallback if no MeshRendererComponent attached) ---
+                if (!ent->HasComponent<MeshRendererComponent>()) {
+                    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.2f, 0.2f, 0.22f, 1.0f));
+                    if (ImGui::CollapsingHeader("Material (BSDF & PBR)", ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_Framed)) {
+                        ImGui::ColorEdit3("Albedo", glm::value_ptr(ent->albedoColor));
+                        ImGui::SliderFloat("Roughness", &ent->roughness, 0.0f, 1.0f);
+                        ImGui::SliderFloat("Metallic", &ent->metallic, 0.0f, 1.0f);
+                        ImGui::SliderFloat("Emission", &ent->emission, 0.0f, 20.0f);
+                        ImGui::SliderFloat("Clearcoat", &ent->clearcoat, 0.0f, 1.0f);
+                        ImGui::SliderFloat("Coat Roughness", &ent->clearcoatRoughness, 0.0f, 1.0f);
+                        ImGui::SliderFloat("Sheen", &ent->sheen, 0.0f, 1.0f);
+                        ImGui::SliderFloat("Specular Weight", &ent->specularWeight, 0.0f, 1.0f);
+                        ImGui::SliderFloat("Subsurface", &ent->subsurface, 0.0f, 1.0f);
+                        ImGui::SliderFloat("Specular", &ent->specular, 0.0f, 1.0f);
+                        ImGui::SliderFloat("Specular Tint", &ent->specularTint, 0.0f, 1.0f);
+                        ImGui::SliderFloat("Anisotropic", &ent->anisotropic, 0.0f, 1.0f);
+
+                        ImGui::Spacing();
+                        ImGui::Separator();
+                        ImGui::Spacing();
+
+                        ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Transparency, Refraction & Volume");
+                        ImGui::SliderFloat("Alpha (Opacity)", &ent->alpha, 0.0f, 1.0f);
+                        ImGui::SliderFloat("Transmission (Glass/Energy)", &ent->transmission, 0.0f, 1.0f);
+
+                        if (ent->transmission > 0.0f) {
+                            ImGui::Indent();
+                            ImGui::ColorEdit3("Volume Tint", glm::value_ptr(ent->attenuationColor));
+                            ImGui::DragFloat("Density (Dist)", &ent->attenuationDistance, 0.1f, 0.001f, 100.0f);
+                            ImGui::DragFloat("Thickness", &ent->thickness, 0.01f, 0.0f, 10.0f);
+                            ImGui::SliderFloat("Refraction (IOR)", &ent->ior, 1.0f, 2.5f);
+                            ImGui::Unindent();
+                        }
+
+                        ImGui::Separator();
+                        ImGui::Spacing();
+
+                        ImGui::SliderFloat("Normal Strength", &ent->normalStrength, 0.0f, 5.0f);
+                        ImGui::Spacing();
+                    }
+                    ImGui::PopStyleColor();
+                }
+
 
                 // --- 3. DYNAMIC COMPONENTS ---
                 for (auto& comp : ent->components) {
@@ -1350,6 +1444,9 @@ namespace Crescendo {
 
             ImGui::End(); // Close Developer Console
         } // Closes if (showConsole)
+        if (showAudioSynthWindow) {
+            DrawAudioSynthesizerWindow();
+        }
 
         ImGui::Render(); 
     } // Closes EditorUI::Prepare()
@@ -1363,5 +1460,754 @@ namespace Crescendo {
 
     void EditorUI::HandleInput(SDL_Event& event) {
         ImGui_ImplSDL2_ProcessEvent(&event);
+    }
+
+    void EditorUI::DrawAudioSynthesizerWindow() {
+        ImGuiViewport* audioViewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(
+            ImVec2(audioViewport->Pos.x + audioViewport->Size.x * 0.5f,
+                   audioViewport->Pos.y + audioViewport->Size.y * 0.5f),
+            ImGuiCond_Appearing,
+            ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(880, 680), ImGuiCond_FirstUseEver);
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18.0f, 16.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 7.0f));
+
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.015f, 0.015f, 0.02f, 0.97f));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.02f, 0.02f, 0.025f, 0.96f));
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.035f, 0.035f, 0.045f, 0.98f));
+        ImGui::PushStyleColor(ImGuiCol_TitleBg, ImVec4(0.01f, 0.01f, 0.015f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.06f, 0.06f, 0.07f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.28f, 0.28f, 0.32f, 0.75f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.08f, 0.08f, 0.095f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.15f, 0.15f, 0.17f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.20f, 0.20f, 0.23f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.08f, 0.08f, 0.095f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.18f, 0.18f, 0.21f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.25f, 0.25f, 0.29f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.08f, 0.08f, 0.095f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.18f, 0.18f, 0.21f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.25f, 0.25f, 0.29f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0.04f, 0.04f, 0.05f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_TabHovered, ImVec4(0.18f, 0.18f, 0.21f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_TabActive, ImVec4(0.13f, 0.13f, 0.15f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_PlotLines, ImVec4(0.72f, 0.72f, 0.78f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_PlotLinesHovered, ImVec4(0.95f, 0.95f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4(0.82f, 0.82f, 0.88f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_SliderGrab, ImVec4(0.68f, 0.68f, 0.74f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, ImVec4(0.95f, 0.95f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_TextSelectedBg, ImVec4(0.65f, 0.65f, 0.72f, 0.35f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.88f, 0.88f, 0.91f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_TextDisabled, ImVec4(0.52f, 0.52f, 0.56f, 1.0f));
+
+        if (!ImGui::Begin("Audio Synthesizer & Sound Lab", &showAudioSynthWindow)) {
+            ImGui::End();
+            ImGui::PopStyleColor(26);
+            ImGui::PopStyleVar(4);
+            return;
+        }
+
+        const ImVec4 audioAccent(0.82f, 0.82f, 0.88f, 1.0f);
+        ImDrawList* audioDrawList = ImGui::GetWindowDrawList();
+        ImVec2 audioPanelMin = ImGui::GetCursorScreenPos();
+        ImVec2 audioPanelMax(audioPanelMin.x + ImGui::GetContentRegionAvail().x,
+                             audioPanelMin.y + ImGui::GetContentRegionAvail().y);
+        audioDrawList->AddRectFilledMultiColor(
+            audioPanelMin,
+            audioPanelMax,
+            IM_COL32(28, 28, 32, 245),
+            IM_COL32(28, 28, 32, 245),
+            IM_COL32(5, 5, 7, 250),
+            IM_COL32(5, 5, 7, 250));
+        audioDrawList->AddRect(
+            audioPanelMin,
+            audioPanelMax,
+            IM_COL32(110, 110, 120, 150),
+            8.0f,
+            0,
+            1.0f);
+        audioDrawList->AddRectFilledMultiColor(
+            audioPanelMin,
+            ImVec2(audioPanelMax.x, audioPanelMin.y + 46.0f),
+            IM_COL32(255, 255, 255, 34),
+            IM_COL32(255, 255, 255, 34),
+            IM_COL32(255, 255, 255, 0),
+            IM_COL32(255, 255, 255, 0));
+        ImGui::BeginChild("SynthControls", ImVec2(0.0f, -238.0f), false);
+
+        auto MidiToFrequency = [](int midiNote) {
+            return 440.0f * std::pow(2.0f, (static_cast<float>(midiNote) - 69.0f) / 12.0f);
+        };
+
+        auto PlaySequencerLoop = [&]() {
+            constexpr size_t sequencerStepCount = 16;
+            if (!AudioServer::Get()) return;
+
+            constexpr uint32_t sampleRate = 44100;
+            float stepDuration = 60.0f / static_cast<float>(std::max(1, sequencerBpm)) / 4.0f;
+            size_t stepSamples = std::max<size_t>(1, static_cast<size_t>(stepDuration * sampleRate));
+            std::vector<int16_t> sequence(stepSamples * sequencerStepCount, 0);
+
+            for (const SequencerNote& note : sequencerNotes) {
+                if (note.midiNote < 0 || note.startStep < 0 || note.startStep >= static_cast<int>(sequencerStepCount)) continue;
+
+                SynthSoundParams noteParams = activeSynthParams;
+                noteParams.baseFreq = MidiToFrequency(note.midiNote);
+                noteParams.targetFreq = noteParams.baseFreq;
+                noteParams.pitchSlideDuration = 0.0f;
+                noteParams.pitchJumpEnabled = false;
+                noteParams.vibratoRate = 0.0f;
+                noteParams.vibratoDepth = 0.0f;
+                noteParams.vibratoDelay = 0.0f;
+
+                float noteDuration = stepDuration * static_cast<float>(std::max(1, note.lengthSteps));
+                float minimumSustain = noteDuration - noteParams.attackTime - noteParams.decayTime - noteParams.releaseTime;
+                noteParams.sustainTime = std::max(noteParams.sustainTime, std::max(0.0f, minimumSustain));
+
+                std::vector<int16_t> notePcm = SoundSynth::GeneratePCM(noteParams, sampleRate);
+                size_t destinationOffset = static_cast<size_t>(note.startStep) * stepSamples;
+                size_t copyCount = std::min(notePcm.size(), sequence.size() - destinationOffset);
+                for (size_t i = 0; i < copyCount; ++i) {
+                    int mixed = static_cast<int>(sequence[destinationOffset + i]) + static_cast<int>(notePcm[i]);
+                    sequence[destinationOffset + i] = static_cast<int16_t>(std::clamp(mixed, -32768, 32767));
+                }
+            }
+
+            AudioServer::Get()->PlaySequencerPcm(sequence, sampleRate, activeSynthParams.masterVolume);
+        };
+
+        if (sequencerPlaying) {
+            constexpr float stepsPerBeat = 4.0f;
+            float stepDuration = 60.0f / static_cast<float>(std::max(1, sequencerBpm)) / stepsPerBeat;
+            float loopDuration = stepDuration * 16.0f;
+            sequencerStepTimer += ImGui::GetIO().DeltaTime;
+            while (sequencerStepTimer >= loopDuration) {
+                sequencerStepTimer -= loopDuration;
+                PlaySequencerLoop();
+            }
+            sequencerCurrentStep = std::min(
+                static_cast<int>(sequencerStepTimer / stepDuration),
+                15);
+        }
+
+        // Cache / update downsampled waveform for real-time visualization
+        if (synthWaveformDirty || cachedWaveformPlot.empty()) {
+            auto floatBuf = SoundSynth::GenerateFloat(activeSynthParams, 44100);
+            cachedWaveformPlot.resize(512);
+            if (floatBuf.empty()) {
+                std::fill(cachedWaveformPlot.begin(), cachedWaveformPlot.end(), 0.0f);
+            } else {
+                float step = (float)floatBuf.size() / 512.0f;
+                for (size_t i = 0; i < 512; i++) {
+                    size_t idx = (size_t)(i * step);
+                    if (idx >= floatBuf.size()) idx = floatBuf.size() - 1;
+                    cachedWaveformPlot[i] = floatBuf[idx];
+                }
+            }
+            synthWaveformDirty = false;
+        }
+
+        auto DirtySliderFloat = [&](const char* label, float* v, float v_min, float v_max, const char* format = "%.3f") {
+            if (ImGui::SliderFloat(label, v, v_min, v_max, format)) {
+                synthWaveformDirty = true;
+            }
+        };
+
+        auto DirtySliderInt = [&](const char* label, int* v, int v_min, int v_max) {
+            if (ImGui::SliderInt(label, v, v_min, v_max)) {
+                synthWaveformDirty = true;
+            }
+        };
+
+        auto DirtyCheckbox = [&](const char* label, bool* v) {
+            if (ImGui::Checkbox(label, v)) {
+                synthWaveformDirty = true;
+            }
+        };
+
+        // --- TOP TOOLBAR ---
+        std::vector<std::string> presetNames = SoundSynth::GetPresetNames();
+        presetNames.push_back("Custom / User");
+
+        if (ImGui::BeginCombo("Sound Preset", presetNames[selectedSynthPresetIndex < (int)presetNames.size() ? selectedSynthPresetIndex : 0].c_str())) {
+            for (int i = 0; i < (int)presetNames.size(); i++) {
+                bool isSelected = (selectedSynthPresetIndex == i);
+                if (ImGui::Selectable(presetNames[i].c_str(), isSelected)) {
+                    selectedSynthPresetIndex = i;
+                    if (i < (int)presetNames.size() - 1) {
+                        activeSynthParams = SoundSynth::GetPresetByName(presetNames[i]);
+                        std::snprintf(synthTargetFilepath, sizeof(synthTargetFilepath), "%s", activeSynthParams.targetFilepath.c_str());
+                        synthStatusMessage = "Loaded preset: " + activeSynthParams.name;
+                    } else {
+                        activeSynthParams.name = "Custom Sound";
+                        synthStatusMessage = "Custom preset mode";
+                    }
+                    synthWaveformDirty = true;
+                }
+                if (isSelected) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+
+        ImGui::Spacing();
+
+        // Action Buttons Row
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.65f, 0.28f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.25f, 0.78f, 0.35f, 1.0f));
+        if (ImGui::Button(" > Play / Audition ", ImVec2(160, 32))) {
+            if (AudioServer::Get()) {
+                AudioServer::Get()->PlaySynthSound(activeSynthParams);
+            }
+            synthStatusMessage = "Auditioning: " + activeSynthParams.name;
+        }
+        ImGui::PopStyleColor(2);
+
+        ImGui::SameLine();
+        if (ImGui::Button("Save to File", ImVec2(120, 32))) {
+            activeSynthParams.targetFilepath = synthTargetFilepath;
+            auto pcm = SoundSynth::GeneratePCM(activeSynthParams);
+            if (SoundSynth::WriteWavFile(activeSynthParams.targetFilepath, pcm)) {
+                synthStatusMessage = "Saved sound to: " + activeSynthParams.targetFilepath;
+            } else {
+                synthStatusMessage = "Failed to write: " + activeSynthParams.targetFilepath;
+            }
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Regenerate All Sounds", ImVec2(180, 32))) {
+            AudioServer::GenerateProceduralSounds(true);
+            synthStatusMessage = "Regenerated all 11 procedural engine sounds in assets/audio/!";
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Mutate", ImVec2(90, 32))) {
+            SoundSynth::MutateParams(activeSynthParams, 0.25f);
+            synthWaveformDirty = true;
+            synthStatusMessage = "Mutated sound parameters";
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Randomize", ImVec2(100, 32))) {
+            activeSynthParams = SoundSynth::GenerateRandom(activeSynthParams.waveform);
+            std::snprintf(synthTargetFilepath, sizeof(synthTargetFilepath), "%s", activeSynthParams.targetFilepath.c_str());
+            synthWaveformDirty = true;
+            synthStatusMessage = "Generated random procedural sound";
+        }
+
+        ImGui::Spacing();
+
+        // --- WAVEFORM & TELEMETRY ---
+        ImGui::PlotLines("##WaveformPlot", cachedWaveformPlot.data(), (int)cachedWaveformPlot.size(), 0, nullptr, -1.05f, 1.05f, ImVec2(-1, 90));
+
+        float peak = 0.0f;
+        for (float s : cachedWaveformPlot) peak = std::max(peak, std::abs(s));
+        float peakDb = (peak > 0.00001f) ? 20.0f * std::log10(peak) : -96.0f;
+
+        ImGui::Text("Duration: %.3f s (%d samples) | Peak: %.1f dBFS | File: %s",
+            activeSynthParams.GetTotalDuration(),
+            (int)(activeSynthParams.GetTotalDuration() * 44100.0f),
+            peakDb,
+            synthTargetFilepath);
+
+        if (!synthStatusMessage.empty()) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "  [%s]", synthStatusMessage.c_str());
+        }
+
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // --- TAB BAR ---
+        if (ImGui::BeginTabBar("SynthTabs")) {
+
+            // TAB 1: OSCILLATOR & NOISE
+            if (ImGui::BeginTabItem("Oscillator & Noise")) {
+                ImGui::Spacing();
+
+                const char* waveItems[] = { "Sine", "Triangle", "Sawtooth", "Square", "White Noise", "Pink Noise", "Brown Noise", "FM (Chirp)" };
+                int currentWave = (int)activeSynthParams.waveform;
+                if (ImGui::Combo("Primary Waveform", &currentWave, waveItems, IM_ARRAYSIZE(waveItems))) {
+                    activeSynthParams.waveform = (WaveformType)currentWave;
+                    synthWaveformDirty = true;
+                }
+
+                DirtySliderFloat("Base Frequency (Hz)", &activeSynthParams.baseFreq, 20.0f, 8000.0f, "%.1f Hz");
+                if (activeSynthParams.waveform == WaveformType::Square) {
+                    DirtySliderFloat("Pulse Width (PWM)", &activeSynthParams.pulseWidth, 0.05f, 0.95f);
+                }
+                DirtySliderFloat("Oscillator Mix", &activeSynthParams.oscMix, 0.0f, 1.0f);
+
+                ImGui::Separator();
+                ImGui::TextColored(audioAccent, "Sub-Oscillator Layer");
+                DirtyCheckbox("Enable Sub-Oscillator", &activeSynthParams.subOscEnabled);
+                if (activeSynthParams.subOscEnabled) {
+                    const char* subWaves[] = { "Sine", "Triangle", "Sawtooth", "Square" };
+                    int currentSub = (int)activeSynthParams.subWaveform;
+                    if (currentSub > 3) currentSub = 0;
+                    if (ImGui::Combo("Sub Waveform", &currentSub, subWaves, IM_ARRAYSIZE(subWaves))) {
+                        activeSynthParams.subWaveform = (WaveformType)currentSub;
+                        synthWaveformDirty = true;
+                    }
+                    const char* octaves[] = { "-2 Octaves", "-1 Octave", "Same (0)", "+1 Octave" };
+                    int octIdx = activeSynthParams.subOctave + 2;
+                    if (octIdx < 0 || octIdx > 3) octIdx = 1;
+                    if (ImGui::Combo("Sub Octave", &octIdx, octaves, IM_ARRAYSIZE(octaves))) {
+                        activeSynthParams.subOctave = octIdx - 2;
+                        synthWaveformDirty = true;
+                    }
+                    DirtySliderFloat("Sub Mix", &activeSynthParams.subMix, 0.0f, 1.0f);
+                }
+
+                ImGui::Separator();
+                ImGui::TextColored(audioAccent, "Noise Layer");
+                DirtyCheckbox("Enable Noise Layer", &activeSynthParams.noiseEnabled);
+                if (activeSynthParams.noiseEnabled) {
+                    const char* noiseTypes[] = { "White (Flat)", "Pink (1/f)", "Brown (1/f^2)" };
+                    int currentNoise = (int)activeSynthParams.noiseType;
+                    if (ImGui::Combo("Noise Type", &currentNoise, noiseTypes, IM_ARRAYSIZE(noiseTypes))) {
+                        activeSynthParams.noiseType = (NoiseType)currentNoise;
+                        synthWaveformDirty = true;
+                    }
+                    DirtySliderFloat("Noise Mix", &activeSynthParams.noiseMix, 0.0f, 1.0f);
+                    DirtySliderFloat("Noise Decay Rate", &activeSynthParams.noiseDecay, 0.1f, 5.0f);
+                }
+
+                ImGui::Separator();
+                ImGui::TextColored(audioAccent, "Frequency Modulation (FM)");
+                DirtyCheckbox("Enable FM", &activeSynthParams.fmEnabled);
+                if (activeSynthParams.fmEnabled) {
+                    DirtySliderFloat("Modulator Frequency Ratio", &activeSynthParams.fmRatio, 0.1f, 10.0f, "%.2fx");
+                    DirtySliderFloat("Modulation Index / Depth", &activeSynthParams.fmDepth, 0.0f, 10.0f);
+                }
+
+                ImGui::EndTabItem();
+            }
+
+            // TAB 2: PITCH & GLIDE
+            if (ImGui::BeginTabItem("Pitch & Glide")) {
+                ImGui::Spacing();
+
+                DirtySliderFloat("Target / End Frequency", &activeSynthParams.targetFreq, 20.0f, 8000.0f, "%.1f Hz");
+                DirtySliderFloat("Pitch Slide Duration (0 = Full)", &activeSynthParams.pitchSlideDuration, 0.0f, 2.0f, "%.3f s");
+
+                const char* curves[] = { "Linear", "Exponential", "S-Curve" };
+                int currentCurve = (int)activeSynthParams.pitchSlideCurve;
+                if (ImGui::Combo("Slide Curve", &currentCurve, curves, IM_ARRAYSIZE(curves))) {
+                    activeSynthParams.pitchSlideCurve = (PitchSlideType)currentCurve;
+                    synthWaveformDirty = true;
+                }
+
+                ImGui::Separator();
+                ImGui::TextColored(audioAccent, "Pitch Jump (2-Stage Attack)");
+                DirtyCheckbox("Enable Pitch Jump", &activeSynthParams.pitchJumpEnabled);
+                if (activeSynthParams.pitchJumpEnabled) {
+                    DirtySliderFloat("Jump Trigger Time", &activeSynthParams.pitchJumpTime, 0.001f, 0.5f, "%.3f s");
+                    DirtySliderFloat("Jump Amount (Hz)", &activeSynthParams.pitchJumpAmount, -2000.0f, 2000.0f, "%.1f Hz");
+                }
+
+                ImGui::Separator();
+                ImGui::TextColored(audioAccent, "Vibrato (Pitch LFO)");
+                DirtySliderFloat("Vibrato Rate (Speed)", &activeSynthParams.vibratoRate, 0.0f, 40.0f, "%.1f Hz");
+                DirtySliderFloat("Vibrato Depth", &activeSynthParams.vibratoDepth, 0.0f, 100.0f, "%.1f Hz");
+                DirtySliderFloat("Vibrato Delay", &activeSynthParams.vibratoDelay, 0.0f, 1.0f, "%.3f s");
+
+                ImGui::EndTabItem();
+            }
+
+            // TAB 3: AMPLITUDE ENVELOPE (ADSR)
+            if (ImGui::BeginTabItem("Envelope (ADSR)")) {
+                ImGui::Spacing();
+
+                DirtySliderFloat("Attack Time", &activeSynthParams.attackTime, 0.001f, 1.0f, "%.3f s");
+                DirtySliderFloat("Decay Time", &activeSynthParams.decayTime, 0.001f, 2.0f, "%.3f s");
+                DirtySliderFloat("Sustain Level", &activeSynthParams.sustainLevel, 0.0f, 1.0f);
+                DirtySliderFloat("Sustain Time", &activeSynthParams.sustainTime, 0.0f, 3.0f, "%.3f s");
+                DirtySliderFloat("Release Time", &activeSynthParams.releaseTime, 0.001f, 2.0f, "%.3f s");
+                DirtySliderFloat("Transient Attack Punch Boost", &activeSynthParams.punch, 0.0f, 1.0f);
+
+                ImGui::Separator();
+                DirtySliderFloat("Master Volume Gain", &activeSynthParams.masterVolume, 0.0f, 2.0f);
+                DirtyCheckbox("Enable Soft Limiter / Clipper", &activeSynthParams.limiterEnabled);
+
+                ImGui::EndTabItem();
+            }
+
+            // TAB 4: EFFECTS RACK
+            if (ImGui::BeginTabItem("Effects Rack")) {
+                ImGui::Spacing();
+                ImGui::TextColored(audioAccent, "DSP Signal Chain: [Oscillators] -> [Filter] -> [Distortion] -> [Bitcrusher] -> [Delay] -> [Reverb] -> [Limiter]");
+                ImGui::Separator();
+
+                // 1. BIQUAD FILTER
+                if (ImGui::CollapsingHeader("Biquad Filter", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    DirtyCheckbox("Enable Filter", &activeSynthParams.filterEnabled);
+                    if (activeSynthParams.filterEnabled) {
+                        const char* filterTypes[] = { "None", "LowPass", "HighPass", "BandPass", "Notch" };
+                        int currentFilter = (int)activeSynthParams.filterType;
+                        if (ImGui::Combo("Filter Type", &currentFilter, filterTypes, IM_ARRAYSIZE(filterTypes))) {
+                            activeSynthParams.filterType = (FilterType)currentFilter;
+                            synthWaveformDirty = true;
+                        }
+                        DirtySliderFloat("Cutoff Frequency (Hz)", &activeSynthParams.filterCutoff, 20.0f, 18000.0f, "%.1f Hz");
+                        DirtySliderFloat("Resonance (Q)", &activeSynthParams.filterResonance, 0.1f, 10.0f);
+                        DirtySliderFloat("Cutoff Sweep (+/- Hz)", &activeSynthParams.filterCutoffSweep, -5000.0f, 5000.0f, "%.1f Hz");
+                    }
+                }
+
+                // 2. DISTORTION / SATURATION
+                if (ImGui::CollapsingHeader("Distortion & Saturation", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    DirtyCheckbox("Enable Distortion", &activeSynthParams.distortionEnabled);
+                    if (activeSynthParams.distortionEnabled) {
+                        const char* distTypes[] = { "Soft Tanh (Tape Saturation)", "Hard Clip (Fuzz)", "Foldback (Wavefolder)" };
+                        int currentDist = (int)activeSynthParams.distortionType;
+                        if (ImGui::Combo("Distortion Type", &currentDist, distTypes, IM_ARRAYSIZE(distTypes))) {
+                            activeSynthParams.distortionType = (DistortionType)currentDist;
+                            synthWaveformDirty = true;
+                        }
+                        DirtySliderFloat("Drive", &activeSynthParams.distortionDrive, 1.0f, 20.0f, "%.1fx");
+                        DirtySliderFloat("Distortion Wet Mix", &activeSynthParams.distortionMix, 0.0f, 1.0f);
+                    }
+                }
+
+                // 3. BITCRUSHER
+                if (ImGui::CollapsingHeader("Bitcrusher (Lo-Fi)")) {
+                    DirtyCheckbox("Enable Bitcrusher", &activeSynthParams.bitcrushEnabled);
+                    if (activeSynthParams.bitcrushEnabled) {
+                        DirtySliderInt("Bit Depth", &activeSynthParams.bitcrushBits, 2, 16);
+                        DirtySliderInt("Downsample Factor", &activeSynthParams.bitcrushDownsample, 1, 32);
+                        DirtySliderFloat("Bitcrusher Wet Mix", &activeSynthParams.bitcrushMix, 0.0f, 1.0f);
+                    }
+                }
+
+                // 4. DELAY / ECHO
+                if (ImGui::CollapsingHeader("Delay & Echo")) {
+                    DirtyCheckbox("Enable Delay", &activeSynthParams.delayEnabled);
+                    if (activeSynthParams.delayEnabled) {
+                        DirtySliderFloat("Delay Time (ms)", &activeSynthParams.delayTimeMs, 10.0f, 1000.0f, "%.1f ms");
+                        DirtySliderFloat("Feedback", &activeSynthParams.delayFeedback, 0.0f, 0.95f);
+                        DirtySliderFloat("High Frequency Damping", &activeSynthParams.delayDamping, 0.0f, 0.95f);
+                        DirtySliderFloat("Delay Wet Mix", &activeSynthParams.delayMix, 0.0f, 1.0f);
+                    }
+                }
+
+                // 5. REVERB / SPACE
+                if (ImGui::CollapsingHeader("Reverb & Space")) {
+                    DirtyCheckbox("Enable Reverb", &activeSynthParams.reverbEnabled);
+                    if (activeSynthParams.reverbEnabled) {
+                        DirtySliderFloat("Room Size", &activeSynthParams.reverbRoomSize, 0.0f, 1.0f);
+                        DirtySliderFloat("Damping", &activeSynthParams.reverbDamping, 0.0f, 1.0f);
+                        DirtySliderFloat("Reverb Wet Mix", &activeSynthParams.reverbMix, 0.0f, 1.0f);
+                    }
+                }
+
+                // 6. FUTURE DSP EXPANSION ARCHITECTURE
+                if (ImGui::CollapsingHeader("+ Add Effect (DSP Chain Extensibility)")) {
+                    ImGui::TextWrapped("The synth uses the modular ISynthEffect interface. Any custom effect implementing Process(std::vector<float>& buffer, uint32_t sampleRate) can be linked into the engine pipeline.");
+                    ImGui::TextDisabled("Future effect targets: Phaser, Pitch Shifter, Multi-band EQ, Stereo Chorus, Compressor.");
+                }
+
+                ImGui::EndTabItem();
+            }
+
+            // TAB 5: PRESET FILE I/O
+            if (ImGui::BeginTabItem("Preset File Manager")) {
+                ImGui::Spacing();
+
+                char nameBuf[128];
+                std::snprintf(nameBuf, sizeof(nameBuf), "%s", activeSynthParams.name.c_str());
+                if (ImGui::InputText("Preset Name", nameBuf, sizeof(nameBuf))) {
+                    activeSynthParams.name = nameBuf;
+                }
+
+                ImGui::InputText("Export Filepath", synthTargetFilepath, sizeof(synthTargetFilepath));
+                activeSynthParams.targetFilepath = synthTargetFilepath;
+
+                ImGui::Spacing();
+                static char jsonFilepath[256] = "tags/audio/my_preset.json";
+                ImGui::InputText("Preset JSON Path", jsonFilepath, sizeof(jsonFilepath));
+
+                if (ImGui::Button("Save JSON Preset")) {
+                    if (SoundSynth::SavePresetFile(jsonFilepath, activeSynthParams)) {
+                        synthStatusMessage = "Preset saved to " + std::string(jsonFilepath);
+                    } else {
+                        synthStatusMessage = "Failed to save JSON preset";
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Load JSON Preset")) {
+                    if (SoundSynth::LoadPresetFile(jsonFilepath, activeSynthParams)) {
+                        std::snprintf(synthTargetFilepath, sizeof(synthTargetFilepath), "%s", activeSynthParams.targetFilepath.c_str());
+                        synthWaveformDirty = true;
+                        synthStatusMessage = "Preset loaded from " + std::string(jsonFilepath);
+                    } else {
+                        synthStatusMessage = "Failed to load JSON preset";
+                    }
+                }
+
+                ImGui::Separator();
+                ImGui::Text("JSON Output Preview:");
+                std::string jsonStr = SoundSynth::ToJson(activeSynthParams);
+                ImGui::InputTextMultiline("##JsonPreview", const_cast<char*>(jsonStr.c_str()), jsonStr.size() + 1, ImVec2(-1, 200), ImGuiInputTextFlags_ReadOnly);
+
+                ImGui::EndTabItem();
+            }
+
+            ImGui::EndTabBar();
+        }
+        ImGui::EndChild();
+
+        ImGui::Separator();
+        ImGui::Spacing();
+        ImGui::TextColored(audioAccent, "NOTE SEQUENCER");
+        ImGui::SameLine();
+        ImGui::TextDisabled("16-step MIDI piano roll");
+
+        if (ImGui::Button(sequencerPlaying ? "Stop Sequence" : "Play Sequence", ImVec2(132.0f, 26.0f))) {
+            if (sequencerPlaying) {
+                sequencerPlaying = false;
+                if (AudioServer::Get()) AudioServer::Get()->StopSequencer();
+            } else {
+                sequencerPlaying = true;
+                sequencerCurrentStep = 0;
+                sequencerStepTimer = 0.0f;
+                PlaySequencerLoop();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Clear Notes", ImVec2(96.0f, 26.0f))) {
+            sequencerNotes.clear();
+            sequencerPlaying = false;
+            if (AudioServer::Get()) AudioServer::Get()->StopSequencer();
+            sequencerCurrentStep = 0;
+            sequencerStepTimer = 0.0f;
+        }
+        ImGui::SameLine();
+        auto TransposeSequencer = [&](int semitones) {
+            bool canTranspose = true;
+            for (SequencerNote& note : sequencerNotes) {
+                if (note.midiNote >= 0 && (note.midiNote + semitones < 0 || note.midiNote + semitones > 127)) {
+                    canTranspose = false;
+                    break;
+                }
+            }
+            if (!canTranspose) return;
+
+            for (SequencerNote& note : sequencerNotes) {
+                if (note.midiNote >= 0) note.midiNote += semitones;
+            }
+            sequencerTransposeOctaves += semitones / 12;
+            sequencerViewOctave = std::clamp(sequencerViewOctave + semitones / 12, -5, 3);
+        };
+        if (ImGui::Button("Octave -", ImVec2(82.0f, 26.0f))) {
+            TransposeSequencer(-12);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Octave +", ImVec2(82.0f, 26.0f))) {
+            TransposeSequencer(12);
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("View: C%d-B%d", 4 + sequencerViewOctave, 5 + sequencerViewOctave);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::SliderInt("BPM", &sequencerBpm, 40, 240);
+        ImGui::SameLine();
+        ImGui::TextDisabled("Left-click: place/remove  Right-click: clear  Wheel: change octave view");
+
+        ImGui::BeginChild("MidiPianoRoll", ImVec2(0.0f, 178.0f), true,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+        const int pianoLowestMidi = 60 + sequencerViewOctave * 12;
+        const int pianoHighestMidi = pianoLowestMidi + 23;
+        const int pianoRowCount = pianoHighestMidi - pianoLowestMidi + 1;
+        constexpr float pianoRowHeight = 7.0f;
+        constexpr float pianoLabelWidth = 44.0f;
+
+        ImVec2 pianoMin = ImGui::GetCursorScreenPos();
+        float pianoWidth = ImGui::GetContentRegionAvail().x;
+        float gridWidth = std::max(1.0f, pianoWidth - pianoLabelWidth);
+        float pianoHeight = pianoRowHeight * static_cast<float>(pianoRowCount);
+        ImVec2 gridMin(pianoMin.x + pianoLabelWidth, pianoMin.y);
+        ImVec2 gridMax(pianoMin.x + pianoWidth, pianoMin.y + pianoHeight);
+        ImDrawList* pianoDrawList = ImGui::GetWindowDrawList();
+
+        pianoDrawList->AddRectFilled(pianoMin, gridMax, IM_COL32(8, 8, 10, 255), 4.0f);
+
+        auto IsBlackKey = [](int midiNote) {
+            int pitchClass = midiNote % 12;
+            return pitchClass == 1 || pitchClass == 3 || pitchClass == 6 ||
+                   pitchClass == 8 || pitchClass == 10;
+        };
+
+
+        for (int row = 0; row < pianoRowCount; ++row) {
+            int midiNote = pianoHighestMidi - row;
+            float y0 = pianoMin.y + row * pianoRowHeight;
+            float y1 = y0 + pianoRowHeight;
+            bool blackKey = IsBlackKey(midiNote);
+
+            pianoDrawList->AddRectFilled(
+                ImVec2(pianoMin.x, y0),
+                ImVec2(gridMin.x, y1),
+                blackKey ? IM_COL32(18, 18, 21, 255) : IM_COL32(45, 45, 50, 255));
+            pianoDrawList->AddLine(
+                ImVec2(pianoMin.x, y1),
+                ImVec2(gridMax.x, y1),
+                IM_COL32(38, 38, 43, 255));
+
+            if (midiNote % 12 == 0) {
+                int octave = midiNote / 12 - 1;
+                char label[8];
+                std::snprintf(label, sizeof(label), "C%d", octave);
+                pianoDrawList->AddText(
+                    ImVec2(pianoMin.x + 7.0f, y0 - 1.0f),
+                    IM_COL32(210, 210, 218, 255),
+                    label);
+            }
+        }
+
+        constexpr int sequencerStepCount = 16;
+        float stepWidth = gridWidth / static_cast<float>(sequencerStepCount);
+        for (int step = 0; step < sequencerStepCount; ++step) {
+            float x0 = gridMin.x + step * stepWidth;
+            if (sequencerPlaying && step == sequencerCurrentStep) {
+                pianoDrawList->AddRectFilled(
+                    ImVec2(x0, gridMin.y),
+                    ImVec2(x0 + stepWidth, gridMax.y),
+                    IM_COL32(120, 120, 130, 42));
+            }
+            pianoDrawList->AddLine(
+                ImVec2(x0, gridMin.y),
+                ImVec2(x0, gridMax.y),
+                step % 4 == 0 ? IM_COL32(100, 100, 110, 150) : IM_COL32(35, 35, 40, 220));
+        }
+
+        for (size_t noteIndex = 0; noteIndex < sequencerNotes.size(); ++noteIndex) {
+            const SequencerNote& note = sequencerNotes[noteIndex];
+            if (note.startStep < 0 || note.startStep >= sequencerStepCount ||
+                note.midiNote < pianoLowestMidi || note.midiNote > pianoHighestMidi) {
+                continue;
+            }
+
+            int endStep = std::clamp(note.startStep + std::max(1, note.lengthSteps), note.startStep + 1, sequencerStepCount);
+            int row = pianoHighestMidi - note.midiNote;
+            float x0 = gridMin.x + note.startStep * stepWidth + 2.0f;
+            float x1 = gridMin.x + endStep * stepWidth - 2.0f;
+            float y0 = pianoMin.y + row * pianoRowHeight + 1.0f;
+            float y1 = y0 + pianoRowHeight - 2.0f;
+            bool active = sequencerPlaying &&
+                          sequencerCurrentStep >= note.startStep &&
+                          sequencerCurrentStep < endStep;
+
+            pianoDrawList->AddRectFilled(
+                ImVec2(x0, y0),
+                ImVec2(x1, y1),
+                active ? IM_COL32(235, 235, 245, 255) : IM_COL32(165, 165, 178, 245),
+                2.0f);
+            pianoDrawList->AddLine(
+                ImVec2(x1 - 3.0f, y0 + 1.0f),
+                ImVec2(x1 - 3.0f, y1 - 1.0f),
+                IM_COL32(65, 65, 72, 230),
+                2.0f);
+        }
+        pianoDrawList->AddLine(gridMax, ImVec2(gridMin.x, gridMax.y), IM_COL32(100, 100, 110, 180));
+
+        ImGui::InvisibleButton("##MidiPianoRollCanvas", ImVec2(pianoWidth, pianoHeight));
+        if (ImGui::IsItemHovered()) {
+            ImVec2 mousePos = ImGui::GetIO().MousePos;
+            float wheelDelta = ImGui::GetIO().MouseWheel;
+            if (std::abs(wheelDelta) > 0.0f) {
+                sequencerViewOctave = std::clamp(
+                    sequencerViewOctave + (wheelDelta > 0.0f ? 1 : -1),
+                    -5,
+                    3);
+            }
+            int hoveredRow = (mousePos.y >= gridMin.y && mousePos.y < gridMax.y)
+                ? std::clamp(static_cast<int>((mousePos.y - gridMin.y) / pianoRowHeight), 0, pianoRowCount - 1)
+                : -1;
+            int hoveredMidi = hoveredRow >= 0 ? pianoHighestMidi - hoveredRow : -1;
+            int hoveredStep = (mousePos.x >= gridMin.x && mousePos.x < gridMax.x)
+                ? std::clamp(static_cast<int>((mousePos.x - gridMin.x) / stepWidth), 0, sequencerStepCount - 1)
+                : -1;
+
+            int edgeNoteIndex = -1;
+            if (hoveredMidi >= 0 && hoveredStep >= 0) {
+                for (size_t i = 0; i < sequencerNotes.size(); ++i) {
+                    const SequencerNote& note = sequencerNotes[i];
+                    int endStep = std::clamp(note.startStep + std::max(1, note.lengthSteps), note.startStep + 1, sequencerStepCount);
+                    float noteEndX = gridMin.x + endStep * stepWidth;
+                    if (note.midiNote == hoveredMidi &&
+                        mousePos.x >= noteEndX - 7.0f &&
+                        mousePos.x <= noteEndX + 2.0f &&
+                        hoveredStep >= note.startStep &&
+                        hoveredStep < endStep) {
+                        edgeNoteIndex = static_cast<int>(i);
+                        break;
+                    }
+                }
+            }
+
+            if (edgeNoteIndex >= 0) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            }
+
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                if (edgeNoteIndex >= 0) {
+                    sequencerResizingNote = edgeNoteIndex;
+                } else if (hoveredMidi >= 0 && hoveredStep >= 0) {
+                    int existingNote = -1;
+                    for (size_t i = 0; i < sequencerNotes.size(); ++i) {
+                        const SequencerNote& note = sequencerNotes[i];
+                        if (note.midiNote == hoveredMidi &&
+                            hoveredStep >= note.startStep &&
+                            hoveredStep < note.startStep + std::max(1, note.lengthSteps)) {
+                            existingNote = static_cast<int>(i);
+                            break;
+                        }
+                    }
+
+                    if (existingNote >= 0) {
+                        sequencerNotes.erase(sequencerNotes.begin() + existingNote);
+                    } else {
+                        sequencerNotes.push_back({ hoveredMidi, hoveredStep, 1 });
+                    }
+                }
+            }
+
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && hoveredMidi >= 0 && hoveredStep >= 0) {
+                for (auto it = sequencerNotes.begin(); it != sequencerNotes.end(); ++it) {
+                    if (it->midiNote == hoveredMidi &&
+                        hoveredStep >= it->startStep &&
+                        hoveredStep < it->startStep + std::max(1, it->lengthSteps)) {
+                        sequencerNotes.erase(it);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (sequencerResizingNote >= 0) {
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+                sequencerResizingNote < static_cast<int>(sequencerNotes.size())) {
+                const SequencerNote& note = sequencerNotes[sequencerResizingNote];
+                float mouseX = ImGui::GetIO().MousePos.x;
+                int endStep = std::clamp(
+                    static_cast<int>(std::ceil((mouseX - gridMin.x) / stepWidth)),
+                    note.startStep + 1,
+                    sequencerStepCount);
+                sequencerNotes[sequencerResizingNote].lengthSteps = endStep - note.startStep;
+            } else {
+                sequencerResizingNote = -1;
+            }
+        }
+
+        ImGui::EndChild();
+
+        ImGui::End();
+        ImGui::PopStyleColor(26);
+        ImGui::PopStyleVar(4);
+
     }
 }

@@ -87,6 +87,35 @@ namespace Crescendo {
         glm::vec4 padding2;
     };
 
+    struct FoliageGPUInstance {
+        glm::vec4 posAndYaw;     // xyz = camera-relative render pos, w = yaw radians
+        glm::vec4 scaleAndPhase; // xyz = scale, w = wind phase
+        glm::vec4 tintAndParams; // rgb = tint, w = wind/subsurface weight
+    };
+
+    struct FoliagePushConsts {
+        uint32_t firstInstance;
+        int32_t texID;
+        int32_t normalTexID;
+        float roughness;
+        float subsurface;
+        float alphaCutoff;
+        float windStrength;
+        float windFrequency;
+    };
+
+    struct FoliageShadowPushConsts {
+        glm::mat4 lightSpaceMatrix;
+        uint32_t firstInstance;
+        int32_t texID;
+        float alphaCutoff;
+        float windStrength;
+        float windFrequency;
+        float _pad0;
+        float _pad1;
+        float _pad2;
+    };
+
     struct PointLight {
         glm::vec4 positionAndRadius;
         glm::vec4 colorAndIntensity;
@@ -117,7 +146,7 @@ namespace Crescendo {
         
         // --- POINT LIGHTS ---
         glm::vec4 pointLightParams; 
-        PointLight pointLights[16]; 
+        PointLight pointLights[64]; 
     };
 
     struct PushConsts {
@@ -203,8 +232,9 @@ namespace Crescendo {
         
 
         int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices)override;
+        bool updateMesh(int meshID, const std::vector<Vertex>& vertices) override;
         int acquireTexture(const std::string& path)override;
-        VkDescriptorSet getImGuiTextureID(const std::string& path);
+        void* getImGuiTextureID(const std::string& path) override;
        
         void loadSkybox(const std::string& path, Scene * scene) override;
         TextureResource UploadCubemap(void* pixels, size_t totalSize, uint32_t width, uint32_t height, uint32_t mipLevels);
@@ -282,6 +312,13 @@ namespace Crescendo {
         std::vector<VulkanBuffer> entityStorageBuffers; 
         std::vector<void*> entityStorageBuffersMapped;
         void createStorageBuffers(); 
+        static constexpr size_t MAX_FOLIAGE_INSTANCES = 16384;
+        std::vector<VulkanBuffer> foliageStorageBuffers;
+        std::vector<void*> foliageStorageBuffersMapped;
+        void createFoliageStorageBuffers();
+        std::vector<FoliageGPUInstance> m_foliageScratchShadow;
+        std::vector<FoliageGPUInstance> m_foliageScratchLOD0;
+        std::vector<FoliageGPUInstance> m_foliageScratchLOD1;
 
         std::vector<VulkanBuffer> globalUniformBuffers; 
         std::vector<void*> globalUniformBuffersMapped;
@@ -321,6 +358,10 @@ namespace Crescendo {
         VkPipeline opaquePipeline = VK_NULL_HANDLE;
         VkPipeline skyPipeline = VK_NULL_HANDLE;
         VkPipeline waterPipeline = VK_NULL_HANDLE;
+        VkPipeline foliagePipeline = VK_NULL_HANDLE;
+        VkPipeline foliageCulledPipeline = VK_NULL_HANDLE;
+        VkPipeline foliageShadowPipeline = VK_NULL_HANDLE;
+        VkPipelineLayout foliageShadowPipelineLayout = VK_NULL_HANDLE;
 
         // Wireframe
         VkPipeline outlinePipeline = VK_NULL_HANDLE;
@@ -463,6 +504,8 @@ namespace Crescendo {
         void updateSSRDescriptors();
         bool createTransparentPipeline();
         bool createOpaquePipeline();
+        bool createFoliagePipelines();
+        bool createFoliageShadowPipeline();
         bool createWaterPipeline();
         bool createTextureImage();        
         bool createTextureImage(const std::string& path, VulkanImage& outImage);

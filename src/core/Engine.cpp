@@ -1,6 +1,7 @@
 #include "Engine.hpp"
 #include "core/ScriptSystem.hpp"
 #include <iostream>
+#include <algorithm>
 
 #include <Jolt/Core/IssueReporting.h>
 #include "core/Input.hpp"
@@ -104,6 +105,9 @@ namespace Crescendo {
 
     void Engine::Update() {
         float dt = 1.0f / 60.0f; 
+        const auto now = std::chrono::steady_clock::now();
+        const float rtsDelta = std::clamp(std::chrono::duration<float>(now - m_lastUpdate).count(), 0.0f, 0.1f);
+        m_lastUpdate = now;
         Input::Update();
 
         if (isTagEditorMode) return; 
@@ -111,9 +115,10 @@ namespace Crescendo {
         Camera* cam = renderer ? renderer->GetMainCamera() : nullptr;
         if (!cam) return;
 
+        static size_t playModeStartEntityCount = 0;
         if (currentState == EngineState::Playing && previousState == EngineState::Editor) {
             std::cout << "[Engine] Play Mode: Initializing gamemode..." << std::endl;
-            
+            playModeStartEntityCount = scene.entities.size();
             audioServer.ClearSpatialEmitters(); 
             glm::vec3 spawnLocation = cam->GetPosition(); 
             
@@ -153,6 +158,15 @@ namespace Crescendo {
 
         else if (currentState == EngineState::Editor && previousState != EngineState::Editor) {
             std::cout << "[Engine] Editor Mode: Restoring scene..." << std::endl;
+            if (activeRTSControllerGlobal) { delete activeRTSControllerGlobal; activeRTSControllerGlobal = nullptr; }
+            if (activePlayer) { delete activePlayer; activePlayer = nullptr; }
+            if (localPlayerModel) { scene.DeleteEntity(localPlayerModel->index); localPlayerModel = nullptr; }
+
+            // Delete all entities spawned during Play Mode so editor hierarchy is restored to original state
+            while (scene.entities.size() > playModeStartEntityCount) {
+                scene.DeleteEntity((int)(scene.entities.size() - 1));
+            }
+
             for (auto* ent : scene.entities) {
                 if (ent) {
                     ent->origin = ent->savedOrigin;
@@ -161,10 +175,6 @@ namespace Crescendo {
                     physicsServer.ResetBody(ent->index, ent->origin, ent->angles);
                 }
             }
-
-            if (activeRTSControllerGlobal) { delete activeRTSControllerGlobal; activeRTSControllerGlobal = nullptr; }
-            if (activePlayer) { delete activePlayer; activePlayer = nullptr; }
-            if (localPlayerModel) { scene.DeleteEntity(localPlayerModel->index); localPlayerModel = nullptr; }
         }
         
         if (currentState != previousState) {
@@ -184,7 +194,8 @@ namespace Crescendo {
 
         if (currentState == EngineState::Playing) {
             if (activeRTSControllerGlobal) {
-                activeRTSControllerGlobal->Update(dt, &scene, &physicsServer, &audioServer, cam, renderer.get());
+                activeRTSControllerGlobal->Update(rtsDelta,
+                    &scene, &physicsServer, &audioServer, cam, renderer.get());
             } else if (activePlayer) {
                 glm::vec3 forward = glm::vec3(cam->Front.x, cam->Front.y, 0.0f);
                 if (glm::length(forward) > 0.001f) forward = glm::normalize(forward);

@@ -61,7 +61,7 @@ layout(set = 0, binding = 3) uniform GlobalUniforms {
     
     // --- POINT LIGHTS ---
     vec4 pointLightParams; // x = count
-    PointLight pointLights[16];
+    PointLight pointLights[64];
 } global;
 
 // --- TINY PUSH CONSTANT ---

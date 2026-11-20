@@ -63,8 +63,11 @@ std::vector<char> VirtualFileSystem::ReadFile(const std::string& virtualPath) {
 
     std::ifstream file(physicalPath, std::ios::ate | std::ios::binary);
     if (!file.is_open()) {
-        std::cerr << "[VFS] Warning: File not found in project data: " << physicalPath << "\n";
-        return {};
+        file.open(virtualPath, std::ios::ate | std::ios::binary);
+        if (!file.is_open()) {
+            std::cerr << "[VFS] Warning: File not found in project data: " << physicalPath << "\n";
+            return {};
+        }
     }
 
     size_t fileSize = static_cast<size_t>(file.tellg());

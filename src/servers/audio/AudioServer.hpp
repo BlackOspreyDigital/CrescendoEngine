@@ -8,10 +8,14 @@ struct ma_engine;
 struct ma_sound; 
 
 namespace Crescendo {
+    struct SynthSoundParams;
+
     class AudioServer {
     public:
-        AudioServer() = default;
+        AudioServer();
         ~AudioServer();
+
+        static AudioServer* Get() { return s_instance; }
 
         bool Initialize();
         void Shutdown();
@@ -20,28 +24,35 @@ namespace Crescendo {
         void SetMasterVolume(float volume);
         float GetMasterVolume() const { return m_masterVolume; }
 
-
         // --- AMBIENT SOUND CONTROLS ---
         bool LoadAmbientSound(const std::string& filepath, float volume = 1.0f);
         void PlayAmbientSound();
         void StopAmbientSound();
 
         // --- 3D SPATIAL EMITTERS ---
-        // Now supports unlimited entities!
         bool LoadSpatialEmitter(const std::string& filepath, glm::vec3 position, float volume = 1.0f);
         void PlaySpatialEmitters();
         void StopSpatialEmitters();
         void ClearSpatialEmitters(); 
 
-        // One-shot for footsteps
+        // One-shot playback
         void PlayOneShot(const std::string& filepath, float volume = 1.0f);
 
+        // --- SYNTHESIS & AUDITIONING ---
+        void PlaySynthSound(const SynthSoundParams& params);
+        void PlayPcm(const std::vector<int16_t>& pcm, uint32_t sampleRate = 44100, float volume = 1.0f);
+        void PlaySequencerPcm(const std::vector<int16_t>& pcm, uint32_t sampleRate = 44100, float volume = 1.0f);
+        void StopSequencer();
+        static void GenerateProceduralSounds(bool forceOverwrite = false);
+
     private:
+        static AudioServer* s_instance;
         ma_engine* m_engine = nullptr;
         ma_sound* m_ambientSound = nullptr;
+        ma_sound* m_sequencerSound = nullptr;
         
-        // --- THE UPGRADE ---
         std::vector<ma_sound*> m_spatialEmitters; 
         float m_masterVolume = 0.65f;
+        uint32_t m_previewRingIndex = 0;
     };
 }

@@ -3,6 +3,7 @@
 #include <string>
 #include <algorithm>
 #include "BaseEntity.hpp"
+#include "FoliageTypes.hpp"
 
 namespace Crescendo {
 
@@ -12,6 +13,11 @@ namespace Crescendo {
         HDRMap = 2
     };
    
+    struct FogClearSource {
+        glm::vec3 position = glm::vec3(0.0f);
+        float radius = 50.0f;
+    };
+
     struct EnvironmentSettings {
         bool enableFog = false;
         SkyType skyType = SkyType::Procedural;
@@ -22,6 +28,9 @@ namespace Crescendo {
         
         glm::vec4 fogColor     = glm::vec4(0.5f, 0.6f, 0.7f, 0.02f); 
         glm::vec4 fogParams    = glm::vec4(0.0f, 0.0f, 0.0f, 0.0f); 
+        glm::vec2 fogOfWarCenter = glm::vec2(-260.0f, 0.0f);
+        float     fogOfWarRadius = 240.0f;
+        std::vector<FogClearSource> fogClearSources;
         glm::vec3 skyColor     = glm::vec3(0.5f, 0.7f, 1.0f);
         glm::vec3 groundColor  = glm::vec3(0.0f, 0.0f, 0.0f);
 
@@ -39,6 +48,7 @@ namespace Crescendo {
     public:
         std::vector<CBaseEntity*> entities;
         PhysicsServer* physics = nullptr;
+        std::vector<FoliageBatch> foliageBatches;
         EnvironmentSettings environment; 
         std::string name = "Untitled Scene"; 
 
@@ -99,6 +109,7 @@ namespace Crescendo {
         void Clear() {
             for (auto* ent : entities) if (ent) delete ent;
             entities.clear();
+            foliageBatches.clear();
             RefreshCaches(); // Clear caches to prevent dangling pointers
         }
     };

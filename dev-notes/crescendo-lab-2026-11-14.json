@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "repository": "BlackOspreyDigital/CrescendoEngine",
+  "records": [
+    {
+      "id": "962dea93-9c06-4b36-84f5-a9addf3dbb7d",
+      "title": "Dashboard tracker added.",
+      "category": "Notes",
+      "status": "Complete",
+      "priority": "Low",
+      "ref": "",
+      "notes": "",
+      "steps": "",
+      "env": "",
+      "checks": [],
+      "attempts": [],
+      "updated": "2026-11-14T19:45:02.443Z"
+    },
+    {
+      "id": "sample-rts",
+      "title": "Establish the RTS selection baseline",
+      "category": "RTS bugs",
+      "status": "Open",
+      "priority": "High",
+      "ref": "src/controllers/RTSController.cpp",
+      "notes": "Example investigation · Verify click and drag selection before extending the RTS proof. Record expected vs actual behavior here.",
+      "steps": "1. Open the RTS test scene.\n2. Select one unit, then drag across a group.\n3. Record selection and camera behavior.",
+      "env": "",
+      "checks": [
+        {
+          "text": "Capture the starting scene and commit",
+          "done": false
+        },
+        {
+          "text": "Verify click and box selection",
+          "done": false
+        }
+      ],
+      "attempts": [],
+      "example": true
+    },
+    {
+      "id": "sample-vulkan",
+      "title": "Measure the native-resolution render baseline",
+      "category": "Vulkan experiments",
+      "status": "Planned",
+      "priority": "Medium",
+      "ref": "src/shaders",
+      "notes": "Example experiment · Compare a fixed camera and scene before changing rendering settings. No performance result has been measured.",
+      "steps": "1. Record GPU, driver, resolution and commit.\n2. Run the same camera path.\n3. Capture frame times and validation messages.",
+      "checks": [
+        {
+          "text": "Record CPU and GPU frame timings",
+          "done": false
+        },
+        {
+          "text": "Check Vulkan validation output",
+          "done": false
+        }
+      ],
+      "attempts": [],
+      "example": true
+    },
+    {
+      "id": "sample-synth",
+      "title": "Plan MIDI → synth → game / UI audio routing",
+      "category": "Synth & MIDI",
+      "status": "Planned",
+      "priority": "Medium",
+      "ref": "src/servers/audio",
+      "notes": "Example design task · MIDI input is a planned exploration, not a verified implemented capability. Track note handling, voice lifetime, UI triggers and audio latency here.",
+      "steps": "1. Document current synth signal path.\n2. Define MIDI note-on / note-off expectations.\n3. Plan a repeatable UI sound and voice cleanup test.",
+      "checks": [
+        {
+          "text": "Document current audio baseline",
+          "done": false
+        },
+        {
+          "text": "Test note-off and repeated UI triggers",
+          "done": false
+        },
+        {
+          "text": "Measure latency and listen for dropouts",
+          "done": false
+        }
+      ],
+      "attempts": [],
+      "example": true
+    }
+  ]
+}

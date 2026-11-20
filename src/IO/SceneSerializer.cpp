@@ -40,6 +40,7 @@ namespace Crescendo {
             entityJson["Material"]["Metallic"]          = ent->metallic;
             entityJson["Material"]["Emission"]          = ent->emission;
             entityJson["Material"]["NormalStrength"]    = ent->normalStrength;
+            entityJson["Material"]["Alpha"]             = ent->alpha;
 
             // Volume / Glass   
             entityJson["Volume"]["Transmission"]        = ent->transmission;
@@ -137,6 +138,7 @@ namespace Crescendo {
                 ent->metallic       = m.value("Metallic", 0.0f);
                 ent->emission       = m.value("Emission", 0.0f);
                 ent->normalStrength = m.value("NormalStrength", 0.0f);
+                ent->alpha          = m.value("Alpha", 1.0f);
             }
 
             // 7. Restore Volume / Glass (Safely)

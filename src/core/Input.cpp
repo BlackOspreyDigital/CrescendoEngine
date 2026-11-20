@@ -27,7 +27,7 @@ namespace Crescendo {
         // 3. Retrieve mouse position and relative motion
         SDL_GetMouseState(&mouseX, &mouseY);
         mouseState = SDL_GetRelativeMouseState(&mouseRelX, &mouseRelY);
-        if (ImGui::GetCurrentContext() != nullptr) {
+        if (scrollY == 0 && ImGui::GetCurrentContext() != nullptr) {
             scrollY = (int)ImGui::GetIO().MouseWheel;
         }
     }

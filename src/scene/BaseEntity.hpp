@@ -69,6 +69,7 @@ public:
     float metallic = 0.0f;
     float emission = 0.0f;
     float normalStrength = 0.0f;                                // default to 0 to assume no normal map
+    float alpha = 1.0f;                                         // 1.0 = fully opaque, 0.0 = fully transparent
     float transmission = 0.0f;                                  // 0.0 = Opaque, 1.0 = glass
     float thickness = 0.0f;                                     // average thickness
     float attenuationDistance = 1.0f;                           // Distance at which color is fully absorbed

@@ -1,6 +1,7 @@
 #pragma once
 #include <string>
 #include <memory>
+#include <chrono>
 #include "controllers/FPSController.hpp"
 #include "controllers/RTSController.hpp"
 #include "servers/display/DisplayServer.hpp"
@@ -57,6 +58,7 @@ namespace Crescendo {
         
     private:
         bool isRunning;
+        std::chrono::steady_clock::time_point m_lastUpdate = std::chrono::steady_clock::now();
         std::unique_ptr<SceneManager> sceneManager;
     };
 }

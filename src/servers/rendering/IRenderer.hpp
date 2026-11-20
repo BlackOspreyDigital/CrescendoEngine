@@ -25,7 +25,9 @@ namespace Crescendo {
         virtual SymbolServer* GetSymbolServer() { return nullptr; }
         virtual void SetTagEditorConfig(bool isTagEditor, const std::string& projectRoot) {}
         virtual int acquireMesh(const std::string& path, const std::string& name, const std::vector<Vertex>& vertices, const std::vector<uint32_t>& indices) = 0;
+        virtual bool updateMesh(int meshID, const std::vector<Vertex>& vertices) { return false; }
         virtual int acquireTexture(const std::string& texturePath) = 0;
         virtual void loadSkybox(const std::string& path, Scene* scene) {}
+        virtual void* getImGuiTextureID(const std::string& path) { return nullptr; }
     };
 }
